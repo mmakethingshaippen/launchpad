@@ -9,7 +9,7 @@
  * Supabase and check user_profiles.account_role = 'admin'.
  */
 import { createClient } from '@supabase/supabase-js';
-import { syncAll, type SyncSink, type UpsertRoleData, type SyncableCompany } from '../src/lib/ats/sync';
+import { syncAll, type SyncSink, type UpsertRoleData, type SyncableCompany } from '../src/lib/ats/sync.js';
 
 interface VercelRequest {
   method?: string;
