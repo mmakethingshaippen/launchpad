@@ -1,0 +1,34 @@
+[
+  {
+    "id": "l-1",
+    "text": "New Grad Software Engineer",
+    "hostedUrl": "https://jobs.lever.co/widget/l-1",
+    "applyUrl": "https://jobs.lever.co/widget/l-1/apply",
+    "description": "<p>New grad role, rolling start.</p>",
+    "descriptionPlain": "New grad role, rolling start.",
+    "workplaceType": "remote",
+    "categories": { "location": "Seattle, WA", "commitment": "Full-time", "team": "Engineering" },
+    "salaryRange": { "min": 90000, "max": 110000, "currency": "USD", "interval": "per-year-salary" },
+    "createdAt": 1756684800000
+  },
+  {
+    "id": "l-2",
+    "text": "Staff Engineer",
+    "hostedUrl": "https://jobs.lever.co/widget/l-2",
+    "applyUrl": "https://jobs.lever.co/widget/l-2/apply",
+    "description": "<p>Senior IC role.</p>",
+    "workplaceType": "onsite",
+    "categories": { "location": "Palo Alto, CA", "commitment": "Full-time" },
+    "createdAt": 1756684800000
+  },
+  {
+    "id": "l-3",
+    "text": "Finance Internship",
+    "hostedUrl": "https://jobs.lever.co/widget/l-3",
+    "applyUrl": "https://jobs.lever.co/widget/l-3/apply",
+    "description": "<p>Summer 2027 finance internship.</p>",
+    "workplaceType": "hybrid",
+    "categories": { "location": "Chicago, IL", "commitment": "Intern" },
+    "createdAt": 1756684800000
+  }
+]

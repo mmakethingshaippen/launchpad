@@ -1,0 +1,42 @@
+{
+  "jobs": [
+    {
+      "id": "a-1",
+      "title": "Product Design Intern",
+      "isListed": true,
+      "location": "New York, NY",
+      "workplaceType": "Hybrid",
+      "employmentType": "Intern",
+      "applyUrl": "https://jobs.ashbyhq.com/startup/a-1/application",
+      "descriptionHtml": "<p>Design internship. Spring or Summer start.</p>",
+      "compensation": {
+        "summaryComponents": [
+          { "minValue": 30, "maxValue": 40, "currencyCode": "USD", "interval": "1 HOUR" }
+        ]
+      },
+      "updatedAt": "2026-09-05T00:00:00Z"
+    },
+    {
+      "id": "a-2",
+      "title": "Marketing Intern",
+      "isListed": false,
+      "location": "Remote",
+      "workplaceType": "Remote",
+      "employmentType": "Intern",
+      "applyUrl": "https://jobs.ashbyhq.com/startup/a-2/application",
+      "descriptionHtml": "<p>Unlisted role.</p>",
+      "updatedAt": "2026-09-05T00:00:00Z"
+    },
+    {
+      "id": "a-3",
+      "title": "Director of Engineering",
+      "isListed": true,
+      "location": "Austin, TX",
+      "workplaceType": "Onsite",
+      "employmentType": "FullTime",
+      "applyUrl": "https://jobs.ashbyhq.com/startup/a-3/application",
+      "descriptionHtml": "<p>Leadership role.</p>",
+      "updatedAt": "2026-09-05T00:00:00Z"
+    }
+  ]
+}
