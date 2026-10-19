@@ -5,10 +5,10 @@
   "rewrites": [
     { "source": "/((?!api/).*)", "destination": "/index.html" }
   ],
-"functions": {
-    "api/sync.ts": {
+  "functions": {
+    "api/**/*.ts": {
       "maxDuration": 60,
-      "includeFiles": "src/**"
+      "includeFiles": "src/**/*"
     }
   }
 }
