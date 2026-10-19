@@ -5,14 +5,15 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "tsc --noEmit && vite build",
+    "build": "tsc --noEmit && vite build && npm run build:api",
+    "build:api": "tsx scripts/build-api.ts",
     "preview": "vite preview",
     "test": "vitest run",
     "test:watch": "vitest",
     "test:e2e": "playwright test",
     "lint": "tsc --noEmit",
-    "sync": "tsx scripts/sync-ats-jobs.ts",
-    "seed": "tsx scripts/seed.ts"
+    "sync": "tsx --env-file=.env scripts/sync-ats-jobs.ts",
+    "seed": "tsx --env-file=.env scripts/seed.ts"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.45.4",

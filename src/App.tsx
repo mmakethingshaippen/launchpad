@@ -10,6 +10,7 @@ import { Resources, ResourceGuide } from './pages/Resources';
 import { MyApplications } from './pages/MyApplications';
 import { Submit } from './pages/Submit';
 import { Admin } from './pages/Admin';
+import { SignIn } from './pages/SignIn';
 
 export default function App() {
   return (
@@ -23,6 +24,7 @@ export default function App() {
         <Route path="/resources" element={<Resources />} />
         <Route path="/resources/:slug" element={<ResourceGuide />} />
         <Route path="/applications" element={<MyApplications />} />
+        <Route path="/signin" element={<SignIn />} />
         <Route path="/submit" element={<Submit />} />
         <Route path="/admin" element={<Admin />} />
         <Route path="*" element={<NotFound />} />

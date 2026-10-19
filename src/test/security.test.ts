@@ -13,12 +13,28 @@ function read(rel: string) {
 // These guard the security invariants from Req 21 & 27 at source level so a
 // regression is caught in CI even without a live environment.
 describe('security invariants', () => {
-  it('service_role key is referenced only in server-side api/sync.ts', () => {
-    const files = ['src/lib/supabaseClient.ts', 'src/lib/adapter/supabase.ts', 'src/main.tsx'];
-    for (const f of files) {
+  it('service_role key is referenced only in server-side code, never in browser modules', () => {
+    // Browser-reachable modules must never touch the service role key.
+    const browserFiles = [
+      'src/lib/supabaseClient.ts',
+      'src/lib/adapter/supabase.ts',
+      'src/lib/adapter/local.ts',
+      'src/main.tsx',
+    ];
+    for (const f of browserFiles) {
       expect(read(f), f).not.toContain('SERVICE_ROLE');
     }
-    expect(read('api/sync.ts')).toContain('SUPABASE_SERVICE_ROLE_KEY');
+    // The service role lives only in the server-side sink used by scripts + the
+    // serverless function (api/_src/sync.ts is bundled to api/sync.js).
+    expect(read('src/lib/ats/supabaseSink.ts')).toContain('SUPABASE_SERVICE_ROLE_KEY');
+    expect(read('api/_src/sync.ts')).toContain('createServiceClient');
+  });
+
+  it('the server-side sink is never imported by browser UI code', () => {
+    // UI goes through the DataAdapter (anon key); it must not import the sink.
+    for (const f of ['src/lib/adapter/supabase.ts', 'src/lib/adapter/local.ts', 'src/main.tsx']) {
+      expect(read(f), f).not.toContain('supabaseSink');
+    }
   });
 
   it('the browser client uses only the anon key', () => {

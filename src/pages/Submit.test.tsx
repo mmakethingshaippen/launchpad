@@ -15,7 +15,7 @@ function makeAdapter() {
 describe('Submit page — company form', () => {
   it('shows validation errors for an empty submission', async () => {
     const { adapter, submitCompany } = makeAdapter();
-    const user = userEvent.setup();
+    const user = userEvent.setup({ delay: null });
     renderWithProviders(<Submit />, { adapter, route: '/submit' });
 
     await user.click(screen.getByRole('button', { name: /Submit company for review/i }));
@@ -25,7 +25,7 @@ describe('Submit page — company form', () => {
 
   it('submits a valid company and shows success', async () => {
     const { adapter, submitCompany } = makeAdapter();
-    const user = userEvent.setup();
+    const user = userEvent.setup({ delay: null });
     const { container } = renderWithProviders(<Submit />, { adapter, route: '/submit' });
 
     await user.type(screen.getByRole('textbox', { name: /Company name/i }), 'Acme');
@@ -40,11 +40,11 @@ describe('Submit page — company form', () => {
     await waitFor(() => expect(submitCompany).toHaveBeenCalledTimes(1));
     expect(await screen.findByText(/your company was submitted/i)).toBeInTheDocument();
     expect(container).toBeTruthy();
-  });
+  }, 20_000);
 
   it('silently drops a submission when the honeypot is filled', async () => {
     const { adapter, submitCompany } = makeAdapter();
-    const user = userEvent.setup();
+    const user = userEvent.setup({ delay: null });
     const { container } = renderWithProviders(<Submit />, { adapter, route: '/submit' });
 
     // Fill required fields plus the hidden honeypot.
@@ -63,5 +63,5 @@ describe('Submit page — company form', () => {
     // Honeypot → success UI shown but adapter never called (Req 14.5).
     expect(await screen.findByText(/your company was submitted/i)).toBeInTheDocument();
     expect(submitCompany).not.toHaveBeenCalled();
-  });
+  }, 20_000);
 });

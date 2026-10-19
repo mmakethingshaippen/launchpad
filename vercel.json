@@ -6,9 +6,6 @@
     { "source": "/((?!api/).*)", "destination": "/index.html" }
   ],
   "functions": {
-    "api/**/*.ts": {
-      "maxDuration": 60,
-      "includeFiles": "src/**/*"
-    }
+    "api/sync.js": { "maxDuration": 60 }
   }
 }
