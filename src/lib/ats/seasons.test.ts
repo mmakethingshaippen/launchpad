@@ -1,5 +1,12 @@
 import { describe, it, expect } from 'vitest';
-import { extractSeasons, cohortYear, isConcluded, nextOccurrenceYear, roleConcluded } from './seasons';
+import {
+  extractSeasons,
+  cohortYear,
+  isConcluded,
+  nextOccurrenceYear,
+  roleConcluded,
+  isExpiredTerm,
+} from './seasons';
 
 describe('extractSeasons', () => {
   it('tags a single season', () => {
@@ -71,5 +78,32 @@ describe('roleConcluded', () => {
     const now = new Date(Date.UTC(2026, 0, 1));
     expect(roleConcluded(['Summer'], 2025, now)).toBe(true);
     expect(roleConcluded(['Summer', 'Fall'], 2026, now)).toBe(false); // 2026 not concluded yet
+  });
+});
+
+describe('isExpiredTerm (Req 7.2 — relative to Oct 2026)', () => {
+  const now = new Date(Date.UTC(2026, 9, 1)); // Oct 1 2026
+
+  it('rejects titles referencing a past year (2024 / 2025)', () => {
+    expect(isExpiredTerm('Summer 2024 Software Intern', now)).toBe(true);
+    expect(isExpiredTerm('2025 Finance Internship', now)).toBe(true);
+  });
+
+  it('rejects past 2026 terms whose cutoff is already behind us', () => {
+    // Summer 2026 cutoff is Aug 31 2026 — past on Oct 1 2026.
+    expect(isExpiredTerm('Summer 2026 Internship', now)).toBe(true);
+  });
+
+  it('allows current/future terms and year-agnostic titles', () => {
+    // Fall 2026 cutoff is Dec 15 2026 — still ahead on Oct 1.
+    expect(isExpiredTerm('Fall 2026 Internship', now)).toBe(false);
+    expect(isExpiredTerm('Summer 2027 Internship', now)).toBe(false);
+    expect(isExpiredTerm('Winter 2027 Co-op', now)).toBe(false);
+    expect(isExpiredTerm('Software Engineering Intern', now)).toBe(false);
+    expect(isExpiredTerm('New Grad Software Engineer', now)).toBe(false);
+  });
+
+  it('does not reject a future year even if a season word is present', () => {
+    expect(isExpiredTerm('Spring 2027 Analyst', now)).toBe(false);
   });
 });

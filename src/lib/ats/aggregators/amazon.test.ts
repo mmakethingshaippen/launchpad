@@ -56,6 +56,46 @@ describe('Amazon public JSON connector', () => {
     });
   });
 
+  it('preserves international physical locations and never defaults them to Remote (Req 2)', async () => {
+    const payload = {
+      jobs: [
+        {
+          id: '201',
+          title: 'Operations Intern',
+          company_name: 'Amazon Spain Fulfillment, S.L.U.',
+          city: 'San Fernando De Henares',
+          state: '',
+          country_code: 'ESP',
+          location: 'ES, San Fernando De Henares',
+          job_path: '/en/jobs/201/ops-intern',
+          is_intern: true,
+        },
+        {
+          id: '202',
+          title: 'Finance Intern',
+          company_name: 'Amazon',
+          city: 'Betim',
+          state: 'MG',
+          country_code: 'BRA',
+          location: 'BR, MG, Betim',
+          job_path: '/en/jobs/202/fin-intern',
+          is_intern: true,
+        },
+      ],
+    };
+    const client = createAmazonClient(pageFetch({ 0: payload }));
+    const out = await client.fetchEarlyCareer();
+    expect(out).toHaveLength(2);
+    const madrid = out.find((o) => o.externalJobId === 'amazon-201')!;
+    expect(madrid.city).toBe('San Fernando De Henares');
+    expect(madrid.country).toBe('ESP');
+    expect(madrid.workArrangement).toBeUndefined(); // NOT forced to Remote
+    const betim = out.find((o) => o.externalJobId === 'amazon-202')!;
+    expect(betim.city).toBe('Betim');
+    expect(betim.state).toBe('MG');
+    expect(betim.workArrangement).toBeUndefined();
+  });
+
   it('pages through results and dedupes by id', async () => {
     const mkJobs = (ids: number[]) => ({
       jobs: ids.map((i) => ({

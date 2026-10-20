@@ -23,6 +23,12 @@ export interface SyncableCompany {
   hqCity?: string | null;
   hqState?: string | null;
   hqCountry?: string | null;
+  /**
+   * When true, only Internship / Co-op roles are ingested for this company
+   * (Req 6 — Google/Amazon/Tesla/SpaceX are internship-only). Entry-level /
+   * New-grad and full-time postings are dropped.
+   */
+  internshipOnly?: boolean;
 }
 
 export interface UpsertRoleData extends EnrichedPosting {
@@ -121,6 +127,13 @@ export async function syncCompany(
       .map((r) => client.toNormalized(r))
       .filter((p): p is NonNullable<typeof p> => p !== null);
     candidates = selectCandidates(normalized, now);
+    // Req 6 — internship-only employers (Google/Amazon/Tesla/SpaceX): drop any
+    // Entry-level / New-grad (or otherwise non-intern/co-op) candidates.
+    if (company.internshipOnly) {
+      candidates = candidates.filter(
+        (c) => c.opportunityType === 'Internship' || c.opportunityType === 'Co-op',
+      );
+    }
   } catch (err) {
     result.errors.push(err instanceof Error ? err.message : String(err));
     return result; // do not close-missing on a failed fetch (avoids wiping data)

@@ -15,6 +15,7 @@ import type { SeedCompany } from '../../data/seed-companies';
 import type { FieldType } from '../adapter/types';
 import { classifyField } from './classify';
 import { resolveRoleCoords, isRemoteLocation } from './cityCoords';
+import { INTERNSHIP_ONLY_SLUGS } from './companyMatch';
 
 /**
  * A role "city" is only usable as a display location when it names a real place.
@@ -102,6 +103,7 @@ export class SupabaseSink implements SyncSink {
       latitude,
       longitude,
       work_arrangement: data.workArrangement ?? 'Onsite',
+      application_deadline: data.deadline ? data.deadline.slice(0, 10) : null,
       apply_url: data.applyUrl,
       description: data.descriptionHtml,
       pay_min: data.pay?.min ?? null,
@@ -162,7 +164,7 @@ export async function loadSyncableCompanies(
   let q = db
     .from('companies')
     .select(
-      'id,name,ats_provider,ats_board_token,fields,company_locations(city,state,country,latitude,longitude,location_type)',
+      'id,slug,name,ats_provider,ats_board_token,fields,company_locations(city,state,country,latitude,longitude,location_type)',
     )
     .neq('ats_provider', 'none');
   if (slug) q = q.eq('slug', slug);
@@ -188,6 +190,7 @@ export async function loadSyncableCompanies(
       hqCity: (hq?.city as string) ?? null,
       hqState: (hq?.state as string) ?? null,
       hqCountry: (hq?.country as string) ?? null,
+      internshipOnly: INTERNSHIP_ONLY_SLUGS.has(c.slug as string),
     };
   });
 }

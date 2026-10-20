@@ -90,12 +90,15 @@ describe('Browse accessibility', () => {
     expect(screen.queryByRole('dialog', { name: /Filters/i })).not.toBeInTheDocument();
   });
 
-  it('gives season quick-pills an accessible pressed state', async () => {
+  it('exposes the sidebar Season / Term filter as labelled checkboxes', async () => {
     const user = userEvent.setup();
     renderBrowse(adapter);
     await screen.findByText(/matching active opportunities/i);
-    const summer = screen.getByRole('button', { name: 'Summer', pressed: false });
+    // The redundant top pill row was removed; Season/Term now lives in the
+    // sidebar FilterPanel as accessible checkboxes.
+    const summer = screen.getByRole('checkbox', { name: 'Summer' });
+    expect(summer).not.toBeChecked();
     await user.click(summer);
-    expect(screen.getByRole('button', { name: 'Summer', pressed: true })).toBeInTheDocument();
+    expect(screen.getByRole('checkbox', { name: 'Summer' })).toBeChecked();
   });
 });

@@ -14,7 +14,8 @@
     "lint": "tsc --noEmit",
     "sync": "tsx --env-file=.env scripts/sync-ats-jobs.ts",
     "seed": "tsx --env-file=.env scripts/seed.ts",
-    "cleanup": "tsx --env-file=.env scripts/cleanup-roles.ts"
+    "cleanup": "tsx --env-file=.env scripts/cleanup-roles.ts",
+    "test:connector": "tsx scripts/test-connector.ts"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.45.4",

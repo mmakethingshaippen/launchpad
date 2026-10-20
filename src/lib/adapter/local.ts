@@ -97,7 +97,9 @@ export class LocalAdapter implements DataAdapter {
 
   async searchCompanies(filters: RoleFilters): Promise<Paginated<CompanyCard>> {
     await this.ensureSynced();
-    const filtered = filterCompanies(this.data.companyCards(), filters);
+    const filtered = filterCompanies(this.data.companyCards(), filters)
+      // Req 3 — never surface a company with zero active roles.
+      .filter((c) => c.activeRoleCount > 0);
     const sorted = [...filtered].sort((a, b) => b.activeRoleCount - a.activeRoleCount);
     return paginate(sorted, filters.page);
   }
@@ -111,10 +113,13 @@ export class LocalAdapter implements DataAdapter {
   async getStats(): Promise<Stats> {
     await this.ensureSynced();
     const companies = this.data.companyCards();
+    const markers = await this.getMapMarkers(DEFAULT_FILTERS);
     return {
-      companies: companies.length,
+      // Only companies with ≥1 active role are publicly visible (Req 3).
+      companies: companies.filter((c) => c.activeRoleCount > 0).length,
       activeRoles: this.data.publicRoleCards().length,
       startups: companies.filter((c) => c.companyType === 'Startup').length,
+      cities: new Set(markers.map((m) => m.id)).size,
     };
   }
 

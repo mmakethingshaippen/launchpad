@@ -21,10 +21,13 @@ export function CompanyCard({ company }: { company: CompanyCardData }) {
       </div>
 
       <div className="mt-3 flex flex-wrap gap-1.5">
-        <Badge tone={company.companyType === 'Startup' ? 'cyan' : 'muted'}>{company.companyType}</Badge>
-        {company.startupStage && company.startupStage !== 'Unknown / Not disclosed' && (
-          <Badge tone="muted">{company.startupStage}</Badge>
-        )}
+        {company.fields
+          .filter((f) => f && f !== 'Other')
+          .map((f) => (
+            <Badge key={f} tone="cyan">
+              {f}
+            </Badge>
+          ))}
         {company.employeeCountRange && <Badge tone="muted">{company.employeeCountRange} employees</Badge>}
       </div>
 

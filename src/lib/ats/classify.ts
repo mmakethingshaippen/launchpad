@@ -18,8 +18,8 @@ import type { FieldType, DegreeLevel, OpportunityType } from '../adapter/types';
 // gate every connector funnels through.
 // ─────────────────────────────────────────────────────────────────────────────
 
-/** Explicit intern/co-op signal — the only thing that can override A1/A2. */
-export const EXPLICIT_INTERN_RE = /\b(intern|interns|internship|internships|co-?op)\b/i;
+/** Explicit intern/co-op/fellowship signal — the only thing that overrides A1/A2. */
+export const EXPLICIT_INTERN_RE = /\b(intern|interns|internship|internships|co-?op|fellow|fellows|fellowship)\b/i;
 
 /**
  * Rule A1 — hard seniority / leadership blocklist. Any match rejects the title
@@ -31,7 +31,7 @@ export const EXPLICIT_INTERN_RE = /\b(intern|interns|internship|internships|co-?
  * clip real words ("video", "medical", etc.).
  */
 export const SENIOR_RE =
-  /\b(vice president|avp|vp|svp|evp|director|executive|chief|head of|head|principal|staff|sr\.?|senior|lead|manager|management|architect|fellow|partner|counsel|md|managing director|ii|iii|iv|v)\b/i;
+  /\b(vice president|avp|vp|svp|evp|director|executive|chief|head of|head|principal|staff|sr\.?|senior|lead|manager|management|architect|partner|counsel|md|managing director|ii|iii|iv|v)\b/i;
 
 /**
  * The subset of A1 tokens that can NEVER be rescued by an intern keyword. This
@@ -51,7 +51,7 @@ export const RECRUITER_RE =
 
 /** Rule B — positive internship / co-op patterns. */
 export const INTERNSHIP_TITLE_RE =
-  /\b(intern|interns|internship|internships|co-?op|summer analyst|winter analyst|spring analyst|fall analyst|extern|externship|apprentice|apprenticeship|fellowship|undergraduate intern|phd intern|mba intern)\b/i;
+  /\b(intern|interns|internship|internships|co-?op|summer analyst|winter analyst|spring analyst|fall analyst|extern|externship|apprentice|apprenticeship|fellow|fellows|fellowship|undergraduate intern|phd intern|mba intern)\b/i;
 
 /**
  * Rule B — positive entry-level / new-grad patterns.

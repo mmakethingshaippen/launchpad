@@ -93,4 +93,41 @@ describe('buildMapMarkers', () => {
     expect(m.city).toBe('Santa Clara');
     expect(m.label).not.toBe('HQ');
   });
+
+  // Req 1 — international roles must be geocoded and plotted (not clipped).
+  it('plots international roles (London, Toronto, Paris, Tokyo, Sydney)', () => {
+    const intl: Array<[string, string]> = [
+      ['London', 'London'],
+      ['Toronto', 'Toronto'],
+      ['Paris', 'Paris'],
+      ['Tokyo', 'Tokyo'],
+      ['Sydney', 'Sydney'],
+    ];
+    const markers = buildMapMarkers(
+      intl.map(([id, loc]) => role({ id, locationString: loc, companyId: id })),
+    );
+    for (const [, loc] of intl) {
+      expect(markers.some((m) => m.label.startsWith(loc)), loc).toBe(true);
+    }
+    // Sydney is in the southern hemisphere → negative latitude, proving no
+    // North-American bounding-box clipping.
+    const sydney = markers.find((m) => m.label.startsWith('Sydney'))!;
+    expect(sydney.latitude).toBeLessThan(0);
+  });
+
+  // Req 1 — stable marker identity underpins the cluster remount key, so pins
+  // don't vanish on pan/zoom (the key only changes when the data truly changes).
+  it('produces stable, deterministic marker ids across repeated builds', () => {
+    const inputs = [
+      role({ id: 'a', locationString: 'London', companyId: 'c1' }),
+      role({ id: 'b', locationString: 'Tokyo', companyId: 'c2' }),
+      role({ id: 'c', locationString: 'Austin, Texas', companyId: 'c3' }),
+    ];
+    const first = buildMapMarkers(inputs).map((m) => m.id).sort();
+    const second = buildMapMarkers(inputs).map((m) => m.id).sort();
+    expect(second).toEqual(first);
+    const key = (ms: { id: string; roleCount: number }[]) =>
+      ms.map((m) => `${m.id}#${m.roleCount}`).sort().join('|');
+    expect(key(buildMapMarkers(inputs))).toBe(key(buildMapMarkers(inputs)));
+  });
 });

@@ -96,7 +96,10 @@ describe('LocalAdapter', () => {
 
   it('derives live stats from the store', async () => {
     const stats = await adapter.getStats();
-    expect(stats).toEqual({ companies: 2, activeRoles: 2, startups: 1 });
+    // StartupCo's remote intern falls back to its Austin HQ coords; BigCo's
+    // analyst resolves to the Austin city-center — slightly different coords →
+    // 2 distinct map buckets (cities).
+    expect(stats).toEqual({ companies: 2, activeRoles: 2, startups: 1, cities: 2 });
   });
 
   it('getCompany returns the profile with its active roles', async () => {
@@ -122,5 +125,47 @@ describe('LocalAdapter', () => {
     const saved = await adapter.listSaved();
     expect(saved).toHaveLength(1);
     expect(saved[0].role?.id).toBe(roleId);
+  });
+});
+
+describe('LocalAdapter — zero-role companies are hidden (Req 3)', () => {
+  // EmptyCo has an ATS token that returns no jobs → 0 active roles.
+  const SEED_WITH_EMPTY: SeedCompany[] = [
+    ...SEED,
+    {
+      slug: 'emptyco',
+      name: 'EmptyCo',
+      websiteUrl: 'https://emptyco.test',
+      careersUrl: 'https://emptyco.test/careers',
+      description: 'No open roles right now.',
+      fields: ['Technology'],
+      companyType: 'Established Company',
+      employeeCountRange: '501+',
+      degreeLevels: ['Undergraduate'],
+      atsProvider: 'greenhouse',
+      atsBoardToken: 'emptyco',
+      locations: [{ city: 'Denver', state: 'CO', country: 'USA', latitude: 39.7392, longitude: -104.9903 }],
+    },
+  ];
+
+  const emptyAwareFetch: FetchLike = async (url) => {
+    if (url.includes('/emptyco/')) return { ok: true, status: 200, json: async () => ({ jobs: [] }) };
+    const payload = url.includes('/startupco/')
+      ? { jobs: [ghJob(1, 'Summer 2027 Software Intern', true)] }
+      : { jobs: [ghJob(2, 'New Grad Financial Analyst')] };
+    return { ok: true, status: 200, json: async () => payload };
+  };
+
+  it('never surfaces a company with 0 active roles in searchCompanies', async () => {
+    const adapter = new LocalAdapter(new LocalStore(SEED_WITH_EMPTY));
+    await adapter.ensureSynced(emptyAwareFetch as unknown as typeof fetch);
+    const res = await adapter.searchCompanies(DEFAULT_FILTERS);
+    const names = res.items.map((c) => c.name);
+    expect(names).toContain('StartupCo');
+    expect(names).toContain('BigCo');
+    expect(names).not.toContain('EmptyCo'); // hidden — no active roles
+    // But the company still exists in the backend (directly addressable).
+    const profile = await adapter.getCompany('emptyco');
+    expect(profile?.name).toBe('EmptyCo');
   });
 });

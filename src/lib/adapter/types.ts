@@ -246,7 +246,10 @@ export interface CompanyDetailView extends CompanyCard {
 export interface Stats {
   companies: number;
   activeRoles: number;
+  /** @deprecated retained for back-compat; UI now shows `cities` instead. */
   startups: number;
+  /** Distinct cities / hubs plotted on the map (Req 8). */
+  cities: number;
 }
 
 export interface FeaturedBlocks {

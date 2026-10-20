@@ -77,3 +77,50 @@ export function roleConcluded(
   if (specific.length === 0) return false;
   return specific.every((s) => isConcluded(s, year, now));
 }
+
+/**
+ * Title-level expired-term guard (Req 7.2).
+ *
+ * Many ATS boards leave postings up well past their cohort. This parses the job
+ * TITLE (and optional extra text like season tags) for an explicit term + year
+ * and rejects anything targeting an already-completed term or a past year
+ * relative to `now`.
+ *
+ * Rules:
+ *   - Any 4-digit year strictly before the current UTC year ⇒ expired
+ *     (e.g. "2024", "2025" when now is 2026).
+ *   - A "<Season> <Year>" phrase whose cohort cutoff is already past ⇒ expired
+ *     (e.g. "Summer 2026" / "Fall 2026" when now is Oct 2026, since those
+ *     cutoffs — Aug 31 / Dec 15 — are relative to the stated year). "Fall 2026"
+ *     stays alive until Dec 15 2026; "Summer 2026" is expired after Aug 31.
+ *   - Current-year terms whose cutoff is still ahead, future years, and titles
+ *     with no explicit past term are allowed.
+ *
+ * Returns true when the title should be REJECTED as expired.
+ */
+export function isExpiredTerm(title: string, now: Date = new Date()): boolean {
+  if (!title) return false;
+  const text = title.toLowerCase();
+  const currentYear = now.getUTCFullYear();
+
+  // 1) Any explicit year strictly before the current year → expired.
+  const years = [...text.matchAll(/\b(20[2-9]\d)\b/g)].map((m) => Number(m[1]));
+  if (years.length > 0 && years.every((y) => y < currentYear)) return true;
+
+  // 2) Explicit "<season> <year>" phrases: expired when that specific cohort's
+  //    cutoff is already in the past.
+  const seasonYearRe = /\b(spring|summer|fall|autumn|winter)\s*'?\s*(20[2-9]\d)\b/g;
+  let m: RegExpExecArray | null;
+  let sawSeasonYear = false;
+  let allSeasonYearsConcluded = true;
+  while ((m = seasonYearRe.exec(text)) !== null) {
+    sawSeasonYear = true;
+    const seasonWord = m[1] === 'autumn' ? 'fall' : m[1];
+    const season = (seasonWord[0].toUpperCase() + seasonWord.slice(1)) as SpecificSeason;
+    const yr = Number(m[2]);
+    if (!isConcluded(season, yr, now)) allSeasonYearsConcluded = false;
+  }
+  if (sawSeasonYear && allSeasonYearsConcluded) return true;
+
+  return false;
+}

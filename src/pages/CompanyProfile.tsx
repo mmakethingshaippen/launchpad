@@ -130,7 +130,7 @@ export function CompanyProfile() {
         ) : (
           <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
             {roles.map((r) => (
-              <RoleCard key={r.id} role={r} saved={savedIds.has(r.id)} onToggleSave={toggleSave} inCompanyView />
+              <RoleCard key={r.id} role={r} saved={savedIds.has(r.id)} onToggleSave={toggleSave} />
             ))}
           </div>
         )}

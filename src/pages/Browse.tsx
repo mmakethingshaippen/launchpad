@@ -14,7 +14,7 @@ import { Drawer } from '../components/ui/Drawer';
 import { Button } from '../components/ui/Button';
 import { EmptyState } from '../components/ui/EmptyState';
 import { LoadingBlock } from '../components/ui/Spinner';
-import { SPECIFIC_SEASONS } from '../lib/adapter/types';
+import { interleaveByCompany } from '../lib/roleQuery';
 import type { SortKey } from '../lib/filters';
 
 const SORT_OPTIONS: Array<{ value: SortKey; label: string }> = [
@@ -25,11 +25,9 @@ const SORT_OPTIONS: Array<{ value: SortKey; label: string }> = [
   { value: 'relevance', label: 'Relevance' },
 ];
 
-const QUICK_SEASONS = [...SPECIFIC_SEASONS, 'Year-Round'] as const;
-
 export function Browse() {
   const adapter = useAdapter();
-  const { filters, activeCount, setFilters, toggleSeason, clearAll } = useRoleFilters();
+  const { filters, activeCount, setFilters, clearAll } = useRoleFilters();
   const { savedIds, toggleSave } = useSaved();
   const [drawerOpen, setDrawerOpen] = useState(false);
 
@@ -65,26 +63,6 @@ export function Browse() {
         <title>Browse opportunities — Launchpad</title>
         <meta name="description" content="Filter live internships and early-career roles by season, field, location, and more." />
       </Helmet>
-
-      {/* Season quick pills */}
-      <div className="mb-4 flex flex-wrap items-center gap-2" role="group" aria-label="Quick season filter">
-        {QUICK_SEASONS.map((s) => {
-          const active = filters.seasons.includes(s);
-          return (
-            <button
-              key={s}
-              onClick={() => toggleSeason(s)}
-              aria-pressed={active}
-              className={
-                'rounded-full px-3 py-1 text-sm font-medium transition-colors ' +
-                (active ? 'bg-cyan text-navy' : 'bg-white text-slate-600 ring-1 ring-slate-200 hover:ring-cyan')
-              }
-            >
-              {s}
-            </button>
-          );
-        })}
-      </div>
 
       <div className="flex gap-6">
         {/* Sidebar (desktop) */}
@@ -171,7 +149,10 @@ export function Browse() {
                 </div>
               ) : (
                 <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-3">
-                  {roleQuery.data!.items.map((r) => (
+                  {(filters.sort === 'verified'
+                    ? interleaveByCompany(roleQuery.data!.items)
+                    : roleQuery.data!.items
+                  ).map((r) => (
                     <RoleCard key={r.id} role={r} saved={savedIds.has(r.id)} onToggleSave={toggleSave} />
                   ))}
                 </div>

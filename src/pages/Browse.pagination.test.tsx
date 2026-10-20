@@ -79,7 +79,7 @@ function makeFakeAdapter(): DataAdapter {
     searchCompanies: async (f) => page(ALL_COMPANIES, f),
     getRole: async () => null,
     getCompany: async () => null,
-    getStats: async () => ({ companies: 0, activeRoles: 0, startups: 0 }),
+    getStats: async () => ({ companies: 0, activeRoles: 0, startups: 0, cities: 0 }),
     getFeatured: async () => ({
       featuredCompanies: [],
       startupOpportunities: [],
@@ -150,7 +150,7 @@ describe('Browse pagination (>1,000 roles)', () => {
     await screen.findByText('Software Engineering Intern #42'); // page 3 → items 42+
     expect(screen.getByTestId('pagination-summary')).toHaveTextContent('Showing 43–63 of 1,592');
 
-    await user.click(screen.getByRole('button', { name: 'Summer', pressed: false }));
+    await user.click(screen.getByRole('checkbox', { name: 'Summer' }));
     // Back to page 1 after the filter change.
     expect(await screen.findByText('Software Engineering Intern #0')).toBeInTheDocument();
     expect(screen.getByTestId('pagination-summary')).toHaveTextContent('Showing 1–21 of 1,592');

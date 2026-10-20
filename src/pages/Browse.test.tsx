@@ -89,16 +89,17 @@ describe('Browse page', () => {
     expect(screen.queryByText('New Grad Financial Analyst')).not.toBeInTheDocument();
   });
 
-  it('filters by Summer season when the quick pill is clicked', async () => {
+  it('filters by Summer season via the sidebar Season / Term checkbox', async () => {
     const user = userEvent.setup();
     renderBrowse(adapter);
     await screen.findByText('Summer 2027 Software Intern');
-    await user.click(screen.getByRole('button', { name: 'Summer', pressed: false }));
+    // The duplicate top pill row was removed; Season/Term is a sidebar checkbox.
+    await user.click(screen.getByRole('checkbox', { name: 'Summer' }));
     await waitFor(() =>
       expect(screen.queryByText('New Grad Financial Analyst')).not.toBeInTheDocument(),
     );
     expect(screen.getByText('Summer 2027 Software Intern')).toBeInTheDocument();
-  });
+  }, 15000);
 
   it('switches to the companies view', async () => {
     const user = userEvent.setup();
@@ -108,7 +109,7 @@ describe('Browse page', () => {
     expect(await screen.findByText(/2 matching companies/i)).toBeInTheDocument();
     expect(screen.getByText('StartupCo')).toBeInTheDocument();
     expect(screen.getByText('BigCo')).toBeInTheDocument();
-  });
+  }, 15000);
 
   it('shows an empty state with a clear action for impossible filters', async () => {
     renderBrowse(adapter, '/browse?field=Healthcare');

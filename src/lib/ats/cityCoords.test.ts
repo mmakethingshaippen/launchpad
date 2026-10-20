@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { lookupCity, resolveRoleCoords, isRemoteLocation } from './cityCoords';
+import { lookupCity, resolveRoleCoords, isRemoteLocation, normalizeLongitude } from './cityCoords';
 
 describe('lookupCity', () => {
   it('resolves major hubs and tolerates trailing state/country', () => {
@@ -40,5 +40,28 @@ describe('isRemoteLocation', () => {
     expect(isRemoteLocation('Remote - US')).toBe(true);
     expect(isRemoteLocation('Anywhere')).toBe(true);
     expect(isRemoteLocation('New York')).toBe(false);
+  });
+
+  it('does NOT flag physical international locations as remote (Req 2)', () => {
+    expect(isRemoteLocation('Betim, MG, Brazil')).toBe(false);
+    expect(isRemoteLocation('San Fernando De Henares, ESP')).toBe(false);
+    expect(isRemoteLocation('BRA, MG, Betim')).toBe(false);
+    expect(isRemoteLocation('Singapore, SGP')).toBe(false);
+  });
+});
+
+describe('normalizeLongitude (world-wrap fix)', () => {
+  it('leaves in-range longitudes unchanged', () => {
+    expect(normalizeLongitude(0)).toBe(0);
+    expect(normalizeLongitude(-122.4194)).toBeCloseTo(-122.4194, 4);
+    expect(normalizeLongitude(139.6503)).toBeCloseTo(139.6503, 4);
+  });
+
+  it('wraps longitudes beyond ±180 back into [-180,180)', () => {
+    // Panning one world copy left/right shifts longitude by ±360.
+    expect(normalizeLongitude(-122.4194 - 360)).toBeCloseTo(-122.4194, 4);
+    expect(normalizeLongitude(139.6503 + 360)).toBeCloseTo(139.6503, 4);
+    expect(normalizeLongitude(200)).toBeCloseTo(-160, 4);
+    expect(normalizeLongitude(-200)).toBeCloseTo(160, 4);
   });
 });

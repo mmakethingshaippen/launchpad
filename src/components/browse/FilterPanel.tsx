@@ -5,7 +5,6 @@ import {
   FIELDS,
   OPPORTUNITY_TYPES,
   COMPENSATION_STATUSES,
-  STARTUP_STAGES,
   EMPLOYEE_RANGES,
 } from '../../lib/adapter/types';
 
@@ -86,21 +85,6 @@ export function FilterPanel({
       <CheckGroup legend="Degree level" options={DEGREE_LEVELS} selected={filters.degreeLevels} onChange={(degreeLevels) => onChange({ degreeLevels })} />
       <CheckGroup legend="Field" options={FIELDS} selected={filters.fields} onChange={(fields) => onChange({ fields })} />
       <CheckGroup legend="Compensation" options={COMPENSATION_STATUSES} selected={filters.compensation} onChange={(compensation) => onChange({ compensation })} />
-
-      <fieldset className="border-t border-slate-200 py-4">
-        <legend className="mb-2 text-sm font-semibold text-navy">Company type</legend>
-        <select
-          value={filters.companyType}
-          onChange={(e) => onChange({ companyType: e.target.value as RoleFilters['companyType'] })}
-          className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm outline-none focus:border-cyan"
-        >
-          <option value="All">All companies</option>
-          <option value="Startup">Startups</option>
-          <option value="Established Company">Established companies</option>
-        </select>
-      </fieldset>
-
-      <CheckGroup legend="Startup stage" options={STARTUP_STAGES} selected={filters.startupStages} onChange={(startupStages) => onChange({ startupStages })} />
       <CheckGroup legend="Company size" options={EMPLOYEE_RANGES} selected={filters.employeeRanges} onChange={(employeeRanges) => onChange({ employeeRanges })} />
     </div>
   );

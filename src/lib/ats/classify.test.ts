@@ -64,6 +64,24 @@ describe('isEarlyCareerTitle — strict title gate', () => {
     }
   });
 
+  // Req 2 — fellowship roles (e.g. Anthropic Fellows Program) must pass the gate.
+  it('accepts fellowship roles (not blocked by the seniority list)', () => {
+    for (const title of [
+      'Anthropic Fellows Program, AI Safety & Security',
+      'Anthropic STEM Fellow',
+      'Conceptual Reasoning Fellow',
+      'AI Research Fellowship',
+      'Engineering Fellowship',
+    ]) {
+      expect(isEarlyCareerTitle(title), title).toBe(true);
+    }
+  });
+
+  it('still rejects a senior fellow (hard seniority token wins)', () => {
+    expect(isEarlyCareerTitle('Senior Research Fellow')).toBe(false);
+    expect(isEarlyCareerTitle('VP, Distinguished Fellow')).toBe(false);
+  });
+
   // ── The reported false positives (must all be REJECTED) ──────────────────
   it('rejects senior / executive / VP / director titles (Rule A1)', () => {
     for (const title of [

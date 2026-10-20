@@ -22,7 +22,9 @@ import type {
   ReportInput,
 } from './types';
 import type { RoleFilters } from '../filters';
+import { DEFAULT_FILTERS } from '../filters';
 import { getSupabaseClient } from '../supabaseClient';
+import { interleaveByCompany } from '../roleQuery';
 import { buildRolePlan, PAGE_SIZE } from './supabaseQuery';
 import { buildMapMarkers, type MapRoleInput } from './mapMarkers';
 import {
@@ -56,31 +58,50 @@ export class SupabaseAdapter implements DataAdapter {
 
   async searchRoles(filters: RoleFilters): Promise<Paginated<RoleCard>> {
     const plan = buildRolePlan(filters);
-    let q = this.db.from('public_roles').select(ROLE_SELECT_WITH_COMPANY, { count: 'exact' });
+    const pageSize = plan.range.to - plan.range.from + 1;
 
-    for (const op of plan.filters) {
-      if (op.type === 'eq') q = q.eq(op.column, op.value);
-      else if (op.type === 'overlaps') q = q.overlaps(op.column, op.values);
-      else if (op.type === 'in') q = q.in(op.column, op.values);
-      else if (op.type === 'ilike') q = q.ilike(op.column, op.value);
+    const build = () => {
+      let q = this.db.from('public_roles').select(ROLE_SELECT_WITH_COMPANY, { count: 'exact' });
+      for (const op of plan.filters) {
+        if (op.type === 'eq') q = q.eq(op.column, op.value);
+        else if (op.type === 'overlaps') q = q.overlaps(op.column, op.values);
+        else if (op.type === 'in') q = q.in(op.column, op.values);
+        else if (op.type === 'ilike') q = q.ilike(op.column, op.value);
+      }
+      if (plan.textSearch) q = q.textSearch('search_tsv', plan.textSearch, { type: 'websearch' });
+      if (filters.companyType !== 'All') q = q.eq('companies.company_type', filters.companyType);
+      q = q.order(plan.order.column, {
+        ascending: plan.order.ascending,
+        nullsFirst: plan.order.nullsFirst,
+      });
+      return q;
+    };
+
+    // Default "verified" sort (Req 9.2): over-fetch a window ordered by
+    // last_verified_at, round-robin interleave by company so a single batch
+    // (e.g. Autodesk) can't monopolize page 1, then slice the requested page.
+    if (filters.sort === 'verified') {
+      const WINDOW = 600;
+      const { data, count, error } = await build().range(0, WINDOW - 1);
+      if (error) throw error;
+      const all = (data ?? []).map((r) => mapRoleCard(r as never));
+      const diversified = interleaveByCompany(all);
+      const start = (filters.page - 1) * pageSize;
+      return {
+        items: diversified.slice(start, start + pageSize),
+        total: count ?? 0,
+        page: filters.page,
+        pageSize,
+      };
     }
-    if (plan.textSearch) q = q.textSearch('search_tsv', plan.textSearch, { type: 'websearch' });
-    if (filters.companyType !== 'All')
-      q = q.eq('companies.company_type', filters.companyType);
 
-    q = q.order(plan.order.column, {
-      ascending: plan.order.ascending,
-      nullsFirst: plan.order.nullsFirst,
-    });
-    q = q.range(plan.range.from, plan.range.to);
-
-    const { data, count, error } = await q;
+    const { data, count, error } = await build().range(plan.range.from, plan.range.to);
     if (error) throw error;
     return {
       items: (data ?? []).map((r) => mapRoleCard(r as never)),
       total: count ?? 0,
       page: filters.page,
-      pageSize: plan.range.to - plan.range.from + 1,
+      pageSize,
     };
   }
 
@@ -97,13 +118,22 @@ export class SupabaseAdapter implements DataAdapter {
   }
 
   async searchCompanies(filters: RoleFilters): Promise<Paginated<CompanyCard>> {
-    let q = this.db.from('companies').select(`${COMPANY_SELECT}`, { count: 'exact' }).eq(
-      'moderation_status',
-      'Approved',
-    );
+    // Req 3 — only surface companies that currently have ≥1 active role. Build
+    // the set of eligible company_ids + per-company counts from public_roles
+    // first, then restrict the companies query to those ids.
+    const activeCountByCompany = await this.activeRoleCountsByCompany();
+    const eligibleIds = [...activeCountByCompany.keys()];
+    if (eligibleIds.length === 0) {
+      return { items: [], total: 0, page: filters.page, pageSize: PAGE_SIZE };
+    }
+
+    let q = this.db
+      .from('companies')
+      .select(`${COMPANY_SELECT}`, { count: 'exact' })
+      .eq('moderation_status', 'Approved')
+      .in('id', eligibleIds);
     if (filters.companyType !== 'All') q = q.eq('company_type', filters.companyType);
     if (filters.fields.length) q = q.overlaps('fields', filters.fields);
-    if (filters.startupStages.length) q = q.in('startup_stage', filters.startupStages);
     if (filters.employeeRanges.length) q = q.in('employee_count_range', filters.employeeRanges);
     if (filters.keyword) q = q.ilike('name', `%${filters.keyword}%`);
 
@@ -113,18 +143,31 @@ export class SupabaseAdapter implements DataAdapter {
     const { data, count, error } = await q;
     if (error) throw error;
 
-    // Active role counts via the eligibility view.
     const rows = (data ?? []) as Array<{ id: string }>;
-    const cards = await Promise.all(
-      rows.map(async (c) => {
-        const { count: rc } = await this.db
-          .from('public_roles')
-          .select('id', { count: 'exact', head: true })
-          .eq('company_id', c.id);
-        return mapCompanyCard(c as never, rc ?? 0);
-      }),
-    );
+    const cards = rows.map((c) => mapCompanyCard(c as never, activeCountByCompany.get(c.id) ?? 0));
     return { items: cards, total: count ?? 0, page: filters.page, pageSize: PAGE_SIZE };
+  }
+
+  /**
+   * Map of company_id → active role count, built from the public_roles view
+   * (which already enforces approved + active + non-expired deadline). Only
+   * companies with ≥1 active role appear as keys. Pages through the view so the
+   * 1,000-row PostgREST cap never truncates the counts.
+   */
+  private async activeRoleCountsByCompany(): Promise<Map<string, number>> {
+    const counts = new Map<string, number>();
+    const pageSize = 1000;
+    for (let from = 0; ; from += pageSize) {
+      const { data, error } = await this.db
+        .from('public_roles')
+        .select('company_id')
+        .range(from, from + pageSize - 1);
+      if (error) throw error;
+      const batch = (data ?? []) as Array<{ company_id: string }>;
+      for (const r of batch) counts.set(r.company_id, (counts.get(r.company_id) ?? 0) + 1);
+      if (batch.length < pageSize) break;
+    }
+    return counts;
   }
 
   async getCompany(slug: string): Promise<CompanyDetailView | null> {
@@ -146,22 +189,21 @@ export class SupabaseAdapter implements DataAdapter {
   }
 
   async getStats(): Promise<Stats> {
-    const companies = await this.db
-      .from('companies')
-      .select('id', { count: 'exact', head: true })
-      .eq('moderation_status', 'Approved');
-    const startups = await this.db
-      .from('companies')
-      .select('id', { count: 'exact', head: true })
-      .eq('moderation_status', 'Approved')
-      .eq('company_type', 'Startup');
     const roles = await this.db
       .from('public_roles')
       .select('id', { count: 'exact', head: true });
+
+    // Companies listed = companies with ≥1 active role (empty ones are hidden,
+    // Req 3). Cities & hubs = distinct resolved cities across active roles (Req 8).
+    const activeCountByCompany = await this.activeRoleCountsByCompany();
+    const markers = await this.getMapMarkers(DEFAULT_FILTERS);
+    const cities = new Set(markers.map((m) => m.id)).size;
+
     return {
-      companies: companies.count ?? 0,
+      companies: activeCountByCompany.size,
       activeRoles: roles.count ?? 0,
-      startups: startups.count ?? 0,
+      startups: 0,
+      cities,
     };
   }
 
@@ -185,12 +227,20 @@ export class SupabaseAdapter implements DataAdapter {
       .limit(6);
     const approachingDeadline = (deadlineQ.data ?? []).map((r) => mapRoleCard(r as never));
 
-    const companiesQ = await this.db
-      .from('companies')
-      .select(COMPANY_SELECT)
-      .eq('moderation_status', 'Approved')
-      .limit(6);
-    const featuredCompanies = (companiesQ.data ?? []).map((c) => mapCompanyCard(c as never, 0));
+    // Req 3 — Featured companies must have ≥1 active role (never an empty card).
+    const activeCountByCompany = await this.activeRoleCountsByCompany();
+    const eligibleIds = [...activeCountByCompany.keys()].slice(0, 200);
+    const companiesQ = eligibleIds.length
+      ? await this.db
+          .from('companies')
+          .select(COMPANY_SELECT)
+          .eq('moderation_status', 'Approved')
+          .in('id', eligibleIds)
+          .limit(6)
+      : { data: [] as unknown[] };
+    const featuredCompanies = (companiesQ.data ?? []).map((c) =>
+      mapCompanyCard(c as never, activeCountByCompany.get((c as { id: string }).id) ?? 0),
+    );
 
     return {
       featuredCompanies,

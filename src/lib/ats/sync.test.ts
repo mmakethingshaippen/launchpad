@@ -115,6 +115,37 @@ describe('syncCompany', () => {
     expect(r.imported).toBe(0);
   });
 
+  it('restricts internship-only employers to Internship/Co-op (Req 6)', async () => {
+    const fetchImpl = fetchReturning(
+      ghPayload([
+        { id: 1, title: 'Summer 2027 Software Engineering Intern' },
+        { id: 2, title: 'Fall 2027 Data Co-op' },
+        { id: 3, title: 'New Grad Software Engineer' }, // Entry-level → dropped
+      ]),
+    ) as unknown as typeof fetch;
+
+    const restricted: SyncableCompany = { ...greenhouseCompany, id: 'g', internshipOnly: true };
+    const r = await syncCompany(restricted, sink, { now: NOW, fetchImpl });
+    // Only the intern + co-op survive; the new-grad role is blocked.
+    expect(r.imported).toBe(2);
+    const titles = [...sink.roles.values()].map((v) => v.title);
+    expect(titles).toContain('Summer 2027 Software Engineering Intern');
+    expect(titles).toContain('Fall 2027 Data Co-op');
+    expect(titles).not.toContain('New Grad Software Engineer');
+  });
+
+  it('rejects a posting whose title targets an expired past term (Req 7.2)', async () => {
+    const fetchImpl = fetchReturning(
+      ghPayload([
+        { id: 1, title: 'Summer 2025 Intern' }, // past year → rejected
+        { id: 2, title: 'Summer 2027 Intern' }, // future → kept
+      ]),
+    ) as unknown as typeof fetch;
+    const r = await syncCompany(greenhouseCompany, sink, { now: NOW, fetchImpl });
+    expect(r.imported).toBe(1);
+    expect([...sink.roles.values()][0].title).toBe('Summer 2027 Intern');
+  });
+
   it('does not close-missing when the fetch fails (avoids wiping data)', async () => {
     // seed one role
     const seed = fetchReturning(ghPayload([{ id: 1, title: 'Summer 2027 Intern' }])) as unknown as typeof fetch;

@@ -97,7 +97,9 @@ function CompanyForm() {
       careersUrl: String(fd.get('careersUrl') ?? ''),
       description: String(fd.get('description') ?? ''),
       fields,
-      companyType: String(fd.get('companyType') ?? 'Startup'),
+      // Company-type selection was removed from the form (unified "Companies");
+      // default new submissions to Established Company rather than a startup.
+      companyType: String(fd.get('companyType') ?? 'Established Company'),
       degreeLevels,
       city: String(fd.get('city') ?? ''),
       atsProvider: (String(fd.get('atsProvider') ?? 'none') || 'none') as 'greenhouse' | 'lever' | 'ashby' | 'none',
@@ -160,18 +162,9 @@ function CompanyForm() {
         <Field label="Fields" error={errors.fields}>
           <CheckboxRow options={FIELDS} selected={fields as never} onToggle={(v) => setFields((p) => (p.includes(v) ? p.filter((x) => x !== v) : [...p, v]))} />
         </Field>
-        <div className="grid gap-4 sm:grid-cols-2">
-          <Field label="Company type" error={errors.companyType}>
-            <select name="companyType" className={inputCls} defaultValue="Startup">
-              <option>Startup</option>
-              <option>Established Company</option>
-              <option>Other / Unknown</option>
-            </select>
-          </Field>
-          <Field label="City (HQ)">
-            <input name="city" className={inputCls} />
-          </Field>
-        </div>
+        <Field label="City (HQ)">
+          <input name="city" className={inputCls} />
+        </Field>
         <Field label="Eligibility (degree levels)" error={errors.degreeLevels}>
           <CheckboxRow options={DEGREE_LEVELS} selected={degreeLevels as never} onToggle={(v) => setDegreeLevels((p) => (p.includes(v) ? p.filter((x) => x !== v) : [...p, v]))} />
         </Field>

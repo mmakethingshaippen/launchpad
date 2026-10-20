@@ -2,7 +2,7 @@ import { useState, type FormEvent } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Helmet } from 'react-helmet-async';
 import { useQuery } from '@tanstack/react-query';
-import { Search, MapPin, Rocket, Target, Send, Bookmark } from 'lucide-react';
+import { Search, MapPin, Map as MapIcon, Target, Send, Bookmark } from 'lucide-react';
 import { useAdapter } from '../hooks/useAdapter';
 import { Button } from '../components/ui/Button';
 import { RoleCard } from '../components/cards/RoleCard';
@@ -43,7 +43,7 @@ export function Home() {
         <title>Launchpad — Your career starts somewhere</title>
         <meta
           name="description"
-          content="Discover live internships, co-ops, and early-career opportunities at innovative startups and established companies, all in one place."
+          content="Discover live internships, co-ops, and early-career opportunities at top companies, fast-growing teams, and public institutions, all in one place."
         />
         <meta property="og:title" content="Launchpad — Find your Launchpad" />
       </Helmet>
@@ -55,8 +55,8 @@ export function Home() {
             Your career starts somewhere. Find your <span className="text-cyan">Launchpad</span>.
           </h1>
           <p className="mt-4 text-base text-slate-300 md:text-lg">
-            Discover live internships, co-ops, and early-career opportunities at innovative startups
-            and established companies, all in one place.
+            Discover live internships, co-ops, and early-career opportunities at top companies,
+            fast-growing teams, and public institutions, all in one place.
           </p>
 
           <form onSubmit={submit} className="mt-8 space-y-3 text-left">
@@ -109,9 +109,9 @@ export function Home() {
                 variant="outline"
                 size="lg"
                 className="flex-1 border-white/30 text-white hover:bg-white/10"
-                onClick={() => navigate('/browse?company=Startup')}
+                onClick={() => navigate('/map')}
               >
-                <Rocket className="h-5 w-5" aria-hidden="true" /> Explore Startups
+                <MapIcon className="h-5 w-5" aria-hidden="true" /> Explore Interactive Map
               </Button>
             </div>
           </form>
@@ -123,7 +123,7 @@ export function Home() {
         {[
           { label: 'Companies listed', value: stats.data?.companies },
           { label: 'Active, verified opportunities', value: stats.data?.activeRoles },
-          { label: 'Startups listed', value: stats.data?.startups },
+          { label: 'Cities & hubs mapped', value: stats.data?.cities },
         ].map((s) => (
           <div key={s.label} className="rounded-xl border border-slate-200 bg-white p-6 text-center">
             <p className="text-3xl font-bold text-navy">{s.value ?? '—'}</p>
@@ -161,7 +161,7 @@ export function Home() {
         ) : (
           <div className="space-y-10">
             <FeaturedRoles title="Recently verified internships" roles={featured.data?.recentlyVerified ?? []} />
-            <FeaturedRoles title="Startup opportunities" roles={featured.data?.startupOpportunities ?? []} />
+            <FeaturedRoles title="Upcoming term opportunities" roles={featured.data?.byUpcomingTerm ?? []} />
             <FeaturedCompanies companies={featured.data?.featuredCompanies ?? []} />
           </div>
         )}

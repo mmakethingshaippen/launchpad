@@ -13949,13 +13949,33 @@ function roleConcluded(seasons, year, now = /* @__PURE__ */ new Date()) {
   if (specific.length === 0) return false;
   return specific.every((s) => isConcluded(s, year, now));
 }
+function isExpiredTerm(title, now = /* @__PURE__ */ new Date()) {
+  if (!title) return false;
+  const text = title.toLowerCase();
+  const currentYear = now.getUTCFullYear();
+  const years = [...text.matchAll(/\b(20[2-9]\d)\b/g)].map((m2) => Number(m2[1]));
+  if (years.length > 0 && years.every((y) => y < currentYear)) return true;
+  const seasonYearRe = /\b(spring|summer|fall|autumn|winter)\s*'?\s*(20[2-9]\d)\b/g;
+  let m;
+  let sawSeasonYear = false;
+  let allSeasonYearsConcluded = true;
+  while ((m = seasonYearRe.exec(text)) !== null) {
+    sawSeasonYear = true;
+    const seasonWord = m[1] === "autumn" ? "fall" : m[1];
+    const season = seasonWord[0].toUpperCase() + seasonWord.slice(1);
+    const yr = Number(m[2]);
+    if (!isConcluded(season, yr, now)) allSeasonYearsConcluded = false;
+  }
+  if (sawSeasonYear && allSeasonYearsConcluded) return true;
+  return false;
+}
 
 // src/lib/ats/classify.ts
-var EXPLICIT_INTERN_RE = /\b(intern|interns|internship|internships|co-?op)\b/i;
-var SENIOR_RE = /\b(vice president|avp|vp|svp|evp|director|executive|chief|head of|head|principal|staff|sr\.?|senior|lead|manager|management|architect|fellow|partner|counsel|md|managing director|ii|iii|iv|v)\b/i;
+var EXPLICIT_INTERN_RE = /\b(intern|interns|internship|internships|co-?op|fellow|fellows|fellowship)\b/i;
+var SENIOR_RE = /\b(vice president|avp|vp|svp|evp|director|executive|chief|head of|head|principal|staff|sr\.?|senior|lead|manager|management|architect|partner|counsel|md|managing director|ii|iii|iv|v)\b/i;
 var SENIORITY_HARD_RE = /\b(vice president|avp|vp|svp|evp|director|chief|head of|head|senior|sr\.?|principal|staff|managing director|md)\b/i;
 var RECRUITER_RE = /\b(recruiter|recruiting|recruitment|talent acquisition|sourcer|talent partner|people partner|hrbp|program manager|coordinator)\b/i;
-var INTERNSHIP_TITLE_RE = /\b(intern|interns|internship|internships|co-?op|summer analyst|winter analyst|spring analyst|fall analyst|extern|externship|apprentice|apprenticeship|fellowship|undergraduate intern|phd intern|mba intern)\b/i;
+var INTERNSHIP_TITLE_RE = /\b(intern|interns|internship|internships|co-?op|summer analyst|winter analyst|spring analyst|fall analyst|extern|externship|apprentice|apprenticeship|fellow|fellows|fellowship|undergraduate intern|phd intern|mba intern)\b/i;
 var NEWGRAD_TITLE_RE = /\b(new grad|new graduate|recent grad|early career|entry[- ]level|university grad|graduate engineer|graduate analyst|graduate software|rotational program|rotational|leadership development program|ldp|analyst development program)\b/i;
 function matchEarlyCareerType(title) {
   if (!title) return null;
@@ -14084,6 +14104,13 @@ function isValidHttpUrl(url) {
 }
 
 // src/lib/ats/normalize.ts
+function isDeadlinePassed(deadline, now = /* @__PURE__ */ new Date()) {
+  if (!deadline) return false;
+  const today = now.toISOString().slice(0, 10);
+  const d = deadline.slice(0, 10);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(d)) return false;
+  return d < today;
+}
 function enrich(p) {
   const text = `${p.title} ${p.descriptionHtml}`;
   const opportunityType = classifyOpportunityType(p.title, p.employmentTypeRaw);
@@ -14098,7 +14125,7 @@ function enrich(p) {
   };
 }
 function selectCandidates(postings, now = /* @__PURE__ */ new Date()) {
-  return postings.filter(isEarlyCareer).map(enrich).filter((p) => !roleConcluded(p.seasons, p.cohortYear, now)).filter((p) => isValidHttpUrl(p.applyUrl));
+  return postings.filter(isEarlyCareer).map(enrich).filter((p) => !roleConcluded(p.seasons, p.cohortYear, now)).filter((p) => !isDeadlinePassed(p.deadline, now)).filter((p) => !isExpiredTerm(p.title, now)).filter((p) => isValidHttpUrl(p.applyUrl));
 }
 
 // src/lib/ats/providers/greenhouse.ts
@@ -14434,6 +14461,11 @@ async function syncCompany(company, sink, options = {}) {
     const raw = await client.fetchPostings(company.atsBoardToken, signal);
     const normalized = raw.map((r) => client.toNormalized(r)).filter((p) => p !== null);
     candidates = selectCandidates(normalized, now);
+    if (company.internshipOnly) {
+      candidates = candidates.filter(
+        (c) => c.opportunityType === "Internship" || c.opportunityType === "Co-op"
+      );
+    }
   } catch (err) {
     result.errors.push(err instanceof Error ? err.message : String(err));
     return result;
@@ -22993,6 +23025,9 @@ function resolveRoleCoords(location2) {
   return { latitude: first.latitude, longitude: first.longitude, city: first.city ?? first.label };
 }
 
+// src/lib/ats/companyMatch.ts
+var INTERNSHIP_ONLY_SLUGS = /* @__PURE__ */ new Set(["google", "amazon", "tesla", "spacex"]);
+
 // src/lib/ats/supabaseSink.ts
 function isUsableCity(city) {
   if (!city) return false;
@@ -23062,6 +23097,7 @@ var SupabaseSink = class {
       latitude,
       longitude,
       work_arrangement: data.workArrangement ?? "Onsite",
+      application_deadline: data.deadline ? data.deadline.slice(0, 10) : null,
       apply_url: data.applyUrl,
       description: data.descriptionHtml,
       pay_min: data.pay?.min ?? null,
@@ -23099,7 +23135,7 @@ var SupabaseSink = class {
 };
 async function loadSyncableCompanies(db, slug) {
   let q = db.from("companies").select(
-    "id,name,ats_provider,ats_board_token,fields,company_locations(city,state,country,latitude,longitude,location_type)"
+    "id,slug,name,ats_provider,ats_board_token,fields,company_locations(city,state,country,latitude,longitude,location_type)"
   ).neq("ats_provider", "none");
   if (slug) q = q.eq("slug", slug);
   const { data, error } = await q;
@@ -23118,7 +23154,8 @@ async function loadSyncableCompanies(db, slug) {
       hqLongitude: hq?.longitude ?? null,
       hqCity: hq?.city ?? null,
       hqState: hq?.state ?? null,
-      hqCountry: hq?.country ?? null
+      hqCountry: hq?.country ?? null,
+      internshipOnly: INTERNSHIP_ONLY_SLUGS.has(c.slug)
     };
   });
 }

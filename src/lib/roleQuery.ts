@@ -54,6 +54,39 @@ const SEASON_ORDER: Record<Season, number> = {
   'Year-Round': 4,
 };
 
+/**
+ * Round-robin interleave roles by company (Req 9.2) so a single employer synced
+ * in one batch can't monopolize the top of the "verified" feed. Stable: the
+ * incoming order within each company is preserved.
+ */
+export function interleaveByCompany<T extends { companySlug?: string; companyName: string }>(
+  roles: T[],
+): T[] {
+  const buckets = new Map<string, T[]>();
+  const order: string[] = [];
+  for (const r of roles) {
+    const key = r.companySlug || r.companyName;
+    if (!buckets.has(key)) {
+      buckets.set(key, []);
+      order.push(key);
+    }
+    buckets.get(key)!.push(r);
+  }
+  const out: T[] = [];
+  let placed = true;
+  while (placed) {
+    placed = false;
+    for (const key of order) {
+      const bucket = buckets.get(key)!;
+      if (bucket.length) {
+        out.push(bucket.shift()!);
+        placed = true;
+      }
+    }
+  }
+  return out;
+}
+
 function relevanceScore(role: RoleCard, keyword: string): number {
   const q = keyword.toLowerCase();
   let score = 0;
@@ -84,12 +117,15 @@ export function sortRoles(roles: RoleCard[], sort: SortKey, keyword = ''): RoleC
     case 'relevance':
       return copy.sort((a, b) => relevanceScore(b, keyword) - relevanceScore(a, keyword));
     case 'verified':
-    default:
-      return copy.sort((a, b) => {
+    default: {
+      const byVerified = copy.sort((a, b) => {
         const t = time(b.lastVerifiedAt) - time(a.lastVerifiedAt);
         if (t !== 0) return t;
         return SEASON_ORDER[a.seasons[0]] - SEASON_ORDER[b.seasons[0]];
       });
+      // Diversify by company so one employer's batch doesn't fill the page.
+      return interleaveByCompany(byVerified);
+    }
   }
 }
 

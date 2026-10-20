@@ -1670,6 +1670,22 @@ export const SEED_COMPANIES: SeedCompany[] = [
     degreeLevels: ['Undergraduate', 'New Grad'], atsProvider: 'workday', atsBoardToken: 'tmobile.wd1.myworkdayjobs.com|tmobile|External',
     locations: [{ city: 'Bellevue', state: 'WA', country: 'USA', latitude: 47.6101, longitude: -122.2015 }],
   },
+  {
+    slug: 'applied-materials',
+    name: 'Applied Materials',
+    websiteUrl: 'https://www.appliedmaterials.com',
+    careersUrl: 'https://amat.wd1.myworkdayjobs.com/External',
+    description:
+      'The leading supplier of materials-engineering equipment for the semiconductor, display, and related industries.',
+    fields: ['Engineering', 'Technology'],
+    companyType: 'Established Company',
+    employeeCountRange: '501+',
+    foundingYear: 1967,
+    degreeLevels: ['Undergraduate', 'Graduate', 'New Grad'],
+    atsProvider: 'workday',
+    atsBoardToken: 'amat.wd1.myworkdayjobs.com|amat|External',
+    locations: [{ city: 'Santa Clara', state: 'CA', country: 'USA', latitude: 37.3688, longitude: -121.9721 }],
+  },
 
   // ── Major employers ingested via structured aggregator feeds (Amazon public
   //    JSON, SimplifyJobs GitHub JSON, targeted Adzuna) rather than a public ATS
@@ -1754,6 +1770,27 @@ export const SEED_COMPANIES: SeedCompany[] = [
     atsBoardToken: null,
     locations: [{ city: 'Sacramento', state: 'CA', country: 'USA', latitude: 38.5816, longitude: -121.4944 }],
   },
+  {
+    // Ross Stores uses a custom Phenom careers portal (no public structured JSON
+    // board), so we seed the official profile only. Its early-career roles are
+    // ingested via the structured aggregator channels (which carry a real,
+    // working apply URL) and attach here by name; the zero-active-role rule
+    // keeps the profile hidden from public lists until a live cohort appears.
+    slug: 'ross-stores',
+    name: 'Ross Stores',
+    websiteUrl: 'https://www.rossstores.com',
+    careersUrl: 'https://jobs.rossstores.com/',
+    description:
+      'An off-price apparel and home-fashion retailer operating Ross Dress for Less and dd’s DISCOUNTS stores across the United States.',
+    fields: ['Business'],
+    companyType: 'Established Company',
+    employeeCountRange: '501+',
+    foundingYear: 1982,
+    degreeLevels: ['Undergraduate', 'New Grad'],
+    atsProvider: 'none',
+    atsBoardToken: null,
+    locations: [{ city: 'Dublin', state: 'CA', country: 'USA', latitude: 37.7021, longitude: -121.9358 }],
+  },
 
   // ── State government portals. No open structured JSON exists for these
   //    NEOGOV/custom portals, so we seed the official profile (HQ pin + careers
@@ -1768,7 +1805,7 @@ export const SEED_COMPANIES: SeedCompany[] = [
     description:
       'The U.S. state of California government — its CalCareers portal lists civil-service jobs, student assistant roles, and internships across state departments.',
     fields: ['Business', 'Technology', 'Healthcare'],
-    companyType: 'Other / Unknown',
+    companyType: 'Established Company',
     employeeCountRange: '501+',
     degreeLevels: ['Undergraduate', 'Graduate', 'New Grad'],
     atsProvider: 'none',
@@ -1783,7 +1820,7 @@ export const SEED_COMPANIES: SeedCompany[] = [
     description:
       'The U.S. state of New York government — the StateJobsNY portal lists civil-service positions and student/intern opportunities across state agencies.',
     fields: ['Business', 'Technology', 'Healthcare'],
-    companyType: 'Other / Unknown',
+    companyType: 'Established Company',
     employeeCountRange: '501+',
     degreeLevels: ['Undergraduate', 'Graduate', 'New Grad'],
     atsProvider: 'none',
@@ -1798,7 +1835,7 @@ export const SEED_COMPANIES: SeedCompany[] = [
     description:
       'The U.S. state of Texas government — the Texas CAPPS portal lists state-agency jobs, student roles, and internships.',
     fields: ['Business', 'Technology', 'Healthcare'],
-    companyType: 'Other / Unknown',
+    companyType: 'Established Company',
     employeeCountRange: '501+',
     degreeLevels: ['Undergraduate', 'Graduate', 'New Grad'],
     atsProvider: 'none',
@@ -1813,7 +1850,7 @@ export const SEED_COMPANIES: SeedCompany[] = [
     description:
       'The U.S. state of Washington government — the careers.wa.gov portal lists state-agency jobs, student roles, and internships.',
     fields: ['Business', 'Technology', 'Healthcare'],
-    companyType: 'Other / Unknown',
+    companyType: 'Established Company',
     employeeCountRange: '501+',
     degreeLevels: ['Undergraduate', 'Graduate', 'New Grad'],
     atsProvider: 'none',

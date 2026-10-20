@@ -17,6 +17,8 @@ export interface NormalizedPosting {
     currency?: string;
     period?: string; // 'hour' | 'month' | 'year'
   };
+  /** Explicit application deadline (ISO yyyy-mm-dd) when the feed provides one. */
+  deadline?: string;
   updatedAt?: string;
 }
 

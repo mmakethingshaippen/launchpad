@@ -1,6 +1,6 @@
 import type { NormalizedPosting } from './types';
 import type { Season, FieldType, DegreeLevel, OpportunityType } from '../adapter/types';
-import { extractSeasons, cohortYear, roleConcluded } from './seasons';
+import { extractSeasons, cohortYear, roleConcluded, isExpiredTerm } from './seasons';
 import {
   isEarlyCareer,
   classifyField,
@@ -16,6 +16,22 @@ export interface EnrichedPosting extends NormalizedPosting {
   field: FieldType;
   opportunityType: OpportunityType;
   degreeLevels: DegreeLevel[];
+}
+
+/**
+ * Whether a parsed deadline is already in the past relative to `now` (UTC date
+ * comparison, Req 7.1). Returns false for absent/unparseable deadlines so we
+ * never reject a role for a malformed date.
+ */
+export function isDeadlinePassed(
+  deadline: string | null | undefined,
+  now: Date = new Date(),
+): boolean {
+  if (!deadline) return false;
+  const today = now.toISOString().slice(0, 10);
+  const d = deadline.slice(0, 10);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(d)) return false;
+  return d < today;
 }
 
 export function enrich(p: NormalizedPosting): EnrichedPosting {
@@ -44,5 +60,9 @@ export function selectCandidates(
     .filter(isEarlyCareer)
     .map(enrich)
     .filter((p) => !roleConcluded(p.seasons, p.cohortYear, now))
+    // Req 7.1 — reject roles whose explicit application deadline has passed.
+    .filter((p) => !isDeadlinePassed(p.deadline, now))
+    // Req 7.2 — reject roles whose title targets an expired past term/year.
+    .filter((p) => !isExpiredTerm(p.title, now))
     .filter((p) => isValidHttpUrl(p.applyUrl));
 }

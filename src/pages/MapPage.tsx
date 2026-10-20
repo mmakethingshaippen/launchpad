@@ -1,17 +1,64 @@
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import { Helmet } from 'react-helmet-async';
 import { useQuery } from '@tanstack/react-query';
-import { MapContainer, TileLayer, Marker, Popup } from 'react-leaflet';
+import { MapContainer, TileLayer, Marker, Popup, useMap } from 'react-leaflet';
 import MarkerClusterGroup from 'react-leaflet-cluster';
 import L from 'leaflet';
-import { ArrowRight } from 'lucide-react';
+import { ArrowRight, Search, X } from 'lucide-react';
 import { Link } from 'react-router-dom';
 import { useAdapter } from '../hooks/useAdapter';
 import { useRoleFilters } from '../hooks/useRoleFilters';
 import { LoadingBlock } from '../components/ui/Spinner';
 import { SeasonBadge } from '../components/ui/Badge';
 import { SPECIFIC_SEASONS, type Season } from '../lib/adapter/types';
+import { normalizeLongitude } from '../lib/ats/cityCoords';
 import type { MapMarker } from '../lib/adapter';
+
+/**
+ * Filter markers to a single company (by name, case-insensitive), returning a
+ * new marker set whose roleCount/companyCount/roles reflect only that company.
+ * Markers with no matching role are dropped so only that company's pins remain.
+ */
+export function filterMarkersByCompany(markers: MapMarker[], companyName: string): MapMarker[] {
+  const q = companyName.trim().toLowerCase();
+  if (!q) return markers;
+  const out: MapMarker[] = [];
+  for (const m of markers) {
+    const roles = m.roles.filter((r) => r.companyName.toLowerCase() === q);
+    if (roles.length === 0) continue;
+    out.push({
+      ...m,
+      roles,
+      roleCount: roles.length,
+      companyCount: 1,
+    });
+  }
+  return out;
+}
+
+/** Distinct company names across a marker set, sorted, for the search datalist. */
+export function companyNamesFromMarkers(markers: MapMarker[]): string[] {
+  const names = new Set<string>();
+  for (const m of markers) for (const r of m.roles) names.add(r.companyName);
+  return [...names].sort((a, b) => a.localeCompare(b));
+}
+
+/** Recenter/zoom the Leaflet map to fit the given markers (company search). */
+function FitToMarkers({ markers, fitKey }: { markers: MapMarker[]; fitKey: string }) {
+  const map = useMap();
+  useMemo(() => {
+    if (markers.length === 0) return;
+    const pts = markers.map((m) => [m.latitude, normalizeLongitude(m.longitude)] as [number, number]);
+    if (pts.length === 1) {
+      map.setView(pts[0], 6, { animate: true });
+    } else {
+      map.fitBounds(L.latLngBounds(pts).pad(0.2), { animate: true });
+    }
+    // fitKey changes only when the selected company changes.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [fitKey]);
+  return null;
+}
 
 // A pin whose badge shows the number of OPEN ROLES at that location.
 function roleCountIcon(count: number): L.DivIcon {
@@ -43,14 +90,31 @@ function clusterIcon(cluster: { getAllChildMarkers: () => Array<{ options: { rol
 export function MapPage() {
   const adapter = useAdapter();
   const { filters, toggleSeason } = useRoleFilters();
+  const [companyQuery, setCompanyQuery] = useState('');
 
   const { data, isLoading } = useQuery({
     queryKey: ['map', filters],
     queryFn: () => adapter.getMapMarkers(filters),
   });
 
-  const markers = data ?? [];
+  const allMarkers = useMemo(() => data ?? [], [data]);
+  const companyNames = useMemo(() => companyNamesFromMarkers(allMarkers), [allMarkers]);
+
+  // When a company is selected/typed, show only its pins (Req 3).
+  const markers = useMemo(
+    () => filterMarkersByCompany(allMarkers, companyQuery),
+    [allMarkers, companyQuery],
+  );
+  const activeCompany = companyQuery.trim();
+
   const totalRoles = markers.reduce((s, m) => s + m.roleCount, 0);
+  const cities = markers.map((m) => m.label);
+  // Stable identity for the current marker set — drives the cluster group's
+  // remount key so clustering is recomputed cleanly on any data change.
+  const markerSetKey = useMemo(
+    () => `${activeCompany}:${markers.length}:${markers.map((m) => `${m.id}#${m.roleCount}`).join('|')}`,
+    [markers, activeCompany],
+  );
 
   return (
     <div>
@@ -81,8 +145,53 @@ export function MapPage() {
         </div>
       </div>
 
-      <p className="mb-3 text-sm text-slate-500" aria-live="polite">
-        {isLoading ? 'Loading map…' : `${totalRoles} open roles across ${markers.length} locations`}
+      {/* Company search / browse mode (Req 3) */}
+      <div className="mb-3 flex flex-col gap-2 sm:flex-row sm:items-center">
+        <div className="relative flex-1 sm:max-w-sm">
+          <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" aria-hidden="true" />
+          <input
+            type="search"
+            list="map-company-list"
+            value={companyQuery}
+            onChange={(e) => setCompanyQuery(e.target.value)}
+            placeholder="Search a company (e.g. Waymo, Stripe, Nvidia)"
+            aria-label="Search the map by company"
+            className="w-full rounded-lg border border-slate-300 py-2 pl-9 pr-9 text-sm outline-none focus:border-cyan"
+          />
+          <datalist id="map-company-list">
+            {companyNames.map((n) => (
+              <option key={n} value={n} />
+            ))}
+          </datalist>
+          {companyQuery && (
+            <button
+              type="button"
+              onClick={() => setCompanyQuery('')}
+              aria-label="Clear company search"
+              className="absolute right-2 top-1/2 -translate-y-1/2 rounded p-1 text-slate-400 hover:text-navy"
+            >
+              <X className="h-4 w-4" aria-hidden="true" />
+            </button>
+          )}
+        </div>
+
+        {activeCompany && markers.length > 0 && (
+          <span className="inline-flex items-center gap-2 rounded-full bg-cyan/10 px-3 py-1.5 text-sm font-medium text-navy ring-1 ring-cyan/30">
+            <strong>{activeCompany}</strong>
+            <span className="text-slate-500">
+              {totalRoles} open {totalRoles === 1 ? 'role' : 'roles'} · {cities.length}{' '}
+              {cities.length === 1 ? 'city' : 'cities'}
+            </span>
+          </span>
+        )}
+      </div>
+
+      <p className="mb-1 text-sm text-slate-500" aria-live="polite">
+        {isLoading
+          ? 'Loading map…'
+          : activeCompany && markers.length === 0
+            ? `No open roles found for "${activeCompany}".`
+            : `${totalRoles} open roles across ${markers.length} locations`}
       </p>
       <p className="mb-4 text-xs text-slate-400">
         Pins show each role's actual job city. Numbers are the count of open roles at that location.
@@ -92,16 +201,41 @@ export function MapPage() {
         <LoadingBlock label="Loading map" />
       ) : (
         <div className="h-[70vh] w-full overflow-hidden rounded-xl border border-slate-200">
-          <MapContainer center={[39.5, -98.35]} zoom={4} scrollWheelZoom style={{ height: '100%', width: '100%' }}>
+          <MapContainer
+            center={[25, -20]}
+            zoom={2}
+            minZoom={2}
+            worldCopyJump
+            scrollWheelZoom
+            style={{ height: '100%', width: '100%' }}
+          >
             <TileLayer
               attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
               url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
+              noWrap={false}
             />
-            <MarkerClusterGroup chunkedLoading iconCreateFunction={clusterIcon as never}>
+            <FitToMarkers markers={markers} fitKey={activeCompany} />
+            <MarkerClusterGroup
+              // A key derived from the full marker set forces a clean remount
+              // whenever the data changes (filters/sync/company search), so stale
+              // cluster layers never leave markers unrendered during pan/zoom.
+              key={markerSetKey}
+              iconCreateFunction={clusterIcon as never}
+              // Keep clustered markers mounted even when panned out of view so
+              // international pins (London/Tokyo/Sydney) are never clipped by the
+              // default viewport. chunkedLoading is disabled — its async add was
+              // the source of markers flickering/disappearing.
+              removeOutsideVisibleBounds={false}
+              maxClusterRadius={60}
+              showCoverageOnHover={false}
+            >
               {markers.map((m) => (
                 <Marker
                   key={m.id}
-                  position={[m.latitude, m.longitude]}
+                  // Normalize longitude into [-180,180) so pins re-render cleanly
+                  // when the user pans across duplicated world copies (Req: world
+                  // wrapping). Latitude is unchanged.
+                  position={[m.latitude, normalizeLongitude(m.longitude)]}
                   icon={roleCountIcon(m.roleCount)}
                   {...({ roleCount: m.roleCount } as object)}
                 >

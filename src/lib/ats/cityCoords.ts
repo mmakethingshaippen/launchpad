@@ -344,6 +344,16 @@ export function isRemoteLocation(location: string | null | undefined): boolean {
 }
 
 /**
+ * Normalize a longitude into the canonical [-180, 180) range so markers re-render
+ * cleanly when the user pans across duplicated world copies (Leaflet renders
+ * longitudes like -200 or 190 when world-wrapping). Latitude is returned as-is.
+ */
+export function normalizeLongitude(lng: number): number {
+  if (!Number.isFinite(lng)) return lng;
+  return (((lng + 180) % 360) + 360) % 360 - 180;
+}
+
+/**
  * Resolve ALL distinct places from a (possibly multi-city) location string.
  *
  * - "Austin, Texas" → [Austin, TX]

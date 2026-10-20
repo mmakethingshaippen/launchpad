@@ -5,13 +5,14 @@ import { createRemotiveClient } from './remotive';
 import { createAdzunaClient } from './adzuna';
 import { createUsaJobsClient } from './usajobs';
 import { createSimplifyClient } from '../simplify';
-import { enrich } from '../normalize';
+import { enrich, isDeadlinePassed } from '../normalize';
 import { isEarlyCareer, classifyField } from '../classify';
 import { resolveRoleCoords, isRemoteLocation } from '../cityCoords';
 import { isValidHttpUrl, normalizeApplyUrl } from '../util';
-import { roleConcluded } from '../seasons';
+import { roleConcluded, isExpiredTerm } from '../seasons';
 import { isUsableCity } from '../supabaseSink';
-import { canonicalCompanySlug } from '../companyMatch';
+import { canonicalCompanySlug, INTERNSHIP_ONLY_SLUGS } from '../companyMatch';
+import { classifyCompanyByName } from '../classifyCompany';
 import { createAmazonClient } from './amazon';
 
 export interface AggregatorResult {
@@ -85,11 +86,24 @@ export async function ingestAggregators(
 
         const enriched = enrich(p);
         if (roleConcluded(enriched.seasons, enriched.cohortYear, now)) continue;
+        // Req 7.1 — reject roles whose explicit application deadline has passed.
+        if (isDeadlinePassed(p.deadline, now)) continue;
+        // Req 7.2 — reject roles whose title targets an expired past term/year.
+        if (isExpiredTerm(enriched.title, now)) continue;
 
         // Resolve or create the company. canonicalCompanySlug maps big-employer
         // aliases (e.g. "Amazon.com Services LLC", "Google LLC") onto the seeded
         // official slug so roles attach to the real company page / map pin.
         const slug = canonicalCompanySlug(p.companyName);
+
+        // Req 6 — Google/Amazon/Tesla/SpaceX are internship/co-op only.
+        if (
+          INTERNSHIP_ONLY_SLUGS.has(slug) &&
+          enriched.opportunityType !== 'Internship' &&
+          enriched.opportunityType !== 'Co-op'
+        ) {
+          continue;
+        }
         let companyId = companyIdByName.get(slug);
         if (!companyId) {
           const { data: existing } = await db
@@ -100,6 +114,14 @@ export async function ingestAggregators(
           if (existing) {
             companyId = (existing as { id: string }).id;
           } else {
+            // Classify a newly-discovered company by name so it never renders as
+            // "Other / Unknown" (Req 4). Known brands get a mapped industry +
+            // Established Company + 501+; otherwise default to the role's field
+            // and Established Company (we never fabricate a startup stage).
+            const brand = classifyCompanyByName(p.companyName);
+            const fields = brand?.fields ?? [classifyField(p.title)];
+            const companyType = brand?.companyType ?? 'Established Company';
+            const employeeRange = brand?.employeeRange ?? '501+';
             const { data: created, error: cErr } = await db
               .from('companies')
               .upsert(
@@ -108,8 +130,9 @@ export async function ingestAggregators(
                   name: p.companyName,
                   website_url: p.companyWebsite ?? null,
                   description: `Opportunities aggregated from ${client.source}.`,
-                  fields: [classifyField(p.title)],
-                  company_type: 'Other / Unknown',
+                  fields,
+                  company_type: companyType,
+                  employee_count_range: employeeRange,
                   degree_levels: [],
                   ats_provider: 'none',
                   source: 'aggregator',
@@ -133,6 +156,9 @@ export async function ingestAggregators(
         const displayState = displayCity ? (p.state ?? null) : null;
         const displayCountry = displayCity ? (p.country ?? null) : null;
         const locationString = [displayCity, displayState, displayCountry].filter(Boolean).join(', ');
+        // Req 2 — a role is only Remote when EXPLICITLY tagged Remote or its
+        // location text says so. A real (even international) city must never be
+        // mislabeled Remote just because it's unknown to our coord lookup.
         const remote = p.workArrangement === 'Remote' || isRemoteLocation(locationString);
         let latitude: number | null = null;
         let longitude: number | null = null;
@@ -143,6 +169,10 @@ export async function ingestAggregators(
             longitude = resolved.longitude;
           }
         }
+        // Persisted work_arrangement: honor an explicit value; otherwise infer
+        // Remote ONLY from the location text, else Onsite (never default a
+        // physical-city role to Remote).
+        const workArrangement = p.workArrangement ?? (remote ? 'Remote' : 'Onsite');
 
         const roleRow = {
           company_id: companyId,
@@ -159,7 +189,8 @@ export async function ingestAggregators(
           country: displayCountry,
           latitude,
           longitude,
-          work_arrangement: p.workArrangement ?? 'Remote',
+          work_arrangement: workArrangement,
+          application_deadline: p.deadline ? p.deadline.slice(0, 10) : null,
           apply_url: p.applyUrl,
           description: enriched.descriptionHtml,
           source: 'aggregator',

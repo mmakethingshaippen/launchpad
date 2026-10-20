@@ -45,6 +45,13 @@ const CANONICAL_SLUG: Record<string, string> = {
   'washington state': 'state-of-washington',
 };
 
+/**
+ * Employers restricted to Internship / Co-op listings only (Req 6). Any
+ * Entry-level / New-grad or full-time posting for these companies is dropped at
+ * ingest / sync time and by the live cleanup pass.
+ */
+export const INTERNSHIP_ONLY_SLUGS = new Set<string>(['google', 'amazon', 'tesla', 'spacex']);
+
 export function normalizeCompanyName(name: string): string {
   return name
     .toLowerCase()

@@ -31,13 +31,10 @@ export function RoleCard({
   role,
   saved,
   onToggleSave,
-  inCompanyView = false,
 }: {
   role: RoleCardData;
   saved?: boolean;
   onToggleSave?: (id: string) => void;
-  /** Hide the redundant company-type pill when shown inside a company profile. */
-  inCompanyView?: boolean;
 }) {
   const pay = payLabel(role);
   return (
@@ -78,7 +75,7 @@ export function RoleCard({
           <SeasonBadge key={s} season={s} year={role.cohortYear} />
         ))}
         <Badge tone="cyan">{role.opportunityType}</Badge>
-        {!inCompanyView && role.companyType && <Badge tone="muted">{role.companyType}</Badge>}
+        {role.field && role.field !== 'Other' && <Badge tone="muted">{role.field}</Badge>}
       </div>
 
       <dl className="mt-3 space-y-1 text-sm text-slate-600">

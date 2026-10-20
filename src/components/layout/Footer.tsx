@@ -8,7 +8,8 @@ export function Footer() {
           <div>
             <p className="text-lg font-bold text-navy">Launchpad</p>
             <p className="mt-1 max-w-sm text-sm text-slate-500">
-              Live internships, co-ops, and early-career roles at startups and established companies.
+              Live internships, co-ops, and early-career roles at top companies, fast-growing teams,
+              and public institutions, all in one place.
             </p>
           </div>
           <nav aria-label="Footer" className="grid grid-cols-2 gap-x-12 gap-y-2 text-sm">
