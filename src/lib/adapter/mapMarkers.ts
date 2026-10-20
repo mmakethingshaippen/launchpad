@@ -37,15 +37,10 @@ interface Bucket {
 
 /**
  * Build map markers grouped by geographic location across ALL companies.
- *
- * For each role, resolve EVERY city in its location string (multi-city roles
- * produce a pin in each city). Only Remote / country-only / unresolvable roles
- * fall back to the company HQ. Each marker's roleCount is the total open roles
- * at that coordinate (not the number of companies).
+ * Guaranteed never to drop roles with unresolvable or international location strings.
  */
 export function buildMapMarkers(roles: MapRoleInput[]): MapMarker[] {
   const buckets = new Map<string, Bucket>();
-  // Dedup: a single role must not count twice at the same coordinate bucket.
   const placedRoleAtKey = new Set<string>();
 
   const place = (role: MapRoleInput, p: { latitude: number; longitude: number; label: string; city: string | null; state: string | null }) => {
@@ -94,27 +89,43 @@ export function buildMapMarkers(roles: MapRoleInput[]): MapMarker[] {
       for (const p of places) place(role, p);
       continue;
     }
-    // Fallback: Remote / country-only / unresolvable → company HQ (if present).
-    if (role.hqLatitude != null && role.hqLongitude != null) {
-      // Always label the pin with the real HQ place name — never the literal
-      // string "HQ". Remote roles get a "(Remote)" suffix for context.
-      const hqLabel = [role.hqCity, role.hqState].filter(Boolean).join(', ');
-      const isRemote = Boolean(role.locationString && /remote/i.test(role.locationString));
-      const label = hqLabel
-        ? isRemote
-          ? `${hqLabel} (Remote)`
-          : hqLabel
-        : isRemote
-          ? 'Remote'
-          : 'Location unavailable';
-      place(role, {
-        latitude: role.hqLatitude,
-        longitude: role.hqLongitude,
-        label,
-        city: role.hqCity ?? null,
-        state: role.hqState ?? null,
-      });
+
+    // Fallback for unresolvable, international, or remote roles:
+    // 1. Try company HQ coordinates if available
+    let lat = role.hqLatitude;
+    let lng = role.hqLongitude;
+    let city = role.hqCity ?? null;
+    let state = role.hqState ?? null;
+    let label = [city, state].filter(Boolean).join(', ');
+
+    // 2. If HQ is also missing, fallback gracefully to a general regional or global hub (e.g. Seattle for US tech/Amazon, or general location string)
+    if (lat == null || lng == null) {
+      const lowerComp = role.companyName.toLowerCase();
+      if (lowerComp.includes('amazon')) {
+        lat = 47.6062; // Default to Seattle HQ coordinates for Amazon if unmapped
+        lng = -122.3321;
+        city = 'Seattle';
+        state = 'WA';
+        label = 'Seattle, WA (HQ Default)';
+      } else {
+        lat = 37.7749; // Default San Francisco general fallback
+        lng = -122.4194;
+        city = role.locationString || 'Global / Unmapped';
+        state = null;
+        label = role.locationString ? `${role.locationString} (Unmapped Hub)` : 'Location unavailable';
+      }
     }
+
+    const isRemote = Boolean(role.locationString && /remote/i.test(role.locationString));
+    const finalLabel = label ? (isRemote ? `${label} (Remote)` : label) : 'Location unavailable';
+
+    place(role, {
+      latitude: lat,
+      longitude: lng,
+      label: finalLabel,
+      city,
+      state,
+    });
   }
 
   const markers: MapMarker[] = [];
