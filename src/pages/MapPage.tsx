@@ -68,7 +68,7 @@ export interface CompanyMapOption {
 }
 
 /** Build the selector from the SAME unfiltered markers used by the map. */
-eexport function companyOptionsFromMarkers(markers: MapMarker[]): CompanyMapOption[] {
+export function companyOptionsFromMarkers(markers: MapMarker[]): CompanyMapOption[] {
   const stats = new Map<string, {
     name: string;
     roleCount: number;
