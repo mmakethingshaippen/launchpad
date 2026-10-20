@@ -3,6 +3,8 @@ import type { AggregatedPosting, AggregatorClient } from './types';
 import { createTheMuseClient } from './themuse';
 import { createRemotiveClient } from './remotive';
 import { createAdzunaClient } from './adzuna';
+import { createUsaJobsClient } from './usajobs';
+import { createSimplifyClient } from '../simplify';
 import { enrich } from '../normalize';
 import { isEarlyCareer, classifyField } from '../classify';
 import { resolveRoleCoords, isRemoteLocation } from '../cityCoords';
@@ -36,9 +38,11 @@ export async function ingestAggregators(
   opts: { fetchImpl?: typeof fetch; now?: Date } = {},
 ): Promise<AggregatorResult[]> {
   const clients: AggregatorClient[] = [
+    createSimplifyClient(opts.fetchImpl), // keyless GitHub JSON — largest source
     createTheMuseClient(opts.fetchImpl),
     createRemotiveClient(opts.fetchImpl),
     createAdzunaClient(opts.fetchImpl), // safe no-op when env vars are absent
+    createUsaJobsClient(opts.fetchImpl), // safe no-op when USAJOBS_API_KEY is absent
   ];
   const now = opts.now ?? new Date();
   const results: AggregatorResult[] = [];
@@ -62,7 +66,7 @@ export async function ingestAggregators(
     };
     let postings: AggregatedPosting[] = [];
     try {
-      postings = await client.fetchEarlyCareer(AbortSignal.timeout(15_000));
+      postings = await client.fetchEarlyCareer(AbortSignal.timeout(60_000));
     } catch (err) {
       result.errors.push(err instanceof Error ? err.message : String(err));
       results.push(result);

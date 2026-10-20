@@ -58,7 +58,34 @@ async function runLocal(slug?: string): Promise<SyncResult[]> {
 async function main() {
   const args = process.argv.slice(2);
   const withAggregators = args.includes('--aggregators');
+  const aggregatorsOnly = args.includes('--aggregators-only');
   const slug = args.find((a) => !a.startsWith('--'));
+
+  // Aggregator-only mode: skip the direct per-company ATS sync and just ingest
+  // the keyless/aggregator feeds. Useful to (re)run the large SimplifyJobs pull
+  // without re-syncing every ATS company.
+  if (aggregatorsOnly) {
+    if (!hasServiceCreds()) {
+      // eslint-disable-next-line no-console
+      console.error('--aggregators-only requires Supabase service credentials.');
+      process.exit(1);
+    }
+    const { createServiceClient } = await import('../src/lib/ats/supabaseSink');
+    const { ingestAggregators } = await import('../src/lib/ats/aggregators/ingest');
+    // eslint-disable-next-line no-console
+    console.log('Ingesting aggregator feeds (SimplifyJobs, The Muse, Remotive, Adzuna, USAJOBS)…');
+    const agg = await ingestAggregators(createServiceClient(), {});
+    // eslint-disable-next-line no-console
+    console.table(
+      agg.map((a) => ({
+        source: a.source,
+        companies: a.companiesUpserted,
+        roles: a.rolesUpserted,
+        errors: a.errors.length,
+      })),
+    );
+    return;
+  }
 
   const results = hasServiceCreds() ? await runCloud(slug) : await runLocal(slug);
 
@@ -97,7 +124,7 @@ async function main() {
     const { createServiceClient } = await import('../src/lib/ats/supabaseSink');
     const { ingestAggregators } = await import('../src/lib/ats/aggregators/ingest');
     // eslint-disable-next-line no-console
-    console.log('\nIngesting aggregator feeds (The Muse, Remotive)…');
+    console.log('\nIngesting aggregator feeds (SimplifyJobs, The Muse, Remotive, Adzuna, USAJOBS)…');
     const agg = await ingestAggregators(createServiceClient(), {});
     // eslint-disable-next-line no-console
     console.table(
