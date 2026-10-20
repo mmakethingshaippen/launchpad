@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
 import { Helmet } from 'react-helmet-async';
 import { useQuery } from '@tanstack/react-query';
-import { ExternalLink, Globe, MapPin, ArrowLeft } from 'lucide-react';
+import { ExternalLink, Globe, MapPin, Map, ArrowLeft } from 'lucide-react';
 import { useAdapter } from '../hooks/useAdapter';
 import { useSaved } from '../hooks/useSaved';
 import { Badge } from '../components/ui/Badge';
@@ -38,6 +38,7 @@ export function CompanyProfile() {
     );
 
   const roles = season === 'all' ? company.roles : company.roles.filter((r) => r.seasons.includes(season));
+  const mapHref = `/map?company=${encodeURIComponent(company.name)}`;
 
   return (
     <div className="mx-auto max-w-4xl">
@@ -80,7 +81,7 @@ export function CompanyProfile() {
 
         {company.description && <p className="mt-4 text-slate-600">{company.description}</p>}
 
-        <div className="mt-4 flex flex-wrap gap-4 text-sm">
+        <div className="mt-4 flex flex-wrap items-center gap-4 text-sm">
           {company.websiteUrl && (
             <a href={company.websiteUrl} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1 text-slate-600 hover:text-navy">
               <Globe className="h-4 w-4" aria-hidden="true" /> Website
@@ -90,6 +91,16 @@ export function CompanyProfile() {
             <a href={company.careersUrl} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1 text-slate-600 hover:text-navy">
               <ExternalLink className="h-4 w-4" aria-hidden="true" /> Careers page
             </a>
+          )}
+          {company.activeRoleCount > 0 && (
+            <Link
+              to={mapHref}
+              className="inline-flex items-center gap-1 font-medium text-navy hover:text-cyan"
+            >
+
+<Map className="h-4 w-4 text-cyan" aria-hidden="true" />
+View pins on map
+            </Link>
           )}
           {company.locations[0] && (
             <span className="inline-flex items-center gap-1 text-slate-500">
