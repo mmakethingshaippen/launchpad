@@ -16,6 +16,22 @@ import type { FieldType } from '../adapter/types';
 import { classifyField } from './classify';
 import { resolveRoleCoords, isRemoteLocation } from './cityCoords';
 
+/**
+ * A role "city" is only usable as a display location when it names a real place.
+ * Reject empties, "N/A"/"Location N/A", and multi-office counts like
+ * "2 Locations" / "3 locations" / "Multiple Locations" that Workday returns.
+ */
+export function isUsableCity(city: string | null | undefined): boolean {
+  if (!city) return false;
+  const c = city.trim();
+  if (!c) return false;
+  if (/^(location\s*)?n\/?a$/i.test(c)) return false;
+  if (/^\d+\s+locations?$/i.test(c)) return false;
+  if (/^(multiple|various)\s+locations?$/i.test(c)) return false;
+  if (/\blocations?\b/i.test(c) && /^\s*\d/.test(c)) return false;
+  return true;
+}
+
 export function createServiceClient(env: NodeJS.ProcessEnv = process.env): SupabaseClient {
   const url = env.SUPABASE_URL ?? env.VITE_SUPABASE_URL;
   const key = env.SUPABASE_SERVICE_ROLE_KEY;
@@ -39,13 +55,27 @@ export class SupabaseSink implements SyncSink {
         ? data.field
         : classifyField(data.title, data.companyFallbackField, data.employmentTypeRaw);
 
-    // Resolve real coordinates: role city first, else company HQ (Remote/unknown).
-    const locationString = [data.city, data.state, data.country].filter(Boolean).join(', ');
-    const remote = data.workArrangement === 'Remote' || isRemoteLocation(locationString);
+    // Display location: use the role's own city when it's a real place; otherwise
+    // fall back to the company HQ so a card never shows "Location N/A". Workday in
+    // particular returns empty text, "N/A", or multi-office counts ("2 Locations").
+    const remote = data.workArrangement === 'Remote';
+    let displayCity = isUsableCity(data.city) ? data.city! : null;
+    let displayState = displayCity ? (data.state ?? null) : null;
+    let displayCountry = displayCity ? (data.country ?? null) : null;
+    if (!remote && !displayCity && isUsableCity(data.companyHqCity)) {
+      displayCity = data.companyHqCity!;
+      displayState = data.companyHqState ?? null;
+      displayCountry = data.companyHqCountry ?? null;
+    }
+
+    // Resolve real coordinates from the (possibly HQ-filled) display location,
+    // else the company HQ coords.
+    const locationString = [displayCity, displayState, displayCountry].filter(Boolean).join(', ');
+    const effectiveRemote = remote || isRemoteLocation(locationString);
     let latitude: number | null = null;
     let longitude: number | null = null;
-    if (!remote) {
-      const resolved = resolveRoleCoords(locationString || data.city || null);
+    if (!effectiveRemote) {
+      const resolved = resolveRoleCoords(locationString || displayCity || null);
       if (resolved) {
         latitude = resolved.latitude;
         longitude = resolved.longitude;
@@ -66,9 +96,9 @@ export class SupabaseSink implements SyncSink {
       degree_levels: data.degreeLevels,
       seasons: data.seasons,
       cohort_year: data.cohortYear,
-      city: data.city ?? null,
-      state: data.state ?? null,
-      country: data.country ?? null,
+      city: displayCity,
+      state: displayState,
+      country: displayCountry,
       latitude,
       longitude,
       work_arrangement: data.workArrangement ?? 'Onsite',
@@ -131,7 +161,9 @@ export async function loadSyncableCompanies(
 ): Promise<SyncableCompany[]> {
   let q = db
     .from('companies')
-    .select('id,name,ats_provider,ats_board_token,fields,company_locations(latitude,longitude,location_type)')
+    .select(
+      'id,name,ats_provider,ats_board_token,fields,company_locations(city,state,country,latitude,longitude,location_type)',
+    )
     .neq('ats_provider', 'none');
   if (slug) q = q.eq('slug', slug);
   const { data, error } = await q;
@@ -142,7 +174,9 @@ export async function loadSyncableCompanies(
     // Prefer the HQ location; fall back to the first with coordinates.
     const hq =
       locs.find((l) => l.location_type === 'HQ' && l.latitude != null) ??
-      locs.find((l) => l.latitude != null);
+      locs.find((l) => l.latitude != null) ??
+      locs.find((l) => l.location_type === 'HQ') ??
+      locs[0];
     return {
       id: c.id as string,
       name: c.name as string,
@@ -151,6 +185,9 @@ export async function loadSyncableCompanies(
       fallbackField: fields[0],
       hqLatitude: (hq?.latitude as number) ?? null,
       hqLongitude: (hq?.longitude as number) ?? null,
+      hqCity: (hq?.city as string) ?? null,
+      hqState: (hq?.state as string) ?? null,
+      hqCountry: (hq?.country as string) ?? null,
     };
   });
 }

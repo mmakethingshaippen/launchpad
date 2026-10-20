@@ -13951,12 +13951,34 @@ function roleConcluded(seasons, year, now = /* @__PURE__ */ new Date()) {
 }
 
 // src/lib/ats/classify.ts
-var EARLY_CAREER_RE = /\b(intern|internship|co-?op|fellow|apprentice|new ?grad|early career|university grad|campus|entry[ -]?level)\b/i;
-var SENIOR_RE = /\b(senior|staff|principal|director|manager|lead|sr\.?)\b/i;
+var EXPLICIT_INTERN_RE = /\b(intern|interns|internship|internships|co-?op)\b/i;
+var SENIOR_RE = /\b(vice president|avp|vp|svp|evp|director|executive|chief|head of|head|principal|staff|sr\.?|senior|lead|manager|management|architect|fellow|partner|counsel|md|managing director|ii|iii|iv|v)\b/i;
+var SENIORITY_HARD_RE = /\b(vice president|avp|vp|svp|evp|director|chief|head of|head|senior|sr\.?|principal|staff|managing director|md)\b/i;
+var RECRUITER_RE = /\b(recruiter|recruiting|recruitment|talent acquisition|sourcer|talent partner|people partner|hrbp|program manager|coordinator)\b/i;
+var INTERNSHIP_TITLE_RE = /\b(intern|interns|internship|internships|co-?op|summer analyst|winter analyst|spring analyst|fall analyst|extern|externship|apprentice|apprenticeship|undergraduate intern|phd intern|mba intern)\b/i;
+var NEWGRAD_TITLE_RE = /\b(new grad|new graduate|recent grad|early career|entry[- ]level|university grad|graduate engineer|graduate analyst|graduate software|rotational program|leadership development program|ldp|analyst development program|junior|jr\.?|associate i|engineer i|analyst i|developer i)\b/i;
+function matchEarlyCareerType(title) {
+  if (!title) return null;
+  const t = title.trim();
+  if (!t) return null;
+  const explicitIntern = EXPLICIT_INTERN_RE.test(t);
+  if (SENIOR_RE.test(t)) {
+    if (!(explicitIntern && !SENIORITY_HARD_RE.test(t))) return null;
+  }
+  if (RECRUITER_RE.test(t) && !explicitIntern) return null;
+  if (INTERNSHIP_TITLE_RE.test(t)) {
+    return /\bco-?op\b/i.test(t) ? "Co-op" : "Internship";
+  }
+  if (NEWGRAD_TITLE_RE.test(t)) {
+    return "Entry-level / New-grad";
+  }
+  return null;
+}
+function isEarlyCareerTitle(title) {
+  return matchEarlyCareerType(title) !== null;
+}
 function isEarlyCareer(p) {
-  if (SENIOR_RE.test(p.title)) return false;
-  if (p.employmentTypeRaw && p.employmentTypeRaw.trim().toLowerCase() === "intern") return true;
-  return EARLY_CAREER_RE.test(p.title) || EARLY_CAREER_RE.test(p.employmentTypeRaw ?? "");
+  return isEarlyCareerTitle(p.title);
 }
 var FIELD_RULES = [
   // Finance first — "financial analyst" should beat the generic "analyst"/"data" rules.
@@ -14000,12 +14022,11 @@ function classifyField(title, companyFallback, extra) {
   return companyFallback && companyFallback !== "Other" ? companyFallback : "Other";
 }
 function classifyOpportunityType(title, employmentTypeRaw) {
-  const text = `${title} ${employmentTypeRaw ?? ""}`.toLowerCase();
-  if (/\bco-?op\b/.test(text)) return "Co-op";
-  if (/\b(new ?grad|entry[- ]?level|university grad|campus|associate)\b/.test(text)) {
-    if (/\bintern/.test(text)) return "Internship";
-    return "Entry-level / New-grad";
-  }
+  const matched = matchEarlyCareerType(title);
+  if (matched) return matched;
+  const raw = (employmentTypeRaw ?? "").toLowerCase();
+  if (/\bco-?op\b/.test(raw)) return "Co-op";
+  if (/\b(new ?grad|entry[- ]?level)\b/.test(raw)) return "Entry-level / New-grad";
   return "Internship";
 }
 function classifyDegreeLevels(title, opportunityType, descriptionHtml) {
@@ -14356,9 +14377,10 @@ function createWorkdayClient(fetchImpl = fetch) {
       const { host, site } = raw.__coords;
       const applyUrl = `https://${host}/en-US/${site}${raw.externalPath}`;
       const externalJobId = raw.bulletFields?.[0] ?? raw.externalPath.split("_").pop() ?? raw.externalPath;
-      const locText = raw.locationsText ?? "";
+      const locText = (raw.locationsText ?? "").trim();
       const remote = /remote/i.test(locText);
-      const loc = remote || /\blocations?\b/i.test(locText) ? {} : splitLocation(locText);
+      const looksBad = !locText || /\blocations?\b/i.test(locText) || /^(location\s*)?n\/?a$/i.test(locText);
+      const loc = remote || looksBad ? {} : splitLocation(locText);
       return {
         externalJobId: String(externalJobId),
         title: raw.title,
@@ -14424,7 +14446,10 @@ async function syncCompany(company, sink, options = {}) {
         companyId: company.id,
         companyFallbackField: company.fallbackField,
         companyHqLatitude: company.hqLatitude ?? null,
-        companyHqLongitude: company.hqLongitude ?? null
+        companyHqLongitude: company.hqLongitude ?? null,
+        companyHqCity: company.hqCity ?? null,
+        companyHqState: company.hqState ?? null,
+        companyHqCountry: company.hqCountry ?? null
       });
       liveIds.push(posting.externalJobId);
       if (outcome === "imported") result.imported++;
@@ -22969,6 +22994,16 @@ function resolveRoleCoords(location2) {
 }
 
 // src/lib/ats/supabaseSink.ts
+function isUsableCity(city) {
+  if (!city) return false;
+  const c = city.trim();
+  if (!c) return false;
+  if (/^(location\s*)?n\/?a$/i.test(c)) return false;
+  if (/^\d+\s+locations?$/i.test(c)) return false;
+  if (/^(multiple|various)\s+locations?$/i.test(c)) return false;
+  if (/\blocations?\b/i.test(c) && /^\s*\d/.test(c)) return false;
+  return true;
+}
 function createServiceClient(env = process.env) {
   const url = env.SUPABASE_URL ?? env.VITE_SUPABASE_URL;
   const key = env.SUPABASE_SERVICE_ROLE_KEY;
@@ -22987,12 +23022,21 @@ var SupabaseSink = class {
   async upsertRole(data) {
     const slug = `${data.companyId}-${data.externalJobId}`.replace(/[^a-z0-9-]/gi, "-").toLowerCase();
     const field = data.field !== "Other" ? data.field : classifyField(data.title, data.companyFallbackField, data.employmentTypeRaw);
-    const locationString = [data.city, data.state, data.country].filter(Boolean).join(", ");
-    const remote = data.workArrangement === "Remote" || isRemoteLocation(locationString);
+    const remote = data.workArrangement === "Remote";
+    let displayCity = isUsableCity(data.city) ? data.city : null;
+    let displayState = displayCity ? data.state ?? null : null;
+    let displayCountry = displayCity ? data.country ?? null : null;
+    if (!remote && !displayCity && isUsableCity(data.companyHqCity)) {
+      displayCity = data.companyHqCity;
+      displayState = data.companyHqState ?? null;
+      displayCountry = data.companyHqCountry ?? null;
+    }
+    const locationString = [displayCity, displayState, displayCountry].filter(Boolean).join(", ");
+    const effectiveRemote = remote || isRemoteLocation(locationString);
     let latitude = null;
     let longitude = null;
-    if (!remote) {
-      const resolved = resolveRoleCoords(locationString || data.city || null);
+    if (!effectiveRemote) {
+      const resolved = resolveRoleCoords(locationString || displayCity || null);
       if (resolved) {
         latitude = resolved.latitude;
         longitude = resolved.longitude;
@@ -23012,9 +23056,9 @@ var SupabaseSink = class {
       degree_levels: data.degreeLevels,
       seasons: data.seasons,
       cohort_year: data.cohortYear,
-      city: data.city ?? null,
-      state: data.state ?? null,
-      country: data.country ?? null,
+      city: displayCity,
+      state: displayState,
+      country: displayCountry,
       latitude,
       longitude,
       work_arrangement: data.workArrangement ?? "Onsite",
@@ -23054,14 +23098,16 @@ var SupabaseSink = class {
   }
 };
 async function loadSyncableCompanies(db, slug) {
-  let q = db.from("companies").select("id,name,ats_provider,ats_board_token,fields,company_locations(latitude,longitude,location_type)").neq("ats_provider", "none");
+  let q = db.from("companies").select(
+    "id,name,ats_provider,ats_board_token,fields,company_locations(city,state,country,latitude,longitude,location_type)"
+  ).neq("ats_provider", "none");
   if (slug) q = q.eq("slug", slug);
   const { data, error } = await q;
   if (error) throw new Error(`load companies: ${error.message}`);
   return (data ?? []).map((c) => {
     const fields = c.fields ?? [];
     const locs = c.company_locations ?? [];
-    const hq = locs.find((l) => l.location_type === "HQ" && l.latitude != null) ?? locs.find((l) => l.latitude != null);
+    const hq = locs.find((l) => l.location_type === "HQ" && l.latitude != null) ?? locs.find((l) => l.latitude != null) ?? locs.find((l) => l.location_type === "HQ") ?? locs[0];
     return {
       id: c.id,
       name: c.name,
@@ -23069,7 +23115,10 @@ async function loadSyncableCompanies(db, slug) {
       atsBoardToken: c.ats_board_token ?? null,
       fallbackField: fields[0],
       hqLatitude: hq?.latitude ?? null,
-      hqLongitude: hq?.longitude ?? null
+      hqLongitude: hq?.longitude ?? null,
+      hqCity: hq?.city ?? null,
+      hqState: hq?.state ?? null,
+      hqCountry: hq?.country ?? null
     };
   });
 }

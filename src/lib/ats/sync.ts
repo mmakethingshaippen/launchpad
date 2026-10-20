@@ -19,6 +19,10 @@ export interface SyncableCompany {
   /** Company HQ coordinates, used when a role is Remote or its city is unknown. */
   hqLatitude?: number | null;
   hqLongitude?: number | null;
+  /** Company HQ city/state/country, used to fill a missing role display location. */
+  hqCity?: string | null;
+  hqState?: string | null;
+  hqCountry?: string | null;
 }
 
 export interface UpsertRoleData extends EnrichedPosting {
@@ -28,6 +32,10 @@ export interface UpsertRoleData extends EnrichedPosting {
   /** Company HQ coords, used when the role is Remote or its city is unknown. */
   companyHqLatitude?: number | null;
   companyHqLongitude?: number | null;
+  /** Company HQ display location, used to fill a missing role city/state. */
+  companyHqCity?: string | null;
+  companyHqState?: string | null;
+  companyHqCountry?: string | null;
 }
 
 export interface SyncResult {
@@ -125,6 +133,9 @@ export async function syncCompany(
         companyFallbackField: company.fallbackField,
         companyHqLatitude: company.hqLatitude ?? null,
         companyHqLongitude: company.hqLongitude ?? null,
+        companyHqCity: company.hqCity ?? null,
+        companyHqState: company.hqState ?? null,
+        companyHqCountry: company.hqCountry ?? null,
       });
       liveIds.push(posting.externalJobId);
       if (outcome === 'imported') result.imported++;

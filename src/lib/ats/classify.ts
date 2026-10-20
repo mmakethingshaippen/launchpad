@@ -1,21 +1,110 @@
 import type { NormalizedPosting } from './types';
 import type { FieldType, DegreeLevel, OpportunityType } from '../adapter/types';
 
-// Req 18.1 — early-career inclusion.
-export const EARLY_CAREER_RE =
-  /\b(intern|internship|co-?op|fellow|apprentice|new ?grad|early career|university grad|campus|entry[ -]?level)\b/i;
+// ─────────────────────────────────────────────────────────────────────────────
+// Strict TITLE-LEVEL early-career filter.
+//
+// Historically we matched on title OR body OR employmentType, which let two
+// classes of false positives through:
+//   1. Workday's `searchText:"intern"` body search surfaced senior roles whose
+//      descriptions merely said "internal" / "international".
+//   2. Full-time HR/recruiting roles that *recruit* students ("Head of Early
+//      Career Recruiting", "University Recruiter") contain "early career" /
+//      "university" / "campus" and were mistaken for jobs *for* students.
+//
+// The filter below is evaluated strictly on the role TITLE and applies three
+// rules in order: A1 (hard seniority blocklist), A2 (recruiter/HR meta-role
+// guard), then B (require a positive early-career pattern). It is the single
+// gate every connector funnels through.
+// ─────────────────────────────────────────────────────────────────────────────
 
-// Req 18.2 — senior/mid-level exclusion (exclusion wins).
-export const SENIOR_RE = /\b(senior|staff|principal|director|manager|lead|sr\.?)\b/i;
+/** Explicit intern/co-op signal — the only thing that can override A1/A2. */
+export const EXPLICIT_INTERN_RE = /\b(intern|interns|internship|internships|co-?op)\b/i;
+
+/**
+ * Rule A1 — hard seniority / leadership blocklist. Any match rejects the title
+ * unless it is explicitly an internship (EXPLICIT_INTERN_RE) AND carries none of
+ * the unambiguous senior tokens in SENIORITY_HARD_RE below.
+ *
+ * Note the Roman-numeral seniority tokens (ii, iii, iv, v) and single-letter
+ * exec abbreviations (vp/avp/svp/evp, md) require word boundaries so they never
+ * clip real words ("video", "medical", etc.).
+ */
+export const SENIOR_RE =
+  /\b(vice president|avp|vp|svp|evp|director|executive|chief|head of|head|principal|staff|sr\.?|senior|lead|manager|management|architect|fellow|partner|counsel|md|managing director|ii|iii|iv|v)\b/i;
+
+/**
+ * The subset of A1 tokens that can NEVER be rescued by an intern keyword. This
+ * lets "Executive Office Intern" through while still rejecting "Head of Early
+ * Career Recruiting" or "VP Intern Programs".
+ */
+export const SENIORITY_HARD_RE =
+  /\b(vice president|avp|vp|svp|evp|director|chief|head of|head|senior|sr\.?|principal|staff|managing director|md)\b/i;
+
+/**
+ * Rule A2 — recruiter / HR meta-role guard. A title describing someone who
+ * *recruits* early-career talent is a full-time role, not an early-career role.
+ * Reject on any of these unless the title is explicitly an internship.
+ */
+export const RECRUITER_RE =
+  /\b(recruiter|recruiting|recruitment|talent acquisition|sourcer|talent partner|people partner|hrbp|program manager|coordinator)\b/i;
+
+/** Rule B — positive internship / co-op patterns. */
+export const INTERNSHIP_TITLE_RE =
+  /\b(intern|interns|internship|internships|co-?op|summer analyst|winter analyst|spring analyst|fall analyst|extern|externship|apprentice|apprenticeship|undergraduate intern|phd intern|mba intern)\b/i;
+
+/** Rule B — positive entry-level / new-grad patterns. */
+export const NEWGRAD_TITLE_RE =
+  /\b(new grad|new graduate|recent grad|early career|entry[- ]level|university grad|graduate engineer|graduate analyst|graduate software|rotational program|leadership development program|ldp|analyst development program|junior|jr\.?|associate i|engineer i|analyst i|developer i)\b/i;
+
+/**
+ * Strict, title-only early-career gate. Returns the matched opportunity type
+ * (so callers never hardcode 'Internship'), or null when the title fails any
+ * rule. This is the authoritative filter for every connector.
+ */
+export function matchEarlyCareerType(title: string | null | undefined): OpportunityType | null {
+  if (!title) return null;
+  const t = title.trim();
+  if (!t) return null;
+
+  const explicitIntern = EXPLICIT_INTERN_RE.test(t);
+
+  // Rule A1 — hard seniority blocklist. Only an explicit internship with no
+  // unambiguous senior token survives.
+  if (SENIOR_RE.test(t)) {
+    if (!(explicitIntern && !SENIORITY_HARD_RE.test(t))) return null;
+  }
+
+  // Rule A2 — recruiter/HR meta-role guard. Full-time recruiter titles are
+  // rejected unless the title is itself explicitly an internship.
+  if (RECRUITER_RE.test(t) && !explicitIntern) return null;
+
+  // Rule B — require a positive early-career pattern.
+  if (INTERNSHIP_TITLE_RE.test(t)) {
+    return /\bco-?op\b/i.test(t) ? 'Co-op' : 'Internship';
+  }
+  if (NEWGRAD_TITLE_RE.test(t)) {
+    return 'Entry-level / New-grad';
+  }
+  return null;
+}
+
+/** Boolean form of the strict title gate. */
+export function isEarlyCareerTitle(title: string | null | undefined): boolean {
+  return matchEarlyCareerType(title) !== null;
+}
 
 /**
  * Decide whether a normalized posting is an early-career opportunity.
- * The senior-exclusion check runs first so "Senior Intern" style titles drop out.
+ *
+ * The decision is made STRICTLY on the title via isEarlyCareerTitle. We no
+ * longer trust `employmentTypeRaw` or body text on its own, because providers
+ * like Workday match "intern" inside descriptions ("internal", "international")
+ * and surface senior roles. employmentTypeRaw is only consulted to disambiguate
+ * a title that is already an accepted early-career title.
  */
 export function isEarlyCareer(p: Pick<NormalizedPosting, 'title' | 'employmentTypeRaw'>): boolean {
-  if (SENIOR_RE.test(p.title)) return false;
-  if (p.employmentTypeRaw && p.employmentTypeRaw.trim().toLowerCase() === 'intern') return true;
-  return EARLY_CAREER_RE.test(p.title) || EARLY_CAREER_RE.test(p.employmentTypeRaw ?? '');
+  return isEarlyCareerTitle(p.title);
 }
 
 /**
@@ -67,19 +156,22 @@ export function classifyField(title: string, companyFallback?: FieldType, extra?
 }
 
 /**
- * Infer the opportunity type from the title / employment type.
+ * Infer the opportunity type. Prefer the strict title match (so recruiter and
+ * senior titles never slip through here either); fall back to the title-only
+ * co-op/intern heuristic for already-accepted roles. Never silently defaults a
+ * non-intern title to 'Internship'.
  */
 export function classifyOpportunityType(
   title: string,
   employmentTypeRaw?: string,
 ): OpportunityType {
-  const text = `${title} ${employmentTypeRaw ?? ''}`.toLowerCase();
-  if (/\bco-?op\b/.test(text)) return 'Co-op';
-  if (/\b(new ?grad|entry[- ]?level|university grad|campus|associate)\b/.test(text)) {
-    // "intern" still wins if both appear (e.g. "New Grad Internship").
-    if (/\bintern/.test(text)) return 'Internship';
-    return 'Entry-level / New-grad';
-  }
+  const matched = matchEarlyCareerType(title);
+  if (matched) return matched;
+  // Title didn't match (should be rare post-filter). Use employmentType as a
+  // last hint, else default to Internship for the legacy callers.
+  const raw = (employmentTypeRaw ?? '').toLowerCase();
+  if (/\bco-?op\b/.test(raw)) return 'Co-op';
+  if (/\b(new ?grad|entry[- ]?level)\b/.test(raw)) return 'Entry-level / New-grad';
   return 'Internship';
 }
 

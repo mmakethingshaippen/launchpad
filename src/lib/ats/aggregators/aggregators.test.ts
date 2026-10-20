@@ -53,15 +53,21 @@ describe('Remotive aggregator', () => {
       jobs: [
         { id: 10, title: 'Junior Data Analyst', company_name: 'RemoteCo', url: 'https://remotive.com/j/10' },
         { id: 11, title: 'Senior Analyst', company_name: 'RemoteCo', url: 'https://remotive.com/j/11' },
-        { id: 12, title: 'Marketing Associate', company_name: 'Beta', url: 'https://remotive.com/j/12' },
+        { id: 12, title: 'Marketing Intern', company_name: 'Beta', url: 'https://remotive.com/j/12' },
+        // Bare "Associate" (no intern/grad, no "Associate I") is now rejected.
+        { id: 13, title: 'Marketing Associate', company_name: 'Beta', url: 'https://remotive.com/j/13' },
+        // Full-time recruiter meta-role must be rejected even though it's "remote early career".
+        { id: 14, title: 'Early Career Recruiter', company_name: 'Beta', url: 'https://remotive.com/j/14' },
       ],
     };
     const client = createRemotiveClient(singleResponse(remotive));
     const out = await client.fetchEarlyCareer();
     const titles = out.map((o) => o.title);
     expect(titles).toContain('Junior Data Analyst');
-    expect(titles).toContain('Marketing Associate');
+    expect(titles).toContain('Marketing Intern');
     expect(titles).not.toContain('Senior Analyst');
+    expect(titles).not.toContain('Marketing Associate');
+    expect(titles).not.toContain('Early Career Recruiter');
     expect(out.every((o) => o.workArrangement === 'Remote')).toBe(true);
   });
 });

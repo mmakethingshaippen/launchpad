@@ -1,5 +1,6 @@
 import type { FetchLike } from '../types';
 import type { AggregatedPosting, AggregatorClient } from './types';
+import { isEarlyCareerTitle } from '../classify';
 
 // Remotive public remote-jobs API (keyless):
 //   https://remotive.com/api/remote-jobs
@@ -19,11 +20,6 @@ interface RemotiveResponse {
   jobs?: RemotiveJob[];
 }
 
-// Early-career title match (Req: intern, junior, new grad, entry level, analyst, associate).
-const EARLY_RE = /\b(intern|internship|junior|new ?grad|entry[- ]?level|analyst|associate|co-?op|graduate)\b/i;
-// Exclude senior/lead even if "analyst"/"associate" appears.
-const SENIOR_RE = /\b(senior|staff|principal|director|manager|lead|sr\.?|head of|vp\b)\b/i;
-
 export function createRemotiveClient(fetchImpl: FetchLike = fetch): AggregatorClient {
   return {
     source: 'remotive',
@@ -36,8 +32,8 @@ export function createRemotiveClient(fetchImpl: FetchLike = fetch): AggregatorCl
       const out: AggregatedPosting[] = [];
       for (const j of data.jobs ?? []) {
         if (!j.title || !j.company_name || !j.url) continue;
-        if (SENIOR_RE.test(j.title)) continue;
-        if (!EARLY_RE.test(j.title)) continue;
+        // Strict title-level early-career gate (A1 seniority + A2 recruiter + B).
+        if (!isEarlyCareerTitle(j.title)) continue;
 
         out.push({
           source: 'remotive',

@@ -1,6 +1,6 @@
 import type { FetchLike } from '../types';
 import type { AggregatedPosting, AggregatorClient } from './types';
-import { isEarlyCareer } from '../classify';
+import { isEarlyCareerTitle } from '../classify';
 import { splitLocation } from '../util';
 
 // The Muse public jobs API (keyless):
@@ -53,10 +53,10 @@ export function createTheMuseClient(fetchImpl: FetchLike = fetch): AggregatorCli
             const categoryText = (j.categories ?? []).map((c) => c.name).join(' ');
             if (categoryText && !RELEVANT_CATEGORY_RE.test(categoryText)) continue;
 
-            // Double-check early-career via the shared classifier on the title.
+            // Strict title-level early-career gate — the Muse "level" facet alone
+            // is not enough (it tags full-time "Entry Level" recruiter roles too).
             const levelNames = (j.levels ?? []).map((l) => l.name).join(' ');
-            const earlyByLevel = /intern|entry/i.test(levelNames);
-            if (!earlyByLevel && !isEarlyCareer({ title: j.name })) continue;
+            if (!isEarlyCareerTitle(j.name)) continue;
 
             const applyUrl = j.refs?.landing_page;
             if (!applyUrl) continue;

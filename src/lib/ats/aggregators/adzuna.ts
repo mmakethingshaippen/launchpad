@@ -1,5 +1,6 @@
 import type { FetchLike } from '../types';
 import type { AggregatedPosting, AggregatorClient } from './types';
+import { isEarlyCareerTitle } from '../classify';
 
 // Adzuna public jobs search API (requires app_id + app_key):
 //   https://api.adzuna.com/v1/api/jobs/us/search/1?app_id=..&app_key=..&what=intern
@@ -16,10 +17,6 @@ interface AdzunaJob {
 interface AdzunaResponse {
   results?: AdzunaJob[];
 }
-
-// Early-career title filter (Req: degree-relevant early-career/internship).
-const EARLY_RE = /\b(intern|internship|co-?op|new ?grad|entry[- ]?level|junior|associate|graduate|campus)\b/i;
-const SENIOR_RE = /\b(senior|staff|principal|director|manager|lead|sr\.?|head of|vp\b)\b/i;
 
 /** Parse "City, State" style Adzuna location into our fields. */
 function parseLocation(loc: AdzunaJob['location']): { city?: string; state?: string; country?: string } {
@@ -59,8 +56,8 @@ export function createAdzunaClient(
       const out: AggregatedPosting[] = [];
       for (const j of data.results ?? []) {
         if (!j.title || !j.company?.display_name || !j.redirect_url) continue;
-        if (SENIOR_RE.test(j.title)) continue;
-        if (!EARLY_RE.test(j.title)) continue;
+        // Strict title-level early-career gate (A1 seniority + A2 recruiter + B).
+        if (!isEarlyCareerTitle(j.title)) continue;
         out.push({
           source: 'adzuna',
           companyName: j.company.display_name,

@@ -10,6 +10,7 @@ import { isEarlyCareer, classifyField } from '../classify';
 import { resolveRoleCoords, isRemoteLocation } from '../cityCoords';
 import { isValidHttpUrl, normalizeApplyUrl } from '../util';
 import { roleConcluded } from '../seasons';
+import { isUsableCity } from '../supabaseSink';
 
 export interface AggregatorResult {
   source: string;
@@ -129,13 +130,17 @@ export async function ingestAggregators(
           companyIdByName.set(slug, companyId);
         }
 
-        // Resolve coordinates (Remote → null; known city → coords).
-        const locationString = [p.city, p.state, p.country].filter(Boolean).join(', ');
+        // Resolve coordinates (Remote → null; known city → coords). Drop junk
+        // city text ("N/A", "2 Locations") so we never persist "Location N/A".
+        const displayCity = isUsableCity(p.city) ? p.city! : null;
+        const displayState = displayCity ? (p.state ?? null) : null;
+        const displayCountry = displayCity ? (p.country ?? null) : null;
+        const locationString = [displayCity, displayState, displayCountry].filter(Boolean).join(', ');
         const remote = p.workArrangement === 'Remote' || isRemoteLocation(locationString);
         let latitude: number | null = null;
         let longitude: number | null = null;
         if (!remote) {
-          const resolved = resolveRoleCoords(locationString || p.city || null);
+          const resolved = resolveRoleCoords(locationString || displayCity || null);
           if (resolved) {
             latitude = resolved.latitude;
             longitude = resolved.longitude;
@@ -152,9 +157,9 @@ export async function ingestAggregators(
           degree_levels: enriched.degreeLevels,
           seasons: enriched.seasons,
           cohort_year: enriched.cohortYear,
-          city: p.city ?? null,
-          state: p.state ?? null,
-          country: p.country ?? null,
+          city: displayCity,
+          state: displayState,
+          country: displayCountry,
           latitude,
           longitude,
           work_arrangement: p.workArrangement ?? 'Remote',

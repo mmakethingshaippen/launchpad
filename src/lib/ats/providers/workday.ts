@@ -80,10 +80,16 @@ export function createWorkdayClient(fetchImpl: FetchLike = fetch): ProviderClien
       const applyUrl = `https://${host}/en-US/${site}${raw.externalPath}`;
       const externalJobId = raw.bulletFields?.[0] ?? raw.externalPath.split('_').pop() ?? raw.externalPath;
 
-      const locText = raw.locationsText ?? '';
+      const locText = (raw.locationsText ?? '').trim();
       const remote = /remote/i.test(locText);
-      // Workday locationsText can be "City, State" or "N locations"; only split real ones.
-      const loc = remote || /\blocations?\b/i.test(locText) ? {} : splitLocation(locText);
+      // Workday locationsText can be "City, State", a multi-office count
+      // ("2 Locations"), or junk ("N/A"). Only split a single real place; for
+      // everything else emit no city so the sink falls back to the company HQ.
+      const looksBad =
+        !locText ||
+        /\blocations?\b/i.test(locText) ||
+        /^(location\s*)?n\/?a$/i.test(locText);
+      const loc = remote || looksBad ? {} : splitLocation(locText);
 
       return {
         externalJobId: String(externalJobId),
