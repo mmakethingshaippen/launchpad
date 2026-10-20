@@ -1,11 +1,11 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { Helmet } from 'react-helmet-async';
 import { useQuery } from '@tanstack/react-query';
 import { MapContainer, TileLayer, Marker, Popup, useMap } from 'react-leaflet';
 import MarkerClusterGroup from 'react-leaflet-cluster';
 import L from 'leaflet';
-import { ArrowRight, Search, X } from 'lucide-react';
-import { Link } from 'react-router-dom';
+import { ArrowRight, Building2, Check, ChevronDown, Share2, Search, X } from 'lucide-react';
+import { Link, useSearchParams } from 'react-router-dom';
 import { useAdapter } from '../hooks/useAdapter';
 import { useRoleFilters } from '../hooks/useRoleFilters';
 import { LoadingBlock } from '../components/ui/Spinner';
@@ -31,29 +31,66 @@ export function filterMarkersByCompany(markers: MapMarker[], companyName: string
   for (const m of markers) {
     const roles = m.roles.filter((r) => r.companyName.toLowerCase() === q);
     if (roles.length === 0) continue;
+    const distinctCompanies = new Set(roles.map((r) => r.companyName.toLowerCase())).size;
     out.push({
       ...m,
       roles,
       roleCount: roles.length,
-      companyCount: 1,
+      companyCount: distinctCompanies,
     });
   }
   return out;
 }
 
-/** Distinct company names across a marker set, sorted, for the search datalist. */
+/** Distinct company names across a marker set, sorted, for tests & autocomplete. */
 export function companyNamesFromMarkers(markers: MapMarker[]): string[] {
   const names = new Set<string>();
   for (const m of markers) for (const r of m.roles) names.add(r.companyName);
   return [...names].sort((a, b) => a.localeCompare(b));
 }
 
+/** Distinct companies with their total mapped role counts and logo URLs. */
+export interface CompanyMapOption {
+  name: string;
+  roleCount: number;
+  cityCount: number;
+  logoUrl?: string | null;
+}
+
+export function companyOptionsFromMarkers(markers: MapMarker[]): CompanyMapOption[] {
+  const stats = new Map<string, { roleCount: number; cities: Set<string>; logoUrl?: string | null }>();
+  for (const m of markers) {
+    for (const r of m.roles) {
+      const existing = stats.get(r.companyName);
+      if (existing) {
+        existing.roleCount += 1;
+        existing.cities.add(m.label);
+        if (!existing.logoUrl && r.companyLogoUrl) existing.logoUrl = r.companyLogoUrl;
+      } else {
+        stats.set(r.companyName, {
+          roleCount: 1,
+          cities: new Set([m.label]),
+          logoUrl: r.companyLogoUrl,
+        });
+      }
+    }
+  }
+  return [...stats.entries()]
+    .map(([name, info]) => ({
+      name,
+      roleCount: info.roleCount,
+      cityCount: info.cities.size,
+      logoUrl: info.logoUrl,
+    }))
+    .sort((a, b) => a.name.localeCompare(b.name));
+}
+
 /** Recenter/zoom the Leaflet map to fit the given markers (company search). */
 function FitToMarkers({ markers, fitKey }: { markers: MapMarker[]; fitKey: string }) {
   const map = useMap();
-  useMemo(() => {
+  useEffect(() => {
     if (!fitKey) {
-      map.setView([25, 0], 2, { animate: true });
+      map.setView([22, 0], 2.4, { animate: true });
       return;
     }
     if (markers.length === 0) return;
@@ -61,9 +98,8 @@ function FitToMarkers({ markers, fitKey }: { markers: MapMarker[]; fitKey: strin
     if (pts.length === 1) {
       map.setView(pts[0], 6, { animate: true });
     } else {
-      map.fitBounds(L.latLngBounds(pts).pad(0.2), { animate: true, maxZoom: 6 });
+      map.fitBounds(L.latLngBounds(pts).pad(0.25), { animate: true, maxZoom: 6 });
     }
-    // fitKey changes only when the selected company changes.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [fitKey]);
   return null;
@@ -99,7 +135,51 @@ function clusterIcon(cluster: { getAllChildMarkers: () => Array<{ options: { rol
 export function MapPage() {
   const adapter = useAdapter();
   const { filters, toggleSeason } = useRoleFilters();
-  const [companyQuery, setCompanyQuery] = useState('');
+  const [searchParams, setSearchParams] = useSearchParams();
+
+  // Initialize from ?company= query param if present so map links are shareable
+  const initialCompany = searchParams.get('company') ?? '';
+  const [companyQuery, setCompanyQuery] = useState(initialCompany);
+  const [dropdownOpen, setDropdownOpen] = useState(false);
+  const [copiedLink, setCopiedLink] = useState(false);
+  const comboboxRef = useRef<HTMLDivElement>(null);
+
+  // Sync companyQuery if the URL ?company= param changes externally
+  useEffect(() => {
+    const paramCompany = searchParams.get('company') ?? '';
+    if (paramCompany !== companyQuery) {
+      setCompanyQuery(paramCompany);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [searchParams]);
+
+  // Close custom dropdown when clicking outside
+  useEffect(() => {
+    function handleClickOutside(e: MouseEvent) {
+      if (comboboxRef.current && !comboboxRef.current.contains(e.target as Node)) {
+        setDropdownOpen(false);
+      }
+    }
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, []);
+
+  const updateCompanySelection = (nextCompany: string) => {
+    setCompanyQuery(nextCompany);
+    const nextParams = new URLSearchParams(searchParams);
+    if (nextCompany.trim()) {
+      nextParams.set('company', nextCompany.trim());
+    } else {
+      nextParams.delete('company');
+    }
+    setSearchParams(nextParams, { replace: true });
+  };
+
+  const handleCopyShareLink = () => {
+    navigator.clipboard.writeText(window.location.href);
+    setCopiedLink(true);
+    setTimeout(() => setCopiedLink(false), 2000);
+  };
 
   const { data, isLoading } = useQuery({
     queryKey: ['map', filters],
@@ -107,7 +187,16 @@ export function MapPage() {
   });
 
   const allMarkers = useMemo(() => data ?? [], [data]);
-  const companyNames = useMemo(() => companyNamesFromMarkers(allMarkers), [allMarkers]);
+  const companyOptions = useMemo(() => companyOptionsFromMarkers(allMarkers), [allMarkers]);
+
+  // Filter dropdown suggestions while typing
+  const filteredCompanyOptions = useMemo(() => {
+    const q = companyQuery.trim().toLowerCase();
+    if (!q) return companyOptions;
+    // If the user has an exact match selected, still show matching or all options cleanly
+    const matches = companyOptions.filter((c) => c.name.toLowerCase().includes(q));
+    return matches.length > 0 ? matches : companyOptions;
+  }, [companyOptions, companyQuery]);
 
   // When a company is selected/typed, show only its pins (Req 3).
   const markers = useMemo(
@@ -118,8 +207,6 @@ export function MapPage() {
 
   const totalRoles = markers.reduce((s, m) => s + m.roleCount, 0);
   const cities = markers.map((m) => m.label);
-  // Stable identity for the current marker set — drives the cluster group's
-  // remount key so clustering is recomputed cleanly on any data change.
   const markerSetKey = useMemo(
     () => `${activeCompany}:${markers.length}:${markers.map((m) => `${m.id}#${m.roleCount}`).join('|')}`,
     [markers, activeCompany],
@@ -128,12 +215,24 @@ export function MapPage() {
   return (
     <div>
       <Helmet>
-        <title>Opportunity map — Launchpad</title>
-        <meta name="description" content="Explore internships and early-career roles by their actual job city on an interactive map." />
+        <title>
+          {activeCompany ? `${activeCompany} Map — Launchpad` : 'Opportunity Map — Launchpad'}
+        </title>
+        <meta
+          name="description"
+          content="Explore internships and early-career roles by their actual job city on an interactive map."
+        />
       </Helmet>
 
       <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
-        <h1 className="text-2xl font-bold text-navy">Explore by location</h1>
+        <div className="flex flex-wrap items-center gap-3">
+          <h1 className="text-2xl font-bold text-navy">Explore by location</h1>
+          <span className="inline-flex items-center gap-1.5 rounded-full bg-emerald-50 px-2.5 py-0.5 text-xs font-medium text-emerald-700 ring-1 ring-emerald-600/20">
+            <span className="h-1.5 w-1.5 rounded-full bg-emerald-500 animate-pulse" aria-hidden="true" />
+            Live ATS feeds · Updated daily
+          </span>
+        </div>
+
         <div className="flex flex-wrap gap-1.5" role="group" aria-label="Quick season filter">
           {[...SPECIFIC_SEASONS, 'Year-Round'].map((s) => {
             const active = filters.seasons.includes(s as Season);
@@ -154,44 +253,128 @@ export function MapPage() {
         </div>
       </div>
 
-      {/* Company search / browse mode (Req 3) */}
-      <div className="mb-3 flex flex-col gap-2 sm:flex-row sm:items-center">
-        <div className="relative flex-1 sm:max-w-sm">
-          <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" aria-hidden="true" />
-          <input
-            type="search"
-            list="map-company-list"
-            value={companyQuery}
-            onChange={(e) => setCompanyQuery(e.target.value)}
-            placeholder="Search a company (e.g. Waymo, Stripe, Nvidia)"
-            aria-label="Search the map by company"
-            className="w-full rounded-lg border border-slate-300 py-2 pl-9 pr-9 text-sm outline-none focus:border-cyan"
+      {/* Custom Polished Company Combobox + Shareable Summary Pill */}
+      <div className="mb-3 flex flex-col gap-2 sm:flex-row sm:items-center sm:flex-wrap">
+        <div ref={comboboxRef} className="relative w-full sm:w-96 z-[1000]">
+          <Search
+            className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400"
+            aria-hidden="true"
           />
-          <datalist id="map-company-list">
-            {companyNames.map((n) => (
-              <option key={n} value={n} />
-            ))}
-          </datalist>
-          {companyQuery && (
+          <input
+            type="text"
+            value={companyQuery}
+            onFocus={() => setDropdownOpen(true)}
+            onChange={(e) => {
+              updateCompanySelection(e.target.value);
+              setDropdownOpen(true);
+            }}
+            placeholder="Filter by company (e.g. Waymo, Stripe, Nvidia)…"
+            aria-label="Search the map by company"
+            aria-expanded={dropdownOpen}
+            className="w-full rounded-lg border border-slate-300 bg-white py-2 pl-9 pr-14 text-sm text-navy placeholder:text-slate-400 outline-none transition-shadow focus:border-cyan focus:ring-2 focus:ring-cyan/20"
+          />
+          <div className="absolute right-2 top-1/2 flex -translate-y-1/2 items-center gap-0.5">
+            {companyQuery && (
+              <button
+                type="button"
+                onClick={() => {
+                  updateCompanySelection('');
+                  setDropdownOpen(false);
+                }}
+                aria-label="Clear company search"
+                className="rounded p-1 text-slate-400 hover:bg-slate-100 hover:text-navy"
+              >
+                <X className="h-4 w-4" aria-hidden="true" />
+              </button>
+            )}
             <button
               type="button"
-              onClick={() => setCompanyQuery('')}
-              aria-label="Clear company search"
-              className="absolute right-2 top-1/2 -translate-y-1/2 rounded p-1 text-slate-400 hover:text-navy"
+              onClick={() => setDropdownOpen((o) => !o)}
+              aria-label="Toggle company list"
+              className="rounded p-1 text-slate-400 hover:bg-slate-100 hover:text-navy"
             >
-              <X className="h-4 w-4" aria-hidden="true" />
+              <ChevronDown
+                className={`h-4 w-4 transition-transform ${dropdownOpen ? 'rotate-180' : ''}`}
+                aria-hidden="true"
+              />
             </button>
+          </div>
+
+          {dropdownOpen && companyOptions.length > 0 && (
+            <div className="absolute left-0 right-0 top-full mt-1.5 max-h-64 overflow-y-auto rounded-xl border border-slate-200 bg-white p-1.5 shadow-xl ring-1 ring-black/5">
+              <div className="px-2.5 py-1 text-[11px] font-semibold uppercase tracking-wider text-slate-400 flex items-center justify-between">
+                <span>Companies with mapped roles ({filteredCompanyOptions.length})</span>
+                <span>Open Roles</span>
+              </div>
+              {filteredCompanyOptions.map((opt) => {
+                const isSelected = opt.name.toLowerCase() === activeCompany.toLowerCase();
+                return (
+                  <button
+                    key={opt.name}
+                    type="button"
+                    onClick={() => {
+                      updateCompanySelection(opt.name);
+                      setDropdownOpen(false);
+                    }}
+                    className={`flex w-full items-center justify-between gap-2 rounded-lg px-2.5 py-2 text-left text-sm transition-colors ${
+                      isSelected
+                        ? 'bg-cyan/15 font-semibold text-navy'
+                        : 'text-slate-700 hover:bg-slate-50'
+                    }`}
+                  >
+                    <span className="flex items-center gap-2 min-w-0">
+                      {opt.logoUrl ? (
+                        <img
+                          src={opt.logoUrl}
+                          alt=""
+                          className="h-4 w-4 flex-shrink-0 rounded object-contain"
+                          onError={(e) => {
+                            (e.currentTarget as HTMLImageElement).style.display = 'none';
+                          }}
+                        />
+                      ) : (
+                        <Building2 className="h-4 w-4 flex-shrink-0 text-slate-400" aria-hidden="true" />
+                      )}
+                      <span className="truncate">{opt.name}</span>
+                    </span>
+                    <span className="flex-shrink-0 rounded-full bg-slate-100 px-2 py-0.5 text-xs font-medium text-slate-600">
+                      {opt.roleCount} {opt.roleCount === 1 ? 'role' : 'roles'}
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
           )}
         </div>
 
         {activeCompany && markers.length > 0 && (
-          <span className="inline-flex items-center gap-2 rounded-full bg-cyan/10 px-3 py-1.5 text-sm font-medium text-navy ring-1 ring-cyan/30">
-            <strong>{activeCompany}</strong>
-            <span className="text-slate-500">
-              {totalRoles} open {totalRoles === 1 ? 'role' : 'roles'} · {cities.length}{' '}
-              {cities.length === 1 ? 'city' : 'cities'}
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="inline-flex items-center gap-2 rounded-full bg-cyan/10 px-3 py-1.5 text-sm font-medium text-navy ring-1 ring-cyan/30">
+              <strong>{activeCompany}</strong>
+              <span className="text-slate-500">
+                {totalRoles} open {totalRoles === 1 ? 'role' : 'roles'} · {cities.length}{' '}
+                {cities.length === 1 ? 'city' : 'cities'}
+              </span>
             </span>
-          </span>
+            <button
+              type="button"
+              onClick={handleCopyShareLink}
+              className="inline-flex items-center gap-1.5 rounded-full bg-white px-3 py-1.5 text-xs font-medium text-slate-600 ring-1 ring-slate-200 transition-colors hover:border-cyan hover:text-navy"
+              title="Copy shareable link to this company's map"
+            >
+              {copiedLink ? (
+                <>
+                  <Check className="h-3.5 w-3.5 text-emerald-600" aria-hidden="true" />
+                  <span className="text-emerald-700">Copied link!</span>
+                </>
+              ) : (
+                <>
+                  <Share2 className="h-3.5 w-3.5" aria-hidden="true" />
+                  <span>Share map</span>
+                </>
+              )}
+            </button>
+          </div>
         )}
       </div>
 
@@ -203,21 +386,26 @@ export function MapPage() {
             : `${totalRoles} open roles across ${markers.length} locations`}
       </p>
       <p className="mb-4 text-xs text-slate-400">
-        Pins show each role's actual job city. Numbers are the count of open roles at that location.
+        Pins show each role's actual job city. Click any company in the search bar to isolate its office hubs.
       </p>
 
       {isLoading ? (
         <LoadingBlock label="Loading map" />
       ) : (
-        <div className="h-[70vh] w-full overflow-hidden rounded-xl border border-slate-200 bg-[#aad3df]">
+        <div
+          className="h-[70vh] w-full overflow-hidden rounded-xl border border-slate-200"
+          style={{ backgroundColor: '#aad3df' }}
+        >
           <MapContainer
-            center={[25, 0]}
-            zoom={2}
-            minZoom={2}
+            center={[22, 0]}
+            zoom={2.4}
+            minZoom={2.3}
+            zoomSnap={0.1}
+            zoomDelta={0.5}
             maxBounds={SINGLE_WORLD_BOUNDS}
             maxBoundsViscosity={1.0}
             scrollWheelZoom
-            style={{ height: '100%', width: '100%' }}
+            style={{ height: '100%', width: '100%', backgroundColor: '#aad3df' }}
           >
             <TileLayer
               attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
