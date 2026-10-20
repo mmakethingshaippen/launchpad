@@ -4,6 +4,8 @@ import { selectCandidates } from './normalize';
 import { createGreenhouseClient } from './providers/greenhouse';
 import { createAshbyClient } from './providers/ashby';
 import { createLeverClient } from './providers/lever';
+import { createSmartRecruitersClientFor } from './providers/smartrecruiters';
+import { createWorkableClient } from './providers/workable';
 import type { AtsProvider, FieldType } from '../adapter/types';
 
 export interface SyncableCompany {
@@ -54,7 +56,11 @@ export interface SyncOptions {
   fetchImpl?: typeof fetch;
 }
 
-function clientFor(provider: AtsProvider, fetchImpl?: typeof fetch): ProviderClient | null {
+function clientFor(
+  provider: AtsProvider,
+  token: string,
+  fetchImpl?: typeof fetch,
+): ProviderClient | null {
   switch (provider) {
     case 'greenhouse':
       return createGreenhouseClient(fetchImpl) as ProviderClient;
@@ -62,6 +68,11 @@ function clientFor(provider: AtsProvider, fetchImpl?: typeof fetch): ProviderCli
       return createAshbyClient(fetchImpl) as ProviderClient;
     case 'lever':
       return createLeverClient(fetchImpl) as ProviderClient;
+    case 'smartrecruiters':
+      // Token-bound so apply URLs resolve to jobs.smartrecruiters.com/{token}/{id}.
+      return createSmartRecruitersClientFor(token, fetchImpl) as ProviderClient;
+    case 'workable':
+      return createWorkableClient(fetchImpl) as ProviderClient;
     default:
       return null;
   }
@@ -83,7 +94,7 @@ export async function syncCompany(
     errors: [],
   };
 
-  const client = clientFor(company.atsProvider, fetchImpl);
+  const client = clientFor(company.atsProvider, company.atsBoardToken ?? '', fetchImpl);
   if (!client || !company.atsBoardToken) {
     result.errors.push(`No ATS client/token for ${company.name}`);
     return result;
@@ -164,7 +175,7 @@ export async function syncAll(
   sink: SyncSink,
   options: SyncOptions = {},
 ): Promise<SyncResult[]> {
-  const concurrency = options.concurrency ?? 5;
+  const concurrency = options.concurrency ?? 7;
   const targets = companies.filter((c) => c.atsProvider !== 'none' && c.atsBoardToken);
 
   const settled = await pool(targets, concurrency, (company) =>

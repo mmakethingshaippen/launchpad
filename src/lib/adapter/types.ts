@@ -13,7 +13,13 @@ export type StartupStage =
 
 export type EmployeeRange = '1-10' | '11-50' | '51-200' | '201-500' | '501+';
 
-export type AtsProvider = 'greenhouse' | 'lever' | 'ashby' | 'none';
+export type AtsProvider =
+  | 'greenhouse'
+  | 'lever'
+  | 'ashby'
+  | 'smartrecruiters'
+  | 'workable'
+  | 'none';
 
 export type ModerationStatus = 'Pending' | 'Approved' | 'Rejected';
 

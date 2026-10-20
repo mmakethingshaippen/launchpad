@@ -20,15 +20,29 @@ export interface NormalizedPosting {
   updatedAt?: string;
 }
 
+export type ProviderName = 'greenhouse' | 'ashby' | 'lever' | 'smartrecruiters' | 'workable';
+
 /** A provider adapter: fetch raw postings, then map each to NormalizedPosting. */
 export interface ProviderClient<Raw = unknown> {
-  readonly provider: 'greenhouse' | 'ashby' | 'lever';
+  readonly provider: ProviderName;
   fetchPostings(token: string, signal?: AbortSignal): Promise<Raw[]>;
   toNormalized(raw: Raw): NormalizedPosting | null;
 }
 
+/**
+ * Minimal fetch surface used by provider adapters. Supports GET (default) and
+ * POST with a JSON body/headers (needed by Workable's v3 search API).
+ */
 export interface FetchLike {
-  (input: string, init?: { signal?: AbortSignal }): Promise<{
+  (
+    input: string,
+    init?: {
+      signal?: AbortSignal;
+      method?: string;
+      headers?: Record<string, string>;
+      body?: string;
+    },
+  ): Promise<{
     ok: boolean;
     status: number;
     json: () => Promise<unknown>;

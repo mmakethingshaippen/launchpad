@@ -1,0 +1,58 @@
+import type { FetchLike } from '../types';
+import type { AggregatedPosting, AggregatorClient } from './types';
+
+// Remotive public remote-jobs API (keyless):
+//   https://remotive.com/api/remote-jobs
+interface RemotiveJob {
+  id: number;
+  title: string;
+  company_name?: string;
+  company_logo?: string;
+  url?: string;
+  candidate_required_location?: string;
+  job_type?: string;
+  category?: string;
+  publication_date?: string;
+  description?: string; // HTML
+}
+interface RemotiveResponse {
+  jobs?: RemotiveJob[];
+}
+
+// Early-career title match (Req: intern, junior, new grad, entry level, analyst, associate).
+const EARLY_RE = /\b(intern|internship|junior|new ?grad|entry[- ]?level|analyst|associate|co-?op|graduate)\b/i;
+// Exclude senior/lead even if "analyst"/"associate" appears.
+const SENIOR_RE = /\b(senior|staff|principal|director|manager|lead|sr\.?|head of|vp\b)\b/i;
+
+export function createRemotiveClient(fetchImpl: FetchLike = fetch): AggregatorClient {
+  return {
+    source: 'remotive',
+    async fetchEarlyCareer(signal) {
+      const url = 'https://remotive.com/api/remote-jobs';
+      const res = await fetchImpl(url, { signal });
+      if (!res.ok) throw new Error(`Remotive: HTTP ${res.status}`);
+      const data = (await res.json()) as RemotiveResponse;
+
+      const out: AggregatedPosting[] = [];
+      for (const j of data.jobs ?? []) {
+        if (!j.title || !j.company_name || !j.url) continue;
+        if (SENIOR_RE.test(j.title)) continue;
+        if (!EARLY_RE.test(j.title)) continue;
+
+        out.push({
+          source: 'remotive',
+          companyName: j.company_name,
+          externalJobId: `remotive-${j.id}`,
+          title: j.title,
+          descriptionHtml: j.description ?? '',
+          applyUrl: j.url,
+          // Remotive roles are remote by definition.
+          workArrangement: 'Remote',
+          employmentTypeRaw: j.job_type ?? j.category,
+          updatedAt: j.publication_date,
+        });
+      }
+      return out;
+    },
+  };
+}

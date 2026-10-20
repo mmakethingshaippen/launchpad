@@ -14196,8 +14196,123 @@ function createLeverClient(fetchImpl = fetch) {
   };
 }
 
+// src/lib/ats/providers/smartrecruiters.ts
+function countryName(code) {
+  if (!code) return void 0;
+  const map = {
+    us: "USA",
+    ca: "Canada",
+    gb: "UK",
+    uk: "UK",
+    ie: "Ireland",
+    de: "Germany",
+    fr: "France",
+    in: "India",
+    sg: "Singapore",
+    au: "Australia",
+    jp: "Japan"
+  };
+  return map[code.toLowerCase()] ?? code.toUpperCase();
+}
+function createSmartRecruitersClient(fetchImpl = fetch) {
+  return {
+    provider: "smartrecruiters",
+    async fetchPostings(token, signal) {
+      const url = `https://api.smartrecruiters.com/v1/companies/${encodeURIComponent(
+        token
+      )}/postings?limit=100`;
+      const res = await fetchImpl(url, { signal });
+      if (!res.ok) throw new Error(`SmartRecruiters ${token}: HTTP ${res.status}`);
+      const data = await res.json();
+      return data.content ?? [];
+    },
+    toNormalized(raw) {
+      if (!raw || !raw.id || !raw.name) return null;
+      return {
+        externalJobId: String(raw.id),
+        title: raw.name,
+        descriptionHtml: "",
+        applyUrl: "",
+        // filled by the token-bound wrapper
+        city: raw.location?.city,
+        state: raw.location?.region,
+        country: countryName(raw.location?.country),
+        workArrangement: raw.location?.remote ? "Remote" : void 0,
+        employmentTypeRaw: raw.typeOfEmployment?.label ?? raw.department?.label,
+        updatedAt: raw.releasedDate
+      };
+    }
+  };
+}
+function createSmartRecruitersClientFor(token, fetchImpl = fetch) {
+  const base = createSmartRecruitersClient(fetchImpl);
+  return {
+    provider: "smartrecruiters",
+    fetchPostings: (t, signal) => base.fetchPostings(t, signal),
+    toNormalized(raw) {
+      const normalized = base.toNormalized(raw);
+      if (!normalized) return null;
+      return {
+        ...normalized,
+        applyUrl: `https://jobs.smartrecruiters.com/${encodeURIComponent(token)}/${normalized.externalJobId}`
+      };
+    }
+  };
+}
+
+// src/lib/ats/providers/workable.ts
+function createWorkableClient(fetchImpl = fetch) {
+  return {
+    provider: "workable",
+    async fetchPostings(token, signal) {
+      const widgetUrl = `https://www.workable.com/api/accounts/${encodeURIComponent(token)}?details=false`;
+      const res = await fetchImpl(widgetUrl, { signal });
+      if (res.ok) {
+        const data = await res.json();
+        if (data.jobs?.length) return data.jobs;
+      }
+      const v3Url = `https://apply.workable.com/api/v3/accounts/${encodeURIComponent(token)}/jobs`;
+      const v3 = await fetchImpl(v3Url, {
+        signal,
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ query: "", location: [], department: [], worktype: [], remote: [] })
+      });
+      if (!v3.ok) throw new Error(`Workable ${token}: HTTP ${res.status}/${v3.status}`);
+      const v3data = await v3.json();
+      return (v3data.results ?? []).map((j) => ({
+        shortcode: j.shortcode ?? j.id,
+        title: j.title,
+        url: j.url,
+        location: j.locations?.[0] ? { ...j.locations[0], telecommuting: j.remote } : { telecommuting: j.remote },
+        department: j.department?.[0],
+        created_at: j.created_at
+      }));
+    },
+    toNormalized(raw) {
+      if (!raw || !raw.title) return null;
+      const code = raw.shortcode ?? raw.id;
+      if (!code) return null;
+      const applyUrl = raw.application_url ?? raw.url ?? raw.shortlink ?? `https://apply.workable.com/j/${code}`;
+      const loc = raw.location;
+      const locationString = [loc?.city, loc?.region, loc?.country].filter(Boolean).join(", ");
+      const parts = splitLocation(locationString);
+      return {
+        externalJobId: String(code),
+        title: raw.title,
+        descriptionHtml: "",
+        applyUrl,
+        ...parts,
+        workArrangement: loc?.telecommuting ? "Remote" : mapWorkArrangement(void 0),
+        employmentTypeRaw: raw.employment_type ?? raw.department,
+        updatedAt: raw.created_at
+      };
+    }
+  };
+}
+
 // src/lib/ats/sync.ts
-function clientFor(provider, fetchImpl) {
+function clientFor(provider, token, fetchImpl) {
   switch (provider) {
     case "greenhouse":
       return createGreenhouseClient(fetchImpl);
@@ -14205,6 +14320,10 @@ function clientFor(provider, fetchImpl) {
       return createAshbyClient(fetchImpl);
     case "lever":
       return createLeverClient(fetchImpl);
+    case "smartrecruiters":
+      return createSmartRecruitersClientFor(token, fetchImpl);
+    case "workable":
+      return createWorkableClient(fetchImpl);
     default:
       return null;
   }
@@ -14219,7 +14338,7 @@ async function syncCompany(company, sink, options = {}) {
     closed: 0,
     errors: []
   };
-  const client = clientFor(company.atsProvider, fetchImpl);
+  const client = clientFor(company.atsProvider, company.atsBoardToken ?? "", fetchImpl);
   if (!client || !company.atsBoardToken) {
     result.errors.push(`No ATS client/token for ${company.name}`);
     return result;
@@ -14277,7 +14396,7 @@ async function pool(items, limit, worker) {
   return results;
 }
 async function syncAll(companies, sink, options = {}) {
-  const concurrency = options.concurrency ?? 5;
+  const concurrency = options.concurrency ?? 7;
   const targets = companies.filter((c) => c.atsProvider !== "none" && c.atsBoardToken);
   const settled = await pool(
     targets,

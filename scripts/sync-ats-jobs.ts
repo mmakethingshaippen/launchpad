@@ -56,7 +56,10 @@ async function runLocal(slug?: string): Promise<SyncResult[]> {
 }
 
 async function main() {
-  const slug = process.argv[2];
+  const args = process.argv.slice(2);
+  const withAggregators = args.includes('--aggregators');
+  const slug = args.find((a) => !a.startsWith('--'));
+
   const results = hasServiceCreds() ? await runCloud(slug) : await runLocal(slug);
 
   // eslint-disable-next-line no-console
@@ -87,6 +90,24 @@ async function main() {
       // eslint-disable-next-line no-console
       console.warn(`  ${r.company}: ${r.errors.join('; ')}`);
     }
+  }
+
+  // Optional: ingest keyless public aggregator feeds (The Muse, Remotive).
+  if (withAggregators && hasServiceCreds()) {
+    const { createServiceClient } = await import('../src/lib/ats/supabaseSink');
+    const { ingestAggregators } = await import('../src/lib/ats/aggregators/ingest');
+    // eslint-disable-next-line no-console
+    console.log('\nIngesting aggregator feeds (The Muse, Remotive)…');
+    const agg = await ingestAggregators(createServiceClient(), {});
+    // eslint-disable-next-line no-console
+    console.table(
+      agg.map((a) => ({
+        source: a.source,
+        companies: a.companiesUpserted,
+        roles: a.rolesUpserted,
+        errors: a.errors.length,
+      })),
+    );
   }
 }
 
