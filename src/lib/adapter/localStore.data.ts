@@ -10,9 +10,29 @@ import type {
 import { SEED_COMPANIES, type SeedCompany } from '../../data/seed-companies';
 import type { SyncSink, UpsertRoleData } from '../ats/sync';
 import { roleConcluded } from '../ats/seasons';
+import { classifyField } from '../ats/classify';
+import { resolveRoleCoords, isRemoteLocation } from '../ats/cityCoords';
+import type { WorkArrangement } from './types';
 
 function uid(seed: string): string {
   return `seed-${seed}`;
+}
+
+/** Resolve role coordinates: role city first, else company HQ (Remote/unknown). */
+function resolveCoords(
+  locationString: string,
+  workArrangement: WorkArrangement | undefined,
+  hq: CompanyLocation | undefined,
+): { latitude: number | null; longitude: number | null } {
+  const remote = workArrangement === 'Remote' || isRemoteLocation(locationString);
+  if (!remote) {
+    const hit = resolveRoleCoords(locationString);
+    if (hit) return { latitude: hit.latitude, longitude: hit.longitude };
+  }
+  if (hq?.latitude != null && hq?.longitude != null) {
+    return { latitude: hq.latitude, longitude: hq.longitude };
+  }
+  return { latitude: null, longitude: null };
 }
 
 function companyFromSeed(s: SeedCompany): Company {
@@ -78,14 +98,28 @@ export class LocalStore implements SyncSink {
       (r) => r.companyId === data.companyId && r.externalJobId === data.externalJobId,
     );
     const now = new Date().toISOString();
+
+    // Resolve field + coordinates (same logic the Supabase sink uses).
+    const company = this.companies.get(data.companyId);
+    const field =
+      data.field !== 'Other' ? data.field : classifyField(data.title, company?.fields[0], data.employmentTypeRaw);
+    const locationString = [data.city, data.state, data.country].filter(Boolean).join(', ');
+    const hq = this.locations.get(data.companyId)?.find((l) => l.latitude != null);
+    const { latitude, longitude } = resolveCoords(locationString, data.workArrangement, hq);
+
     if (existing) {
       Object.assign(existing, {
         title: data.title,
+        field,
+        opportunityType: data.opportunityType,
+        degreeLevels: data.degreeLevels,
         seasons: data.seasons,
         cohortYear: data.cohortYear,
         city: data.city ?? null,
         state: data.state ?? null,
         country: data.country ?? null,
+        latitude,
+        longitude,
         workArrangement: data.workArrangement ?? existing.workArrangement,
         applyUrl: data.applyUrl,
         description: data.descriptionHtml,
@@ -107,15 +141,17 @@ export class LocalStore implements SyncSink {
       companyId: data.companyId,
       externalJobId: data.externalJobId,
       title: data.title,
-      field: this.companies.get(data.companyId)?.fields[0] ?? 'Other',
+      field,
       seasons: data.seasons,
       cohortYear: data.cohortYear,
       city: data.city ?? null,
       state: data.state ?? null,
       country: data.country ?? null,
+      latitude,
+      longitude,
       workArrangement: data.workArrangement ?? 'Onsite',
-      degreeLevels: this.companies.get(data.companyId)?.degreeLevels ?? [],
-      opportunityType: /co-?op/i.test(data.title) ? 'Co-op' : /new ?grad|entry/i.test(data.title) ? 'Entry-level / New-grad' : 'Internship',
+      degreeLevels: data.degreeLevels.length ? data.degreeLevels : (company?.degreeLevels ?? []),
+      opportunityType: data.opportunityType,
       workSchedule: 'Full-time',
       compensationStatus: data.pay ? 'Paid' : 'Not disclosed',
       payMin: data.pay?.min ?? null,
@@ -172,6 +208,7 @@ export class LocalStore implements SyncSink {
       companyName: c?.name ?? 'Unknown',
       companySlug: c?.slug ?? '',
       companyLogoUrl: c?.logoUrl ?? null,
+      companyWebsiteUrl: c?.websiteUrl ?? null,
       companyType: c?.companyType ?? null,
       seasons: r.seasons,
       cohortYear: r.cohortYear,
@@ -214,6 +251,7 @@ export class LocalStore implements SyncSink {
       slug: c.slug,
       name: c.name,
       logoUrl: c.logoUrl,
+      websiteUrl: c.websiteUrl,
       fields: c.fields,
       companyType: c.companyType,
       startupStage: c.startupStage,
@@ -244,6 +282,15 @@ export class LocalStore implements SyncSink {
     return [...this.roles.values()]
       .filter((r) => this.isPubliclyEligible(r))
       .map((r) => this.roleToCard(r));
+  }
+
+  /** Raw eligible Role records (with coordinates) for building map markers. */
+  publicRoles(): Role[] {
+    return [...this.roles.values()].filter((r) => this.isPubliclyEligible(r));
+  }
+
+  getCompany(id: string): Company | undefined {
+    return this.companies.get(id);
   }
 
   /** Includes closed/expired approved roles (base-table semantics, refinement #1). */
@@ -307,6 +354,8 @@ export class LocalStore implements SyncSink {
         city: s.remote ? null : 'San Francisco',
         state: s.remote ? null : 'CA',
         country: 'USA',
+        latitude: s.remote ? null : 37.7749,
+        longitude: s.remote ? null : -122.4194,
         workArrangement: s.remote ? 'Remote' : 'Onsite',
         degreeLevels: company.degreeLevels,
         opportunityType: /co-?op/i.test(s.title)

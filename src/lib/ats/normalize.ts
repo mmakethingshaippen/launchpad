@@ -1,21 +1,34 @@
 import type { NormalizedPosting } from './types';
-import type { Season } from '../adapter/types';
+import type { Season, FieldType, DegreeLevel, OpportunityType } from '../adapter/types';
 import { extractSeasons, cohortYear, roleConcluded } from './seasons';
-import { isEarlyCareer } from './classify';
+import {
+  isEarlyCareer,
+  classifyField,
+  classifyOpportunityType,
+  classifyDegreeLevels,
+} from './classify';
 import { isValidHttpUrl } from './util';
 
-/** A posting enriched with derived season/cohort metadata, ready to upsert. */
+/** A posting enriched with derived season/cohort/classification metadata. */
 export interface EnrichedPosting extends NormalizedPosting {
   seasons: Season[];
   cohortYear: number | null;
+  field: FieldType;
+  opportunityType: OpportunityType;
+  degreeLevels: DegreeLevel[];
 }
 
 export function enrich(p: NormalizedPosting): EnrichedPosting {
   const text = `${p.title} ${p.descriptionHtml}`;
+  const opportunityType = classifyOpportunityType(p.title, p.employmentTypeRaw);
   return {
     ...p,
     seasons: extractSeasons(text),
     cohortYear: cohortYear(p.title),
+    // Company fallback field is applied later in the sink (it has company context).
+    field: classifyField(p.title, undefined, p.employmentTypeRaw),
+    opportunityType,
+    degreeLevels: classifyDegreeLevels(p.title, opportunityType, p.descriptionHtml),
   };
 }
 

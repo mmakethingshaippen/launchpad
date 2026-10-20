@@ -1,8 +1,9 @@
 import { Link } from 'react-router-dom';
-import { Building2, ExternalLink, MapPin, Plus } from 'lucide-react';
+import { ExternalLink, MapPin, Plus } from 'lucide-react';
 import type { CompanyCard as CompanyCardData } from '../../lib/adapter/types';
 import { Card } from '../ui/Card';
 import { Badge } from '../ui/Badge';
+import { CompanyLogo } from '../ui/CompanyLogo';
 
 export function CompanyCard({ company }: { company: CompanyCardData }) {
   const loc = company.locations[0];
@@ -10,13 +11,7 @@ export function CompanyCard({ company }: { company: CompanyCardData }) {
   return (
     <Card className="flex h-full flex-col">
       <div className="flex items-start gap-3">
-        {company.logoUrl ? (
-          <img src={company.logoUrl} alt="" className="h-11 w-11 rounded-lg object-contain" />
-        ) : (
-          <span className="flex h-11 w-11 items-center justify-center rounded-lg bg-slate-100 text-slate-400">
-            <Building2 className="h-6 w-6" aria-hidden="true" />
-          </span>
-        )}
+        <CompanyLogo name={company.name} logoUrl={company.logoUrl} websiteUrl={company.websiteUrl} size={44} />
         <div className="min-w-0">
           <Link to={`/companies/${company.slug}`} className="font-semibold text-navy hover:text-cyan">
             {company.name}

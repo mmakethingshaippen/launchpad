@@ -150,6 +150,8 @@ export interface Role {
   city: string | null;
   state: string | null;
   country: string | null;
+  latitude: number | null;
+  longitude: number | null;
   workArrangement: WorkArrangement;
   degreeLevels: DegreeLevel[];
   opportunityType: OpportunityType;
@@ -181,6 +183,7 @@ export interface RoleCard {
   companyName: string;
   companySlug: string;
   companyLogoUrl: string | null;
+  companyWebsiteUrl: string | null;
   companyType: CompanyType | null;
   seasons: Season[];
   cohortYear: number | null;
@@ -212,6 +215,7 @@ export interface CompanyCard {
   slug: string;
   name: string;
   logoUrl: string | null;
+  websiteUrl: string | null;
   fields: FieldType[];
   companyType: CompanyType;
   startupStage: StartupStage | null;

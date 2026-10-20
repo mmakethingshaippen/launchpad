@@ -12,6 +12,9 @@
 import { createClient, type SupabaseClient } from '@supabase/supabase-js';
 import type { SyncSink, UpsertRoleData, SyncableCompany } from './sync';
 import type { SeedCompany } from '../../data/seed-companies';
+import type { FieldType } from '../adapter/types';
+import { classifyField } from './classify';
+import { resolveRoleCoords, isRemoteLocation } from './cityCoords';
 
 export function createServiceClient(env: NodeJS.ProcessEnv = process.env): SupabaseClient {
   const url = env.SUPABASE_URL ?? env.VITE_SUPABASE_URL;
@@ -29,16 +32,45 @@ export class SupabaseSink implements SyncSink {
 
   async upsertRole(data: UpsertRoleData): Promise<'imported' | 'updated'> {
     const slug = `${data.companyId}-${data.externalJobId}`.replace(/[^a-z0-9-]/gi, '-').toLowerCase();
+
+    // Refine the field with the company fallback for ambiguous titles.
+    const field =
+      data.field !== 'Other'
+        ? data.field
+        : classifyField(data.title, data.companyFallbackField, data.employmentTypeRaw);
+
+    // Resolve real coordinates: role city first, else company HQ (Remote/unknown).
+    const locationString = [data.city, data.state, data.country].filter(Boolean).join(', ');
+    const remote = data.workArrangement === 'Remote' || isRemoteLocation(locationString);
+    let latitude: number | null = null;
+    let longitude: number | null = null;
+    if (!remote) {
+      const resolved = resolveRoleCoords(locationString || data.city || null);
+      if (resolved) {
+        latitude = resolved.latitude;
+        longitude = resolved.longitude;
+      }
+    }
+    if (latitude == null && data.companyHqLatitude != null && data.companyHqLongitude != null) {
+      latitude = data.companyHqLatitude;
+      longitude = data.companyHqLongitude;
+    }
+
     const row = {
       company_id: data.companyId,
       external_job_id: data.externalJobId,
       slug,
       title: data.title,
+      field,
+      opportunity_type: data.opportunityType,
+      degree_levels: data.degreeLevels,
       seasons: data.seasons,
       cohort_year: data.cohortYear,
       city: data.city ?? null,
       state: data.state ?? null,
       country: data.country ?? null,
+      latitude,
+      longitude,
       work_arrangement: data.workArrangement ?? 'Onsite',
       apply_url: data.applyUrl,
       description: data.descriptionHtml,
@@ -59,7 +91,18 @@ export class SupabaseSink implements SyncSink {
       .eq('company_id', data.companyId)
       .eq('external_job_id', data.externalJobId)
       .maybeSingle();
-    const { error } = await this.db.from('roles').upsert(row, { onConflict: 'company_id,external_job_id' });
+
+    let { error } = await this.db.from('roles').upsert(row, { onConflict: 'company_id,external_job_id' });
+
+    // Graceful degradation: if the role-coordinate columns haven't been added
+    // yet (migration 0003 not applied), retry without them so classification
+    // and other fields still sync. Map pins populate after the migration runs.
+    if (error && /latitude|longitude/.test(error.message) && /column/i.test(error.message)) {
+      const { latitude: _lat, longitude: _lng, ...rest } = row;
+      void _lat;
+      void _lng;
+      ({ error } = await this.db.from('roles').upsert(rest, { onConflict: 'company_id,external_job_id' }));
+    }
     if (error) throw new Error(`upsert role ${data.externalJobId}: ${error.message}`);
     return existing ? 'updated' : 'imported';
   }
@@ -86,16 +129,30 @@ export async function loadSyncableCompanies(
   db: SupabaseClient,
   slug?: string,
 ): Promise<SyncableCompany[]> {
-  let q = db.from('companies').select('id,name,ats_provider,ats_board_token').neq('ats_provider', 'none');
+  let q = db
+    .from('companies')
+    .select('id,name,ats_provider,ats_board_token,fields,company_locations(latitude,longitude,location_type)')
+    .neq('ats_provider', 'none');
   if (slug) q = q.eq('slug', slug);
   const { data, error } = await q;
   if (error) throw new Error(`load companies: ${error.message}`);
-  return (data ?? []).map((c: Record<string, unknown>) => ({
-    id: c.id as string,
-    name: c.name as string,
-    atsProvider: c.ats_provider as SyncableCompany['atsProvider'],
-    atsBoardToken: (c.ats_board_token as string) ?? null,
-  }));
+  return (data ?? []).map((c: Record<string, unknown>) => {
+    const fields = (c.fields as FieldType[]) ?? [];
+    const locs = (c.company_locations as Array<Record<string, unknown>>) ?? [];
+    // Prefer the HQ location; fall back to the first with coordinates.
+    const hq =
+      locs.find((l) => l.location_type === 'HQ' && l.latitude != null) ??
+      locs.find((l) => l.latitude != null);
+    return {
+      id: c.id as string,
+      name: c.name as string,
+      atsProvider: c.ats_provider as SyncableCompany['atsProvider'],
+      atsBoardToken: (c.ats_board_token as string) ?? null,
+      fallbackField: fields[0],
+      hqLatitude: (hq?.latitude as number) ?? null,
+      hqLongitude: (hq?.longitude as number) ?? null,
+    };
+  });
 }
 
 export interface SeedReportRow {

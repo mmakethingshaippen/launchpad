@@ -13958,6 +13958,73 @@ function isEarlyCareer(p) {
   if (p.employmentTypeRaw && p.employmentTypeRaw.trim().toLowerCase() === "intern") return true;
   return EARLY_CAREER_RE.test(p.title) || EARLY_CAREER_RE.test(p.employmentTypeRaw ?? "");
 }
+var FIELD_RULES = [
+  // Finance first — "financial analyst" should beat the generic "analyst"/"data" rules.
+  {
+    field: "Finance",
+    re: /\b(financ\w*|accounting|accountant|audit|tax|treasury|investment|equity research|trading|trader|quant\w*|actuar\w*|underwrit\w*|fp&a|banking|fintech)\b/i
+  },
+  // Specific Business phrases that would otherwise be grabbed by the generic
+  // Technology "analyst" keyword (e.g. "Business Analyst" is a Business role,
+  // while "Data Analyst" stays Technology below).
+  {
+    field: "Business",
+    re: /\b(business analyst|business operations|business development|bizops|sales operations|revenue operations|program management|project management|product management|product manager)\b/i
+  },
+  {
+    field: "Healthcare",
+    re: /\b(health\w*|clinical|medical|biotech|pharma\w*|biolog\w*|life science|genomics|patient|nurs\w*|care delivery|epidemiolog\w*)\b/i
+  },
+  {
+    field: "Marketing",
+    re: /\b(marketing|growth|brand|content|social media|seo|communications|pr\b|public relations|demand gen|lifecycle|community)\b/i
+  },
+  {
+    field: "Engineering",
+    re: /\b(mechanical|electrical|hardware|firmware|robotics|aerospace|manufactur\w*|civil|structural|materials|systems engineer|test engineer|quality engineer|controls|propulsion|avionics)\b/i
+  },
+  {
+    field: "Technology",
+    re: /\b(software|engineer\w*|developer|programming|data|analytics|analyst|machine learning|ml\b|ai\b|artificial intelligence|security|infra\w*|devops|cloud|backend|back-end|frontend|front-end|full[- ]?stack|mobile|ios|android|web|platform|sre|qa\b|technical|it\b|information technology|database|sde)\b/i
+  },
+  {
+    field: "Business",
+    re: /\b(business|operations|ops\b|strategy|consult\w*|product manage|product\b|project manage|program manage|sales|account executive|account manager|customer success|partnerships|people|recruit\w*|hr\b|human resources|legal|supply chain|logistics|procurement)\b/i
+  }
+];
+function classifyField(title, companyFallback, extra) {
+  const text = `${title} ${extra ?? ""}`;
+  for (const rule of FIELD_RULES) {
+    if (rule.re.test(text)) return rule.field;
+  }
+  return companyFallback && companyFallback !== "Other" ? companyFallback : "Other";
+}
+function classifyOpportunityType(title, employmentTypeRaw) {
+  const text = `${title} ${employmentTypeRaw ?? ""}`.toLowerCase();
+  if (/\bco-?op\b/.test(text)) return "Co-op";
+  if (/\b(new ?grad|entry[- ]?level|university grad|campus|associate)\b/.test(text)) {
+    if (/\bintern/.test(text)) return "Internship";
+    return "Entry-level / New-grad";
+  }
+  return "Internship";
+}
+function classifyDegreeLevels(title, opportunityType, descriptionHtml) {
+  const text = `${title} ${descriptionHtml ?? ""}`.toLowerCase();
+  const levels = /* @__PURE__ */ new Set();
+  if (/\b(phd|ph\.d|master'?s|graduate student|mba|m\.s\.|ms\b|grad program)\b/.test(text)) {
+    levels.add("Graduate");
+  }
+  if (opportunityType === "Entry-level / New-grad" || /\bnew ?grad\b/.test(text)) {
+    levels.add("New Grad");
+  }
+  if (opportunityType === "Internship" || opportunityType === "Co-op") {
+    if (!/\b(phd|master'?s only|graduate only)\b/.test(text)) levels.add("Undergraduate");
+  }
+  if (levels.size === 0) {
+    levels.add(opportunityType === "Entry-level / New-grad" ? "New Grad" : "Undergraduate");
+  }
+  return Array.from(levels);
+}
 
 // src/lib/ats/util.ts
 function mapWorkArrangement(raw) {
@@ -13998,10 +14065,15 @@ function isValidHttpUrl(url) {
 // src/lib/ats/normalize.ts
 function enrich(p) {
   const text = `${p.title} ${p.descriptionHtml}`;
+  const opportunityType = classifyOpportunityType(p.title, p.employmentTypeRaw);
   return {
     ...p,
     seasons: extractSeasons(text),
-    cohortYear: cohortYear(p.title)
+    cohortYear: cohortYear(p.title),
+    // Company fallback field is applied later in the sink (it has company context).
+    field: classifyField(p.title, void 0, p.employmentTypeRaw),
+    opportunityType,
+    degreeLevels: classifyDegreeLevels(p.title, opportunityType, p.descriptionHtml)
   };
 }
 function selectCandidates(postings, now = /* @__PURE__ */ new Date()) {
@@ -14165,7 +14237,13 @@ async function syncCompany(company, sink, options = {}) {
   const liveIds = [];
   for (const posting of candidates) {
     try {
-      const outcome = await sink.upsertRole({ ...posting, companyId: company.id });
+      const outcome = await sink.upsertRole({
+        ...posting,
+        companyId: company.id,
+        companyFallbackField: company.fallbackField,
+        companyHqLatitude: company.hqLatitude ?? null,
+        companyHqLongitude: company.hqLongitude ?? null
+      });
       liveIds.push(posting.externalJobId);
       if (outcome === "imported") result.imported++;
       else result.updated++;
@@ -22409,6 +22487,132 @@ function shouldShowDeprecationWarning() {
 }
 if (shouldShowDeprecationWarning()) console.warn("\u26A0\uFE0F  Node.js 20 and below are deprecated and will no longer be supported in future versions of @supabase/supabase-js. Please upgrade to Node.js 22 or later. For more information, visit: https://github.com/orgs/supabase/discussions/45715");
 
+// src/lib/ats/cityCoords.ts
+function norm(s) {
+  return s.toLowerCase().replace(/\./g, "").replace(/\s+/g, " ").trim();
+}
+var CITIES = {
+  // ── United States ──
+  "san francisco": { latitude: 37.7749, longitude: -122.4194 },
+  sf: { latitude: 37.7749, longitude: -122.4194 },
+  "south san francisco": { latitude: 37.6547, longitude: -122.4077 },
+  "san jose": { latitude: 37.3382, longitude: -121.8863 },
+  "palo alto": { latitude: 37.4419, longitude: -122.143 },
+  "mountain view": { latitude: 37.3861, longitude: -122.0839 },
+  sunnyvale: { latitude: 37.3688, longitude: -122.0363 },
+  "menlo park": { latitude: 37.4538, longitude: -122.1822 },
+  "santa clara": { latitude: 37.3541, longitude: -121.9552 },
+  cupertino: { latitude: 37.322, longitude: -122.0322 },
+  oakland: { latitude: 37.8044, longitude: -122.2712 },
+  "los angeles": { latitude: 34.0522, longitude: -118.2437 },
+  la: { latitude: 34.0522, longitude: -118.2437 },
+  "long beach": { latitude: 33.7701, longitude: -118.1937 },
+  "costa mesa": { latitude: 33.6411, longitude: -117.9187 },
+  "san diego": { latitude: 32.7157, longitude: -117.1611 },
+  seattle: { latitude: 47.6062, longitude: -122.3321 },
+  bellevue: { latitude: 47.6101, longitude: -122.2015 },
+  redmond: { latitude: 47.674, longitude: -122.1215 },
+  portland: { latitude: 45.5152, longitude: -122.6784 },
+  "new york": { latitude: 40.7128, longitude: -74.006 },
+  "new york city": { latitude: 40.7128, longitude: -74.006 },
+  nyc: { latitude: 40.7128, longitude: -74.006 },
+  brooklyn: { latitude: 40.6782, longitude: -73.9442 },
+  boston: { latitude: 42.3601, longitude: -71.0589 },
+  cambridge: { latitude: 42.3736, longitude: -71.1097 },
+  somerville: { latitude: 42.3876, longitude: -71.0995 },
+  chicago: { latitude: 41.8781, longitude: -87.6298 },
+  austin: { latitude: 30.2672, longitude: -97.7431 },
+  dallas: { latitude: 32.7767, longitude: -96.797 },
+  houston: { latitude: 29.7604, longitude: -95.3698 },
+  denver: { latitude: 39.7392, longitude: -104.9903 },
+  boulder: { latitude: 40.015, longitude: -105.2705 },
+  atlanta: { latitude: 33.749, longitude: -84.388 },
+  miami: { latitude: 25.7617, longitude: -80.1918 },
+  "washington": { latitude: 38.9072, longitude: -77.0369 },
+  "washington dc": { latitude: 38.9072, longitude: -77.0369 },
+  "washington, dc": { latitude: 38.9072, longitude: -77.0369 },
+  arlington: { latitude: 38.8816, longitude: -77.091 },
+  "salt lake city": { latitude: 40.7608, longitude: -111.891 },
+  phoenix: { latitude: 33.4484, longitude: -112.074 },
+  nashville: { latitude: 36.1627, longitude: -86.7816 },
+  pittsburgh: { latitude: 40.4406, longitude: -79.9959 },
+  minneapolis: { latitude: 44.9778, longitude: -93.265 },
+  "raleigh": { latitude: 35.7796, longitude: -78.6382 },
+  durham: { latitude: 35.994, longitude: -78.8986 },
+  philadelphia: { latitude: 39.9526, longitude: -75.1652 },
+  detroit: { latitude: 42.3314, longitude: -83.0458 },
+  // ── Canada ──
+  toronto: { latitude: 43.6532, longitude: -79.3832 },
+  vancouver: { latitude: 49.2827, longitude: -123.1207 },
+  montreal: { latitude: 45.5019, longitude: -73.5674 },
+  waterloo: { latitude: 43.4643, longitude: -80.5204 },
+  ottawa: { latitude: 45.4215, longitude: -75.6972 },
+  // ── Europe ──
+  london: { latitude: 51.5074, longitude: -0.1278 },
+  dublin: { latitude: 53.3498, longitude: -6.2603 },
+  berlin: { latitude: 52.52, longitude: 13.405 },
+  paris: { latitude: 48.8566, longitude: 2.3522 },
+  amsterdam: { latitude: 52.3676, longitude: 4.9041 },
+  madrid: { latitude: 40.4168, longitude: -3.7038 },
+  barcelona: { latitude: 41.3851, longitude: 2.1734 },
+  munich: { latitude: 48.1351, longitude: 11.582 },
+  zurich: { latitude: 47.3769, longitude: 8.5417 },
+  stockholm: { latitude: 59.3293, longitude: 18.0686 },
+  lisbon: { latitude: 38.7223, longitude: -9.1393 },
+  warsaw: { latitude: 52.2297, longitude: 21.0122 },
+  // ── Asia-Pacific ──
+  singapore: { latitude: 1.3521, longitude: 103.8198 },
+  bengaluru: { latitude: 12.9716, longitude: 77.5946 },
+  bangalore: { latitude: 12.9716, longitude: 77.5946 },
+  hyderabad: { latitude: 17.385, longitude: 78.4867 },
+  mumbai: { latitude: 19.076, longitude: 72.8777 },
+  "new delhi": { latitude: 28.6139, longitude: 77.209 },
+  gurgaon: { latitude: 28.4595, longitude: 77.0266 },
+  pune: { latitude: 18.5204, longitude: 73.8567 },
+  tokyo: { latitude: 35.6762, longitude: 139.6503 },
+  "hong kong": { latitude: 22.3193, longitude: 114.1694 },
+  shanghai: { latitude: 31.2304, longitude: 121.4737 },
+  sydney: { latitude: -33.8688, longitude: 151.2093 },
+  melbourne: { latitude: -37.8136, longitude: 144.9631 },
+  "tel aviv": { latitude: 32.0853, longitude: 34.7818 },
+  bangkok: { latitude: 13.7563, longitude: 100.5018 },
+  seoul: { latitude: 37.5665, longitude: 126.978 },
+  // ── Latin America ──
+  "s\xE3o paulo": { latitude: -23.5505, longitude: -46.6333 },
+  "sao paulo": { latitude: -23.5505, longitude: -46.6333 },
+  "mexico city": { latitude: 19.4326, longitude: -99.1332 }
+};
+function lookupCity(raw) {
+  if (!raw) return null;
+  const whole = norm(raw);
+  if (CITIES[whole]) return CITIES[whole];
+  const firstSegment = norm(raw.split(",")[0] ?? "");
+  if (firstSegment && CITIES[firstSegment]) return CITIES[firstSegment];
+  for (const seg of raw.split(",")) {
+    const key = norm(seg);
+    if (CITIES[key]) return CITIES[key];
+  }
+  return null;
+}
+function resolveRoleCoords(location2) {
+  if (!location2) return null;
+  const tokens = location2.split(/[,/|;]|\bor\b|\band\b/i).map((t) => t.trim()).filter(Boolean);
+  for (const token of tokens) {
+    const hit = lookupCity(token);
+    if (hit) return { ...hit, city: titleCase(token) };
+  }
+  const whole = lookupCity(location2);
+  if (whole) return { ...whole, city: titleCase(location2.split(",")[0] ?? location2) };
+  return null;
+}
+function titleCase(s) {
+  return s.trim().split(" ").map((w) => w.length <= 2 ? w.toUpperCase() : w[0].toUpperCase() + w.slice(1).toLowerCase()).join(" ");
+}
+function isRemoteLocation(location2) {
+  if (!location2) return false;
+  return /\bremote\b|\banywhere\b|\bwork from home\b|\bwfh\b/i.test(location2);
+}
+
 // src/lib/ats/supabaseSink.ts
 function createServiceClient(env = process.env) {
   const url = env.SUPABASE_URL ?? env.VITE_SUPABASE_URL;
@@ -22427,16 +22631,37 @@ var SupabaseSink = class {
   db;
   async upsertRole(data) {
     const slug = `${data.companyId}-${data.externalJobId}`.replace(/[^a-z0-9-]/gi, "-").toLowerCase();
+    const field = data.field !== "Other" ? data.field : classifyField(data.title, data.companyFallbackField, data.employmentTypeRaw);
+    const locationString = [data.city, data.state, data.country].filter(Boolean).join(", ");
+    const remote = data.workArrangement === "Remote" || isRemoteLocation(locationString);
+    let latitude = null;
+    let longitude = null;
+    if (!remote) {
+      const resolved = resolveRoleCoords(locationString || data.city || null);
+      if (resolved) {
+        latitude = resolved.latitude;
+        longitude = resolved.longitude;
+      }
+    }
+    if (latitude == null && data.companyHqLatitude != null && data.companyHqLongitude != null) {
+      latitude = data.companyHqLatitude;
+      longitude = data.companyHqLongitude;
+    }
     const row = {
       company_id: data.companyId,
       external_job_id: data.externalJobId,
       slug,
       title: data.title,
+      field,
+      opportunity_type: data.opportunityType,
+      degree_levels: data.degreeLevels,
       seasons: data.seasons,
       cohort_year: data.cohortYear,
       city: data.city ?? null,
       state: data.state ?? null,
       country: data.country ?? null,
+      latitude,
+      longitude,
       work_arrangement: data.workArrangement ?? "Onsite",
       apply_url: data.applyUrl,
       description: data.descriptionHtml,
@@ -22452,7 +22677,13 @@ var SupabaseSink = class {
       last_verified_at: (/* @__PURE__ */ new Date()).toISOString()
     };
     const { data: existing } = await this.db.from("roles").select("id").eq("company_id", data.companyId).eq("external_job_id", data.externalJobId).maybeSingle();
-    const { error } = await this.db.from("roles").upsert(row, { onConflict: "company_id,external_job_id" });
+    let { error } = await this.db.from("roles").upsert(row, { onConflict: "company_id,external_job_id" });
+    if (error && /latitude|longitude/.test(error.message) && /column/i.test(error.message)) {
+      const { latitude: _lat, longitude: _lng, ...rest } = row;
+      void _lat;
+      void _lng;
+      ({ error } = await this.db.from("roles").upsert(rest, { onConflict: "company_id,external_job_id" }));
+    }
     if (error) throw new Error(`upsert role ${data.externalJobId}: ${error.message}`);
     return existing ? "updated" : "imported";
   }
@@ -22468,16 +22699,24 @@ var SupabaseSink = class {
   }
 };
 async function loadSyncableCompanies(db, slug) {
-  let q = db.from("companies").select("id,name,ats_provider,ats_board_token").neq("ats_provider", "none");
+  let q = db.from("companies").select("id,name,ats_provider,ats_board_token,fields,company_locations(latitude,longitude,location_type)").neq("ats_provider", "none");
   if (slug) q = q.eq("slug", slug);
   const { data, error } = await q;
   if (error) throw new Error(`load companies: ${error.message}`);
-  return (data ?? []).map((c) => ({
-    id: c.id,
-    name: c.name,
-    atsProvider: c.ats_provider,
-    atsBoardToken: c.ats_board_token ?? null
-  }));
+  return (data ?? []).map((c) => {
+    const fields = c.fields ?? [];
+    const locs = c.company_locations ?? [];
+    const hq = locs.find((l) => l.location_type === "HQ" && l.latitude != null) ?? locs.find((l) => l.latitude != null);
+    return {
+      id: c.id,
+      name: c.name,
+      atsProvider: c.ats_provider,
+      atsBoardToken: c.ats_board_token ?? null,
+      fallbackField: fields[0],
+      hqLatitude: hq?.latitude ?? null,
+      hqLongitude: hq?.longitude ?? null
+    };
+  });
 }
 
 // api/_src/sync.ts

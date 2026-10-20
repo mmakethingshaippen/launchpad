@@ -140,14 +140,18 @@ export interface ListingReport {
 }
 
 export interface MapCompany {
+  /** Stable key for this (company, city) marker. */
   id: string;
   slug: string;
   name: string;
   companyType: string;
+  websiteUrl: string | null;
+  logoUrl: string | null;
   latitude: number;
   longitude: number;
   city: string | null;
   state: string | null;
   country: string | null;
+  /** Count of active roles at THIS marker location. */
   activeRoleCount: number;
 }

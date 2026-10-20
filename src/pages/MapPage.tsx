@@ -28,7 +28,7 @@ export function MapPage() {
     queryFn: () => adapter.getMapCompanies(filters),
   });
 
-  const companies = data ?? [];
+  const markers = data ?? [];
 
   return (
     <div>
@@ -60,10 +60,10 @@ export function MapPage() {
       </div>
 
       <p className="mb-3 text-sm text-slate-500" aria-live="polite">
-        {isLoading ? 'Loading map…' : `${companies.length} companies with mapped locations`}
+        {isLoading ? 'Loading map…' : `${markers.length} mapped job locations`}
       </p>
       <p className="mb-4 text-xs text-slate-400">
-        Fully remote roles are discoverable in Browse and are intentionally not placed on the map.
+        Pins show each role's actual job city. Fully remote roles are discoverable in Browse and are not placed on the map.
       </p>
 
       {isLoading ? (
@@ -81,21 +81,33 @@ export function MapPage() {
               url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
             />
             <MarkerClusterGroup chunkedLoading>
-              {companies.map((c) => (
-                <Marker key={c.id} position={[c.latitude, c.longitude]} icon={markerIcon}>
+              {markers.map((m) => (
+                <Marker key={m.id} position={[m.latitude, m.longitude]} icon={markerIcon}>
                   <Popup>
                     <div className="min-w-[180px]">
-                      <p className="font-semibold text-navy">{c.name}</p>
+                      <div className="flex items-center gap-2">
+                        {m.logoUrl && (
+                          <img
+                            src={m.logoUrl}
+                            alt=""
+                            className="h-6 w-6 rounded object-contain"
+                            onError={(e) => {
+                              (e.currentTarget as HTMLImageElement).style.display = 'none';
+                            }}
+                          />
+                        )}
+                        <p className="font-semibold text-navy">{m.name}</p>
+                      </div>
                       <div className="my-1">
-                        <Badge tone={c.companyType === 'Startup' ? 'cyan' : 'muted'}>{c.companyType}</Badge>
+                        <Badge tone={m.companyType === 'Startup' ? 'cyan' : 'muted'}>{m.companyType}</Badge>
                       </div>
                       <p className="text-sm text-slate-500">
-                        {[c.city, c.state, c.country].filter(Boolean).join(', ')}
+                        {[m.city, m.state, m.country].filter(Boolean).join(', ')}
                       </p>
                       <p className="mt-1 text-sm font-medium text-navy">
-                        {c.activeRoleCount} active {c.activeRoleCount === 1 ? 'role' : 'roles'}
+                        {m.activeRoleCount} active {m.activeRoleCount === 1 ? 'role' : 'roles'} here
                       </p>
-                      <Link to={`/companies/${c.slug}`} className="mt-2 inline-block text-sm text-cyan underline">
+                      <Link to={`/companies/${m.slug}`} className="mt-2 inline-block text-sm text-cyan underline">
                         View company & roles
                       </Link>
                     </div>

@@ -7,68 +7,71 @@ import { DEFAULT_FILTERS } from '../filters';
 
 const SEED: SeedCompany[] = [
   {
-    slug: 'placed',
-    name: 'PlacedCo',
-    websiteUrl: 'https://placed.test',
-    careersUrl: 'https://placed.test/careers',
-    description: 'Has coordinates.',
+    slug: 'multicity',
+    name: 'MultiCityCo',
+    websiteUrl: 'https://multicity.test',
+    careersUrl: 'https://multicity.test/careers',
+    description: 'Roles in multiple cities.',
     fields: ['Technology'],
     companyType: 'Startup',
     degreeLevels: ['Undergraduate'],
     atsProvider: 'greenhouse',
-    atsBoardToken: 'placed',
-    locations: [{ city: 'Austin', state: 'TX', country: 'USA', latitude: 30.26, longitude: -97.74 }],
-  },
-  {
-    slug: 'remoteco',
-    name: 'RemoteCo',
-    websiteUrl: 'https://remote.test',
-    careersUrl: 'https://remote.test/careers',
-    description: 'Remote only.',
-    fields: ['Finance'],
-    companyType: 'Established Company',
-    degreeLevels: ['Undergraduate'],
-    atsProvider: 'greenhouse',
-    atsBoardToken: 'remoteco',
-    // Remote "location" with no real coordinates — must NOT be mapped (Req 11.5).
-    locations: [{ city: 'Remote', country: 'USA', latitude: 0, longitude: 0 }],
+    atsBoardToken: 'multicity',
+    // HQ in San Francisco — used as the fallback for remote roles.
+    locations: [{ city: 'San Francisco', state: 'CA', country: 'USA', latitude: 37.7749, longitude: -122.4194 }],
   },
 ];
 
-const fetchImpl: FetchLike = async (url) => {
-  const job = (id: number, title: string, remote: boolean) => ({
+// Three roles: Seattle, New York, and a Remote one.
+const fetchImpl: FetchLike = async () => {
+  const job = (id: number, title: string, loc: string) => ({
     id,
     title,
     absolute_url: `https://x/jobs/${id}`,
     content: '&lt;p&gt;d&lt;/p&gt;',
-    location: { name: remote ? 'Remote' : 'Austin, TX, USA' },
+    location: { name: loc },
   });
-  const payload = url.includes('/placed/')
-    ? { jobs: [job(1, 'Summer 2027 Intern', false)] }
-    : { jobs: [job(2, 'New Grad Analyst', true)] };
-  return { ok: true, status: 200, json: async () => payload };
+  return {
+    ok: true,
+    status: 200,
+    json: async () => ({
+      jobs: [
+        job(1, 'Summer 2027 Software Intern', 'Seattle, WA'),
+        job(2, 'Summer 2027 Data Intern', 'New York, NY'),
+        job(3, 'Summer 2027 Remote Intern', 'Remote'),
+      ],
+    }),
+  };
 };
 
-describe('getMapCompanies', () => {
+describe('getMapCompanies — role-level coordinates', () => {
   let adapter: LocalAdapter;
   beforeEach(async () => {
     adapter = new LocalAdapter(new LocalStore(SEED));
     await adapter.ensureSynced(fetchImpl as unknown as typeof fetch);
   });
 
-  it('includes only companies with a real geocoded location (excludes Remote)', async () => {
+  it('plots roles at their actual job city coordinates (Seattle, New York)', async () => {
     const markers = await adapter.getMapCompanies(DEFAULT_FILTERS);
-    expect(markers.map((m) => m.name)).toEqual(['PlacedCo']);
-    expect(markers[0]).toMatchObject({ latitude: 30.26, longitude: -97.74 });
+    const byCity = Object.fromEntries(markers.map((m) => [m.city, m]));
+
+    expect(byCity['Seattle']).toMatchObject({ latitude: 47.6062, longitude: -122.3321 });
+    expect(byCity['New York']).toMatchObject({ latitude: 40.7128, longitude: -74.006 });
   });
 
-  it('keeps a placed company when its season matches the filter', async () => {
-    const markers = await adapter.getMapCompanies({ ...DEFAULT_FILTERS, seasons: ['Summer'] });
-    expect(markers).toHaveLength(1);
-    expect(markers[0].name).toBe('PlacedCo');
+  it('falls back to the company HQ for the Remote role', async () => {
+    const markers = await adapter.getMapCompanies(DEFAULT_FILTERS);
+    // The remote role has no city; it should land on the SF HQ coordinate.
+    const sf = markers.find((m) => m.latitude === 37.7749 && m.longitude === -122.4194);
+    expect(sf).toBeDefined();
   });
 
-  it('drops a placed company when an active filter excludes all its roles', async () => {
+  it('resolves a favicon logo for each marker from the website domain', async () => {
+    const markers = await adapter.getMapCompanies(DEFAULT_FILTERS);
+    expect(markers[0].logoUrl).toContain('favicons');
+  });
+
+  it('drops all markers when an active filter excludes every role', async () => {
     const markers = await adapter.getMapCompanies({ ...DEFAULT_FILTERS, seasons: ['Winter'] });
     expect(markers).toHaveLength(0);
   });

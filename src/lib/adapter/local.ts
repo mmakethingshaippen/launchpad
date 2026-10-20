@@ -24,6 +24,7 @@ import type { RoleFilters } from '../filters';
 import { DEFAULT_FILTERS } from '../filters';
 import { LocalStore } from './localStore.data';
 import { filterRoles, sortRoles, filterCompanies } from '../roleQuery';
+import { groupRolesIntoMarkers, type RoleMarkerInput } from './mapMarkers';
 import * as store from '../localStore';
 import { syncAll } from '../ats/sync';
 
@@ -142,43 +143,32 @@ export class LocalAdapter implements DataAdapter {
 
   async getMapCompanies(filters: RoleFilters): Promise<MapCompany[]> {
     await this.ensureSynced();
-    // Roles matching current filters, grouped by company.
-    const roleCards = filterRoles(this.allCards(), filters);
-    const roleCountByCompany = new Map<string, number>();
-    for (const r of roleCards) {
-      roleCountByCompany.set(r.companySlug, (roleCountByCompany.get(r.companySlug) ?? 0) + 1);
-    }
-    const companies = filterCompanies(this.data.companyCards(), filters);
-
-    const out: MapCompany[] = [];
-    for (const c of companies) {
-      // Only companies with a geocoded, non-remote location get a marker (Req 11.4-11.5).
-      const loc = c.locations.find(
-        (l) => l.latitude != null && l.longitude != null && (l.city ?? '').toLowerCase() !== 'remote',
-      );
-      if (!loc) continue;
-      const count = roleCountByCompany.get(c.slug) ?? 0;
-      // When season/opportunity filters are active, only show companies with matches.
-      const filtersActive =
-        filters.seasons.length > 0 ||
-        filters.opportunityTypes.length > 0 ||
-        filters.remoteOnly ||
-        Boolean(filters.keyword);
-      if (filtersActive && count === 0) continue;
-      out.push({
-        id: c.id,
-        slug: c.slug,
-        name: c.name,
-        companyType: c.companyType,
-        latitude: loc.latitude!,
-        longitude: loc.longitude!,
-        city: loc.city,
-        state: loc.state,
-        country: loc.country,
-        activeRoleCount: count || c.activeRoleCount,
+    // Build markers from each role's own coordinates (not just company HQ).
+    const inputs: RoleMarkerInput[] = [];
+    for (const role of this.data.publicRoles()) {
+      if (role.latitude == null || role.longitude == null) continue;
+      // Apply the relevant discovery filters to roles.
+      if (filters.seasons.length && !role.seasons.some((s) => filters.seasons.includes(s))) continue;
+      if (filters.opportunityTypes.length && !filters.opportunityTypes.includes(role.opportunityType)) continue;
+      if (filters.fields.length && !filters.fields.includes(role.field)) continue;
+      const company = this.data.getCompany(role.companyId);
+      if (!company) continue;
+      if (filters.companyType !== 'All' && company.companyType !== filters.companyType) continue;
+      inputs.push({
+        companyId: company.id,
+        slug: company.slug,
+        name: company.name,
+        companyType: company.companyType,
+        websiteUrl: company.websiteUrl,
+        logoUrl: company.logoUrl,
+        latitude: role.latitude,
+        longitude: role.longitude,
+        city: role.city,
+        state: role.state,
+        country: role.country,
       });
     }
-    return out;
+    return groupRolesIntoMarkers(inputs);
   }
 
   // ── Saving / tracking (localStorage) ──

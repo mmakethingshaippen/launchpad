@@ -1,9 +1,10 @@
 import { Link } from 'react-router-dom';
-import { Bookmark, BookmarkCheck, MapPin, ExternalLink, Building2 } from 'lucide-react';
+import { Bookmark, BookmarkCheck, MapPin, ExternalLink } from 'lucide-react';
 import type { RoleCard as RoleCardData } from '../../lib/adapter/types';
 import { Card } from '../ui/Card';
 import { Badge, SeasonBadge } from '../ui/Badge';
 import { Button } from '../ui/Button';
+import { CompanyLogo } from '../ui/CompanyLogo';
 import { formatRelativeTime } from '../ui/RelativeTime';
 
 function locationLabel(r: RoleCardData): string {
@@ -30,23 +31,25 @@ export function RoleCard({
   role,
   saved,
   onToggleSave,
+  inCompanyView = false,
 }: {
   role: RoleCardData;
   saved?: boolean;
   onToggleSave?: (id: string) => void;
+  /** Hide the redundant company-type pill when shown inside a company profile. */
+  inCompanyView?: boolean;
 }) {
   const pay = payLabel(role);
   return (
     <Card className="flex h-full flex-col">
       <div className="flex items-start justify-between gap-3">
         <div className="flex items-center gap-3">
-          {role.companyLogoUrl ? (
-            <img src={role.companyLogoUrl} alt="" className="h-10 w-10 rounded-lg object-contain" />
-          ) : (
-            <span className="flex h-10 w-10 items-center justify-center rounded-lg bg-slate-100 text-slate-400">
-              <Building2 className="h-5 w-5" aria-hidden="true" />
-            </span>
-          )}
+          <CompanyLogo
+            name={role.companyName}
+            logoUrl={role.companyLogoUrl}
+            websiteUrl={role.companyWebsiteUrl}
+            size={40}
+          />
           <div>
             <Link to={`/roles/${role.slug}`} className="font-semibold text-navy hover:text-cyan">
               {role.title}
@@ -75,7 +78,7 @@ export function RoleCard({
           <SeasonBadge key={s} season={s} year={role.cohortYear} />
         ))}
         <Badge tone="cyan">{role.opportunityType}</Badge>
-        {role.companyType && <Badge tone="muted">{role.companyType}</Badge>}
+        {!inCompanyView && role.companyType && <Badge tone="muted">{role.companyType}</Badge>}
       </div>
 
       <dl className="mt-3 space-y-1 text-sm text-slate-600">
@@ -83,10 +86,16 @@ export function RoleCard({
           <MapPin className="h-4 w-4 text-slate-400" aria-hidden="true" />
           <span>{locationLabel(role)}</span>
         </div>
-        <div className="flex flex-wrap gap-x-3">
+        <div className="flex flex-wrap items-center gap-x-1.5">
           <span>{role.field}</span>
-          <span>{role.degreeLevels.join(', ') || 'Any level'}</span>
-          {pay && <span className="font-medium text-navy">{pay}</span>}
+          <span aria-hidden="true" className="text-slate-300">·</span>
+          <span>{role.degreeLevels.join(', ') || 'Undergraduate'}</span>
+          {pay && (
+            <>
+              <span aria-hidden="true" className="text-slate-300">·</span>
+              <span className="font-medium text-navy">{pay}</span>
+            </>
+          )}
         </div>
       </dl>
 

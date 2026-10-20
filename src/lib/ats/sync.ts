@@ -4,17 +4,27 @@ import { selectCandidates } from './normalize';
 import { createGreenhouseClient } from './providers/greenhouse';
 import { createAshbyClient } from './providers/ashby';
 import { createLeverClient } from './providers/lever';
-import type { AtsProvider } from '../adapter/types';
+import type { AtsProvider, FieldType } from '../adapter/types';
 
 export interface SyncableCompany {
   id: string;
   name: string;
   atsProvider: AtsProvider;
   atsBoardToken: string | null;
+  /** Primary company field, used as a fallback when a role title is ambiguous. */
+  fallbackField?: FieldType;
+  /** Company HQ coordinates, used when a role is Remote or its city is unknown. */
+  hqLatitude?: number | null;
+  hqLongitude?: number | null;
 }
 
 export interface UpsertRoleData extends EnrichedPosting {
   companyId: string;
+  /** Company field fallback for ambiguous titles. */
+  companyFallbackField?: FieldType;
+  /** Company HQ coords, used when the role is Remote or its city is unknown. */
+  companyHqLatitude?: number | null;
+  companyHqLongitude?: number | null;
 }
 
 export interface SyncResult {
@@ -95,7 +105,13 @@ export async function syncCompany(
   const liveIds: string[] = [];
   for (const posting of candidates) {
     try {
-      const outcome = await sink.upsertRole({ ...posting, companyId: company.id });
+      const outcome = await sink.upsertRole({
+        ...posting,
+        companyId: company.id,
+        companyFallbackField: company.fallbackField,
+        companyHqLatitude: company.hqLatitude ?? null,
+        companyHqLongitude: company.hqLongitude ?? null,
+      });
       liveIds.push(posting.externalJobId);
       if (outcome === 'imported') result.imported++;
       else result.updated++;

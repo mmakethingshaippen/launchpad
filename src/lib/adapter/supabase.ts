@@ -24,6 +24,7 @@ import type {
 import type { RoleFilters } from '../filters';
 import { getSupabaseClient } from '../supabaseClient';
 import { buildRolePlan } from './supabaseQuery';
+import { groupRolesIntoMarkers } from './mapMarkers';
 import {
   mapRoleCard,
   mapRoleDetail,
@@ -201,44 +202,41 @@ export class SupabaseAdapter implements DataAdapter {
   }
 
   async getMapCompanies(filters: RoleFilters): Promise<MapCompany[]> {
-    // Approved companies that have at least one geocoded location.
+    // Plot one marker per (company, job city) using each role's own coordinates.
     let q = this.db
-      .from('companies')
-      .select('id,slug,name,company_type,company_locations(city,state,country,latitude,longitude)')
-      .eq('moderation_status', 'Approved');
-    if (filters.companyType !== 'All') q = q.eq('company_type', filters.companyType);
-    if (filters.fields.length) q = q.overlaps('fields', filters.fields);
+      .from('public_roles')
+      .select(
+        'company_id, city, state, country, latitude, longitude, companies!inner(slug,name,company_type,website_url,logo_url)',
+      )
+      .not('latitude', 'is', null)
+      .not('longitude', 'is', null);
+
+    if (filters.seasons.length) q = q.overlaps('seasons', filters.seasons);
+    if (filters.opportunityTypes.length) q = q.in('opportunity_type', filters.opportunityTypes);
+    if (filters.fields.length) q = q.in('field', filters.fields);
+    if (filters.companyType !== 'All') q = q.eq('companies.company_type', filters.companyType);
+
     const { data, error } = await q;
     if (error) throw error;
 
-    const out: MapCompany[] = [];
-    for (const row of (data ?? []) as Array<Record<string, unknown>>) {
-      const locs = (row.company_locations as Array<Record<string, unknown>>) ?? [];
-      const loc = locs.find(
-        (l) =>
-          l.latitude != null &&
-          l.longitude != null &&
-          String(l.city ?? '').toLowerCase() !== 'remote',
-      );
-      if (!loc) continue;
-      const { count } = await this.db
-        .from('public_roles')
-        .select('id', { count: 'exact', head: true })
-        .eq('company_id', row.id as string);
-      out.push({
-        id: row.id as string,
-        slug: row.slug as string,
-        name: row.name as string,
-        companyType: row.company_type as string,
-        latitude: loc.latitude as number,
-        longitude: loc.longitude as number,
-        city: (loc.city as string) ?? null,
-        state: (loc.state as string) ?? null,
-        country: (loc.country as string) ?? null,
-        activeRoleCount: count ?? 0,
-      });
-    }
-    return out;
+    return groupRolesIntoMarkers(
+      (data ?? []).map((r) => {
+        const comp = Array.isArray(r.companies) ? r.companies[0] : r.companies;
+        return {
+          companyId: r.company_id as string,
+          slug: comp?.slug as string,
+          name: comp?.name as string,
+          companyType: comp?.company_type as string,
+          websiteUrl: (comp?.website_url as string) ?? null,
+          logoUrl: (comp?.logo_url as string) ?? null,
+          latitude: r.latitude as number,
+          longitude: r.longitude as number,
+          city: (r.city as string) ?? null,
+          state: (r.state as string) ?? null,
+          country: (r.country as string) ?? null,
+        };
+      }),
+    );
   }
 
   // ── Saving / tracking ──

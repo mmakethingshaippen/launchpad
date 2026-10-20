@@ -2,11 +2,12 @@ import { useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
 import { Helmet } from 'react-helmet-async';
 import { useQuery } from '@tanstack/react-query';
-import { ExternalLink, Globe, MapPin, Building2, ArrowLeft } from 'lucide-react';
+import { ExternalLink, Globe, MapPin, ArrowLeft } from 'lucide-react';
 import { useAdapter } from '../hooks/useAdapter';
 import { useSaved } from '../hooks/useSaved';
 import { Badge } from '../components/ui/Badge';
 import { Button } from '../components/ui/Button';
+import { CompanyLogo } from '../components/ui/CompanyLogo';
 import { RoleCard } from '../components/cards/RoleCard';
 import { EmptyState } from '../components/ui/EmptyState';
 import { LoadingBlock } from '../components/ui/Spinner';
@@ -52,13 +53,13 @@ export function CompanyProfile() {
 
       <header className="rounded-xl border border-slate-200 bg-white p-6">
         <div className="flex items-start gap-4">
-          {company.logoUrl ? (
-            <img src={company.logoUrl} alt="" className="h-16 w-16 rounded-xl object-contain" />
-          ) : (
-            <span className="flex h-16 w-16 items-center justify-center rounded-xl bg-slate-100 text-slate-400">
-              <Building2 className="h-8 w-8" aria-hidden="true" />
-            </span>
-          )}
+          <CompanyLogo
+            name={company.name}
+            logoUrl={company.logoUrl}
+            websiteUrl={company.websiteUrl}
+            size={64}
+            className="rounded-xl"
+          />
           <div className="flex-1">
             <h1 className="text-2xl font-bold text-navy">{company.name}</h1>
             <div className="mt-2 flex flex-wrap gap-1.5">
@@ -129,7 +130,7 @@ export function CompanyProfile() {
         ) : (
           <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
             {roles.map((r) => (
-              <RoleCard key={r.id} role={r} saved={savedIds.has(r.id)} onToggleSave={toggleSave} />
+              <RoleCard key={r.id} role={r} saved={savedIds.has(r.id)} onToggleSave={toggleSave} inCompanyView />
             ))}
           </div>
         )}
