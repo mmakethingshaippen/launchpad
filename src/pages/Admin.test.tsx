@@ -49,15 +49,17 @@ function renderAdmin(auth: AuthState) {
 }
 
 describe('Admin guard', () => {
-  it('blocks anonymous users', () => {
+  it('shows the inline sign-in form to anonymous users (no dashboard)', () => {
     renderAdmin(adminAuth(null));
-    expect(screen.getByText(/Admin access required/i)).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: /Admin sign in/i })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /^Sign in$/i })).toBeInTheDocument();
     expect(screen.queryByText(/Admin Dashboard/i)).not.toBeInTheDocument();
   });
 
-  it('blocks non-admin students', () => {
+  it('blocks signed-in non-admin students with an access message', () => {
     renderAdmin(adminAuth('student'));
     expect(screen.getByText(/Admin access required/i)).toBeInTheDocument();
+    expect(screen.queryByText(/Admin Dashboard/i)).not.toBeInTheDocument();
   });
 
   it('renders the dashboard for admins', async () => {

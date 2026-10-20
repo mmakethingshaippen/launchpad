@@ -5,6 +5,7 @@ import { Trash2, ExternalLink, CalendarClock, Plus } from 'lucide-react';
 import { useSaved } from '../hooks/useSaved';
 import { useApplications } from '../hooks/useApplications';
 import { useAuth } from '../hooks/useAuth';
+import { SignInForm } from '../components/auth/SignInForm';
 import { Card } from '../components/ui/Card';
 import { Button } from '../components/ui/Button';
 import { Badge } from '../components/ui/Badge';
@@ -22,6 +23,7 @@ export function MyApplications() {
   const { user, isCloud } = useAuth();
   const [tab, setTab] = useState<Tab>('saved');
   const [adding, setAdding] = useState(false);
+  const [showSignIn, setShowSignIn] = useState(false);
 
   return (
     <div>
@@ -31,16 +33,27 @@ export function MyApplications() {
 
       <div className="mb-6 flex flex-wrap items-center justify-between gap-3">
         <h1 className="text-2xl font-bold text-navy">My Applications</h1>
-        {isCloud && !user && (
-          <p className="text-sm text-slate-500">
-            Your data is saved on this device.{' '}
-            <Link to="/signin" className="text-cyan underline">
-              Sign in
-            </Link>{' '}
-            to sync across devices.
-          </p>
-        )}
+        {user && <span className="text-sm text-slate-500">Synced to {user.email}</span>}
       </div>
+
+      {/* Anonymous users: offer inline sign-in to sync, without blocking the page. */}
+      {isCloud && !user && (
+        <div className="mb-6 rounded-xl border border-slate-200 bg-gray-bg p-4">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <p className="text-sm text-slate-600">
+              Your saved roles and applications are stored on this device. Sign in to sync them across devices.
+            </p>
+            <Button variant="outline" size="sm" onClick={() => setShowSignIn((v) => !v)}>
+              {showSignIn ? 'Hide' : 'Sign in to sync'}
+            </Button>
+          </div>
+          {showSignIn && (
+            <div className="mt-4 max-w-md">
+              <SignInForm compact />
+            </div>
+          )}
+        </div>
+      )}
 
       <div className="mb-6 inline-flex rounded-lg border border-slate-200 bg-white p-0.5" role="tablist">
         <button
