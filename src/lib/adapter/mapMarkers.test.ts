@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { groupRolesIntoMarkers, type RoleMarkerInput } from './mapMarkers';
+import { groupRolesIntoMarkers, resolveMarkerCoords, type RoleMarkerInput } from './mapMarkers';
 
 function input(partial: Partial<RoleMarkerInput>): RoleMarkerInput {
   return {
@@ -50,5 +50,29 @@ describe('groupRolesIntoMarkers', () => {
       input({ latitude: null as unknown as number, longitude: null as unknown as number }),
     ]);
     expect(markers).toHaveLength(0);
+  });
+});
+
+describe('resolveMarkerCoords', () => {
+  it('resolves a known city to its coordinates', () => {
+    const c = resolveMarkerCoords('Seattle, WA', 'Onsite', 37.7749, -122.4194);
+    expect(c).toMatchObject({ latitude: 47.6062, longitude: -122.3321 });
+  });
+
+  it('falls back to company HQ for Remote roles', () => {
+    const c = resolveMarkerCoords('', 'Remote', 37.7749, -122.4194);
+    expect(c).toMatchObject({ latitude: 37.7749, longitude: -122.4194 });
+  });
+
+  it('falls back to HQ for an unknown city', () => {
+    const c = resolveMarkerCoords('Nowhereville, ZZ', 'Onsite', 40.7128, -74.006);
+    expect(c).toMatchObject({ latitude: 40.7128, longitude: -74.006 });
+  });
+
+  it('returns nulls when neither the city nor an HQ coordinate is available', () => {
+    expect(resolveMarkerCoords('Nowhereville', 'Remote', null, null)).toEqual({
+      latitude: null,
+      longitude: null,
+    });
   });
 });

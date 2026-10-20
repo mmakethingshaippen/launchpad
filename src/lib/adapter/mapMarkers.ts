@@ -1,5 +1,28 @@
 import type { MapCompany } from './adapter';
 import { logoForCompany } from '../logo';
+import { resolveRoleCoords, isRemoteLocation } from '../ats/cityCoords';
+
+/**
+ * Resolve a marker coordinate from a role's location string, falling back to the
+ * company HQ for Remote/unknown locations. Pure + deterministic, so the map
+ * never depends on latitude/longitude columns existing in the live schema.
+ */
+export function resolveMarkerCoords(
+  locationString: string,
+  workArrangement: string | null | undefined,
+  hqLatitude: number | null,
+  hqLongitude: number | null,
+): { latitude: number | null; longitude: number | null } {
+  const remote = workArrangement === 'Remote' || isRemoteLocation(locationString);
+  if (!remote) {
+    const hit = resolveRoleCoords(locationString);
+    if (hit) return { latitude: hit.latitude, longitude: hit.longitude };
+  }
+  if (hqLatitude != null && hqLongitude != null) {
+    return { latitude: hqLatitude, longitude: hqLongitude };
+  }
+  return { latitude: null, longitude: null };
+}
 
 export interface RoleMarkerInput {
   companyId: string;
