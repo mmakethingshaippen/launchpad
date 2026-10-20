@@ -14,6 +14,11 @@ import { SPECIFIC_SEASONS, type Season } from '../lib/adapter/types';
 import { normalizeLongitude } from '../lib/ats/cityCoords';
 import type { MapMarker } from '../lib/adapter';
 
+const SINGLE_WORLD_BOUNDS: L.LatLngBoundsExpression = [
+  [-85, -180],
+  [85, 180],
+];
+
 /**
  * Filter markers to a single company (by name, case-insensitive), returning a
  * new marker set whose roleCount/companyCount/roles reflect only that company.
@@ -47,12 +52,16 @@ export function companyNamesFromMarkers(markers: MapMarker[]): string[] {
 function FitToMarkers({ markers, fitKey }: { markers: MapMarker[]; fitKey: string }) {
   const map = useMap();
   useMemo(() => {
+    if (!fitKey) {
+      map.setView([25, 0], 2, { animate: true });
+      return;
+    }
     if (markers.length === 0) return;
     const pts = markers.map((m) => [m.latitude, normalizeLongitude(m.longitude)] as [number, number]);
     if (pts.length === 1) {
       map.setView(pts[0], 6, { animate: true });
     } else {
-      map.fitBounds(L.latLngBounds(pts).pad(0.2), { animate: true });
+      map.fitBounds(L.latLngBounds(pts).pad(0.2), { animate: true, maxZoom: 6 });
     }
     // fitKey changes only when the selected company changes.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -200,31 +209,26 @@ export function MapPage() {
       {isLoading ? (
         <LoadingBlock label="Loading map" />
       ) : (
-        <div className="h-[70vh] w-full overflow-hidden rounded-xl border border-slate-200">
+        <div className="h-[70vh] w-full overflow-hidden rounded-xl border border-slate-200 bg-[#aad3df]">
           <MapContainer
-            center={[25, -20]}
+            center={[25, 0]}
             zoom={2}
             minZoom={2}
-            worldCopyJump
+            maxBounds={SINGLE_WORLD_BOUNDS}
+            maxBoundsViscosity={1.0}
             scrollWheelZoom
             style={{ height: '100%', width: '100%' }}
           >
             <TileLayer
               attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
               url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
-              noWrap={false}
+              noWrap={true}
+              bounds={SINGLE_WORLD_BOUNDS}
             />
             <FitToMarkers markers={markers} fitKey={activeCompany} />
             <MarkerClusterGroup
-              // A key derived from the full marker set forces a clean remount
-              // whenever the data changes (filters/sync/company search), so stale
-              // cluster layers never leave markers unrendered during pan/zoom.
               key={markerSetKey}
               iconCreateFunction={clusterIcon as never}
-              // Keep clustered markers mounted even when panned out of view so
-              // international pins (London/Tokyo/Sydney) are never clipped by the
-              // default viewport. chunkedLoading is disabled — its async add was
-              // the source of markers flickering/disappearing.
               removeOutsideVisibleBounds={false}
               maxClusterRadius={60}
               showCoverageOnHover={false}
@@ -232,9 +236,6 @@ export function MapPage() {
               {markers.map((m) => (
                 <Marker
                   key={m.id}
-                  // Normalize longitude into [-180,180) so pins re-render cleanly
-                  // when the user pans across duplicated world copies (Req: world
-                  // wrapping). Latitude is unchanged.
                   position={[m.latitude, normalizeLongitude(m.longitude)]}
                   icon={roleCountIcon(m.roleCount)}
                   {...({ roleCount: m.roleCount } as object)}
