@@ -6,7 +6,7 @@ import type {
   SyncResult,
   PendingQueue,
   ListingReport,
-  MapCompany,
+  MapMarker,
 } from './adapter';
 import type {
   Paginated,
@@ -24,7 +24,7 @@ import type {
 import type { RoleFilters } from '../filters';
 import { getSupabaseClient } from '../supabaseClient';
 import { buildRolePlan } from './supabaseQuery';
-import { groupRolesIntoMarkers, resolveMarkerCoords, type RoleMarkerInput } from './mapMarkers';
+import { buildMapMarkers, type MapRoleInput } from './mapMarkers';
 import {
   mapRoleCard,
   mapRoleDetail,
@@ -201,15 +201,16 @@ export class SupabaseAdapter implements DataAdapter {
     };
   }
 
-  async getMapCompanies(filters: RoleFilters): Promise<MapCompany[]> {
-    // Plot one marker per (company, job city). Coordinates are resolved in
-    // TypeScript from each role's location string (and the company HQ fallback)
-    // rather than relying on latitude/longitude columns, which may not exist in
-    // the live schema. This keeps the map working regardless of migration state.
+  async getMapMarkers(filters: RoleFilters): Promise<MapMarker[]> {
+    // Markers are grouped by each ROLE's own city (parsed from its location
+    // string), aggregated across all companies — not one pin per company HQ.
+    // Coordinates are resolved in TypeScript so this never touches latitude/
+    // longitude columns that may not exist in the live schema.
     let q = this.db
       .from('public_roles')
       .select(
-        'company_id, city, state, country, work_arrangement, companies!inner(slug,name,company_type,website_url,logo_url,company_locations(latitude,longitude,location_type))',
+        'id, slug, title, seasons, cohort_year, city, state, country, work_arrangement, company_id, ' +
+          'companies!inner(slug,name,company_type,website_url,logo_url,company_locations(latitude,longitude,location_type))',
       );
 
     if (filters.seasons.length) q = q.overlaps('seasons', filters.seasons);
@@ -220,45 +221,37 @@ export class SupabaseAdapter implements DataAdapter {
     const { data, error } = await q;
     if (error) throw error;
 
-    const inputs: RoleMarkerInput[] = [];
-    for (const r of data ?? []) {
-      const comp = Array.isArray(r.companies) ? r.companies[0] : r.companies;
+    const inputs: MapRoleInput[] = [];
+    for (const row of (data ?? []) as unknown as Array<Record<string, unknown>>) {
+      const r = row;
+      const compRaw = r.companies as Record<string, unknown> | Record<string, unknown>[] | null;
+      const comp = (Array.isArray(compRaw) ? compRaw[0] : compRaw) as Record<string, unknown> | null;
       if (!comp) continue;
 
-      // Company HQ fallback coordinate (first geocoded location).
       const locs = (comp.company_locations as Array<Record<string, unknown>>) ?? [];
       const hq =
         locs.find((l) => l.location_type === 'HQ' && l.latitude != null) ??
         locs.find((l) => l.latitude != null);
-      const hqLat = (hq?.latitude as number) ?? null;
-      const hqLng = (hq?.longitude as number) ?? null;
 
-      const city = (r.city as string) ?? null;
-      const state = (r.state as string) ?? null;
-      const country = (r.country as string) ?? null;
-      const coords = resolveMarkerCoords(
-        [city, state, country].filter(Boolean).join(', '),
-        r.work_arrangement as string | null,
-        hqLat,
-        hqLng,
-      );
-      if (coords.latitude == null || coords.longitude == null) continue;
-
+      const locationString = [r.city, r.state, r.country].filter(Boolean).join(', ');
       inputs.push({
+        id: r.id as string,
+        slug: r.slug as string,
+        title: r.title as string,
+        seasons: (r.seasons as string[]) ?? [],
+        cohortYear: (r.cohort_year as number) ?? null,
+        locationString,
+        workArrangement: (r.work_arrangement as string) ?? null,
         companyId: r.company_id as string,
-        slug: comp.slug as string,
-        name: comp.name as string,
-        companyType: comp.company_type as string,
-        websiteUrl: (comp.website_url as string) ?? null,
-        logoUrl: (comp.logo_url as string) ?? null,
-        latitude: coords.latitude,
-        longitude: coords.longitude,
-        city,
-        state,
-        country,
+        companyName: comp.name as string,
+        companySlug: comp.slug as string,
+        companyWebsiteUrl: (comp.website_url as string) ?? null,
+        companyLogoUrl: (comp.logo_url as string) ?? null,
+        hqLatitude: (hq?.latitude as number) ?? null,
+        hqLongitude: (hq?.longitude as number) ?? null,
       });
     }
-    return groupRolesIntoMarkers(inputs);
+    return buildMapMarkers(inputs);
   }
 
   // ── Saving / tracking ──

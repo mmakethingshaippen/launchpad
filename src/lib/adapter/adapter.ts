@@ -79,7 +79,7 @@ export interface DataAdapter {
   getCompany(slug: string): Promise<CompanyDetailView | null>;
   getStats(): Promise<Stats>;
   getFeatured(): Promise<FeaturedBlocks>;
-  getMapCompanies(filters: RoleFilters): Promise<MapCompany[]>;
+  getMapMarkers(filters: RoleFilters): Promise<MapMarker[]>;
 
   // ── Saving / tracking ──
   listSaved(): Promise<SavedItem[]>;
@@ -139,19 +139,36 @@ export interface ListingReport {
   createdAt: string;
 }
 
-export interface MapCompany {
-  /** Stable key for this (company, city) marker. */
+/** A single open role located at a map marker's city. */
+export interface MapMarkerRole {
   id: string;
   slug: string;
-  name: string;
-  companyType: string;
-  websiteUrl: string | null;
-  logoUrl: string | null;
-  latitude: number;
-  longitude: number;
+  title: string;
+  companyName: string;
+  companySlug: string;
+  companyLogoUrl: string | null;
+  companyWebsiteUrl: string | null;
+  seasons: string[];
+  cohortYear: number | null;
+}
+
+/**
+ * A map marker grouped by geographic location (city/metro/state), aggregating
+ * roles from ALL companies at that coordinate — not one pin per company HQ.
+ */
+export interface MapMarker {
+  /** Stable key for the coordinate bucket. */
+  id: string;
+  /** Pin label, e.g. "Austin, TX" or "California". */
+  label: string;
   city: string | null;
   state: string | null;
-  country: string | null;
-  /** Count of active roles at THIS marker location. */
-  activeRoleCount: number;
+  latitude: number;
+  longitude: number;
+  /** Total open roles at this location (what the pin badge shows). */
+  roleCount: number;
+  /** Distinct companies hiring at this location. */
+  companyCount: number;
+  /** The roles located here (for the popup/drawer list). */
+  roles: MapMarkerRole[];
 }

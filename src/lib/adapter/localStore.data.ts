@@ -293,6 +293,10 @@ export class LocalStore implements SyncSink {
     return this.companies.get(id);
   }
 
+  companyLocations(id: string): CompanyLocation[] | undefined {
+    return this.locations.get(id);
+  }
+
   /** Includes closed/expired approved roles (base-table semantics, refinement #1). */
   findApprovedRoleBySlug(slug: string): Role | null {
     for (const r of this.roles.values()) {

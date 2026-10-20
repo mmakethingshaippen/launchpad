@@ -5,7 +5,7 @@ import type {
   SyncResult,
   PendingQueue,
   ListingReport,
-  MapCompany,
+  MapMarker,
 } from './adapter';
 import type {
   Paginated,
@@ -24,7 +24,7 @@ import type { RoleFilters } from '../filters';
 import { DEFAULT_FILTERS } from '../filters';
 import { LocalStore } from './localStore.data';
 import { filterRoles, sortRoles, filterCompanies } from '../roleQuery';
-import { groupRolesIntoMarkers, type RoleMarkerInput } from './mapMarkers';
+import { buildMapMarkers, type MapRoleInput } from './mapMarkers';
 import * as store from '../localStore';
 import { syncAll } from '../ats/sync';
 
@@ -141,34 +141,39 @@ export class LocalAdapter implements DataAdapter {
     };
   }
 
-  async getMapCompanies(filters: RoleFilters): Promise<MapCompany[]> {
+  async getMapMarkers(filters: RoleFilters): Promise<MapMarker[]> {
     await this.ensureSynced();
-    // Build markers from each role's own coordinates (not just company HQ).
-    const inputs: RoleMarkerInput[] = [];
+    // Markers built from each role's own location string, grouped by city
+    // across companies. HQ is used only as the Remote/unresolvable fallback.
+    const inputs: MapRoleInput[] = [];
     for (const role of this.data.publicRoles()) {
-      if (role.latitude == null || role.longitude == null) continue;
-      // Apply the relevant discovery filters to roles.
       if (filters.seasons.length && !role.seasons.some((s) => filters.seasons.includes(s))) continue;
       if (filters.opportunityTypes.length && !filters.opportunityTypes.includes(role.opportunityType)) continue;
       if (filters.fields.length && !filters.fields.includes(role.field)) continue;
       const company = this.data.getCompany(role.companyId);
       if (!company) continue;
       if (filters.companyType !== 'All' && company.companyType !== filters.companyType) continue;
+
+      const hq = (this.data.companyLocations(company.id) ?? []).find((l) => l.latitude != null);
+      const locationString = [role.city, role.state, role.country].filter(Boolean).join(', ');
       inputs.push({
+        id: role.id,
+        slug: role.slug,
+        title: role.title,
+        seasons: role.seasons,
+        cohortYear: role.cohortYear,
+        locationString,
+        workArrangement: role.workArrangement,
         companyId: company.id,
-        slug: company.slug,
-        name: company.name,
-        companyType: company.companyType,
-        websiteUrl: company.websiteUrl,
-        logoUrl: company.logoUrl,
-        latitude: role.latitude,
-        longitude: role.longitude,
-        city: role.city,
-        state: role.state,
-        country: role.country,
+        companyName: company.name,
+        companySlug: company.slug,
+        companyWebsiteUrl: company.websiteUrl,
+        companyLogoUrl: company.logoUrl,
+        hqLatitude: hq?.latitude ?? null,
+        hqLongitude: hq?.longitude ?? null,
       });
     }
-    return groupRolesIntoMarkers(inputs);
+    return buildMapMarkers(inputs);
   }
 
   // ── Saving / tracking (localStorage) ──

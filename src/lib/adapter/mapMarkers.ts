@@ -1,75 +1,114 @@
-import type { MapCompany } from './adapter';
+import type { MapMarker, MapMarkerRole } from './adapter';
 import { logoForCompany } from '../logo';
-import { resolveRoleCoords, isRemoteLocation } from '../ats/cityCoords';
+import { resolveAllRoleCoords, type ResolvedPlace } from '../ats/cityCoords';
 
-/**
- * Resolve a marker coordinate from a role's location string, falling back to the
- * company HQ for Remote/unknown locations. Pure + deterministic, so the map
- * never depends on latitude/longitude columns existing in the live schema.
- */
-export function resolveMarkerCoords(
-  locationString: string,
-  workArrangement: string | null | undefined,
-  hqLatitude: number | null,
-  hqLongitude: number | null,
-): { latitude: number | null; longitude: number | null } {
-  const remote = workArrangement === 'Remote' || isRemoteLocation(locationString);
-  if (!remote) {
-    const hit = resolveRoleCoords(locationString);
-    if (hit) return { latitude: hit.latitude, longitude: hit.longitude };
-  }
-  if (hqLatitude != null && hqLongitude != null) {
-    return { latitude: hqLatitude, longitude: hqLongitude };
-  }
-  return { latitude: null, longitude: null };
-}
-
-export interface RoleMarkerInput {
-  companyId: string;
+/** A role as fed into the map-marker builder, with its company context. */
+export interface MapRoleInput {
+  id: string;
   slug: string;
-  name: string;
-  companyType: string;
-  websiteUrl: string | null;
-  logoUrl: string | null;
-  latitude: number;
-  longitude: number;
-  city: string | null;
-  state: string | null;
-  country: string | null;
+  title: string;
+  seasons: string[];
+  cohortYear: number | null;
+  /** The role's own location string, e.g. "Austin, Texas" or "New York, Seattle". */
+  locationString: string;
+  workArrangement: string | null;
+  companyId: string;
+  companyName: string;
+  companySlug: string;
+  companyWebsiteUrl: string | null;
+  companyLogoUrl: string | null;
+  /** Company HQ fallback, used only for Remote / country-only / unresolvable roles. */
+  hqLatitude: number | null;
+  hqLongitude: number | null;
+}
+
+/** Round a coordinate so near-identical city points share one bucket. */
+function coordKey(lat: number, lng: number): string {
+  return `${lat.toFixed(2)},${lng.toFixed(2)}`;
+}
+
+interface Bucket {
+  marker: MapMarker;
+  companyIds: Set<string>;
 }
 
 /**
- * Group role-level coordinates into one marker per (company, rounded location),
- * counting active roles at that spot. Markers resolve a brand logo from the
- * company website domain (with the DB logo_url preferred when present).
+ * Build map markers grouped by geographic location across ALL companies.
+ *
+ * For each role, resolve EVERY city in its location string (multi-city roles
+ * produce a pin in each city). Only Remote / country-only / unresolvable roles
+ * fall back to the company HQ. Each marker's roleCount is the total open roles
+ * at that coordinate (not the number of companies).
  */
-export function groupRolesIntoMarkers(roles: RoleMarkerInput[]): MapCompany[] {
-  const byKey = new Map<string, MapCompany>();
+export function buildMapMarkers(roles: MapRoleInput[]): MapMarker[] {
+  const buckets = new Map<string, Bucket>();
+  // Dedup: a single role must not count twice at the same coordinate bucket.
+  const placedRoleAtKey = new Set<string>();
 
-  for (const r of roles) {
-    if (r.latitude == null || r.longitude == null) continue;
-    // Round coords so near-identical city points cluster into one marker.
-    const key = `${r.companyId}@${r.latitude.toFixed(2)},${r.longitude.toFixed(2)}`;
-    const existing = byKey.get(key);
-    if (existing) {
-      existing.activeRoleCount += 1;
+  const place = (role: MapRoleInput, p: { latitude: number; longitude: number; label: string; city: string | null; state: string | null }) => {
+    const key = coordKey(p.latitude, p.longitude);
+    const roleKey = `${role.id}@${key}`;
+    if (placedRoleAtKey.has(roleKey)) return;
+    placedRoleAtKey.add(roleKey);
+
+    let bucket = buckets.get(key);
+    if (!bucket) {
+      bucket = {
+        marker: {
+          id: key,
+          label: p.label,
+          city: p.city,
+          state: p.state,
+          latitude: p.latitude,
+          longitude: p.longitude,
+          roleCount: 0,
+          companyCount: 0,
+          roles: [],
+        },
+        companyIds: new Set(),
+      };
+      buckets.set(key, bucket);
+    }
+    const markerRole: MapMarkerRole = {
+      id: role.id,
+      slug: role.slug,
+      title: role.title,
+      companyName: role.companyName,
+      companySlug: role.companySlug,
+      companyLogoUrl: logoForCompany({ logoUrl: role.companyLogoUrl, websiteUrl: role.companyWebsiteUrl }),
+      companyWebsiteUrl: role.companyWebsiteUrl,
+      seasons: role.seasons,
+      cohortYear: role.cohortYear,
+    };
+    bucket.marker.roles.push(markerRole);
+    bucket.marker.roleCount += 1;
+    bucket.companyIds.add(role.companyId);
+  };
+
+  for (const role of roles) {
+    const places: ResolvedPlace[] = resolveAllRoleCoords(role.locationString);
+    if (places.length > 0) {
+      for (const p of places) place(role, p);
       continue;
     }
-    byKey.set(key, {
-      id: key,
-      slug: r.slug,
-      name: r.name,
-      companyType: r.companyType,
-      websiteUrl: r.websiteUrl,
-      logoUrl: logoForCompany({ logoUrl: r.logoUrl, websiteUrl: r.websiteUrl }),
-      latitude: r.latitude,
-      longitude: r.longitude,
-      city: r.city,
-      state: r.state,
-      country: r.country,
-      activeRoleCount: 1,
-    });
+    // Fallback: Remote / country-only / unresolvable → company HQ (if present).
+    if (role.hqLatitude != null && role.hqLongitude != null) {
+      place(role, {
+        latitude: role.hqLatitude,
+        longitude: role.hqLongitude,
+        label: role.locationString && /remote/i.test(role.locationString) ? 'Remote (HQ)' : 'HQ',
+        city: null,
+        state: null,
+      });
+    }
   }
 
-  return [...byKey.values()];
+  const markers: MapMarker[] = [];
+  for (const bucket of buckets.values()) {
+    bucket.marker.companyCount = bucket.companyIds.size;
+    markers.push(bucket.marker);
+  }
+  // Largest locations first.
+  markers.sort((a, b) => b.roleCount - a.roleCount);
+  return markers;
 }

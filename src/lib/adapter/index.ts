@@ -51,5 +51,6 @@ export type {
   PendingCompany,
   PendingRole,
   ListingReport,
-  MapCompany,
+  MapMarker,
+  MapMarkerRole,
 } from './adapter';
