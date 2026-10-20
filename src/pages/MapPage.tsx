@@ -21,11 +21,16 @@ const SINGLE_WORLD_BOUNDS: L.LatLngBoundsExpression = [
 
 /**
  * Normalize company names before comparing.
- * This tolerates capitalization and whitespace differences without matching
- * unrelated companies with similar names.
+ * Tolerates capitalization, whitespace, and punctuation variations.
  */
 function companyKey(name: string): string {
-  return name.normalize('NFKC').trim().replace(/\s+/g, ' ').toLowerCase();
+  if (!name) return '';
+  return name
+    .toLowerCase()
+    .normalize('NFKC')
+    .replace(/[^a-z0-9\s]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
 }
 
 /**
@@ -36,20 +41,23 @@ export function filterMarkersByCompany(markers: MapMarker[], companyName: string
   const selected = companyKey(companyName);
   if (!selected) return markers;
 
-  return markers.flatMap((marker) => {
-    const roles = marker.roles.filter(
-      (role) => companyKey(role.companyName) === selected
-    );
+  return markers
+    .map((marker) => {
+      const matchingRoles = marker.roles.filter((role) => {
+        const roleCompKey = companyKey(role.companyName);
+        return roleCompKey.includes(selected) || selected.includes(roleCompKey);
+      });
 
-    if (roles.length === 0) return [];
+      if (matchingRoles.length === 0) return null;
 
-    return [{
-      ...marker,
-      roles,
-      roleCount: roles.length,
-      companyCount: new Set(roles.map((role) => companyKey(role.companyName))).size,
-    }];
-  });
+      return {
+        ...marker,
+        roles: matchingRoles,
+        roleCount: matchingRoles.length,
+        companyCount: new Set(matchingRoles.map((role) => companyKey(role.companyName))).size,
+      };
+    })
+    .filter((m): m is MapMarker => m !== null);
 }
 
 /** Distinct company names across the marker set, for tests and autocomplete. */
@@ -112,7 +120,6 @@ export function companyOptionsFromMarkers(markers: MapMarker[]): CompanyMapOptio
 
 /**
  * Refit after BOTH the company selection and marker data change.
- * This also handles a shareable company URL opened before the query finishes.
  */
 function FitToMarkers({
   markers,
@@ -140,7 +147,6 @@ function FitToMarkers({
 
     if (coordinates.length === 0) return;
 
-    // Avoid an animated fit racing against a changed cluster-marker set.
     map.stop();
     if (coordinates.length === 1) {
       map.setView(coordinates[0], 7, { animate: false });
@@ -155,7 +161,6 @@ function FitToMarkers({
   return null;
 }
 
-
 // A pin whose badge shows the number of OPEN ROLES at that location.
 function roleCountIcon(count: number): L.DivIcon {
   const label = count > 99 ? '99+' : String(count);
@@ -169,7 +174,7 @@ function roleCountIcon(count: number): L.DivIcon {
   });
 }
 
-// Cluster badge sums the role counts of its child markers (not marker count).
+// Cluster badge sums the role counts of its child markers.
 function clusterIcon(cluster: { getAllChildMarkers: () => Array<{ options: { roleCount?: number } }> }): L.DivIcon {
   const total = cluster
     .getAllChildMarkers()
@@ -188,8 +193,6 @@ export function MapPage() {
   const { filters, toggleSeason } = useRoleFilters();
   const [searchParams, setSearchParams] = useSearchParams();
 
-  // Keep the SEARCH TEXT separate from the COMPANY THAT IS ACTUALLY SELECTED.
-  // Typing searches the dropdown; only choosing an option filters map pins.
   const initialCompany = searchParams.get('company') ?? '';
   const [companyQuery, setCompanyQuery] = useState(initialCompany);
   const [selectedCompany, setSelectedCompany] = useState(initialCompany);
@@ -198,15 +201,13 @@ export function MapPage() {
   const [copiedLink, setCopiedLink] = useState(false);
   const comboboxRef = useRef<HTMLDivElement>(null);
 
-  // Support browser back/forward and directly shared ?company= URLs.
   useEffect(() => {
     const companyFromUrl = searchParams.get('company') ?? '';
     if (companyFromUrl !== selectedCompany) {
       setSelectedCompany(companyFromUrl);
       setCompanyQuery(companyFromUrl);
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [searchParams]);
+  }, [searchParams, selectedCompany]);
 
   useEffect(() => {
     function handleClickOutside(event: MouseEvent) {
@@ -352,7 +353,6 @@ export function MapPage() {
         </div>
       </div>
 
-      {/* FIXED OVERLAP: High z-index wrapper container floating safely above Leaflet */}
       <div className="relative z-[9999] mb-3 flex flex-col gap-2 sm:flex-row sm:flex-wrap sm:items-center">
         <div ref={comboboxRef} className="relative w-full sm:w-96">
           <Search
@@ -567,7 +567,6 @@ export function MapPage() {
     </div>
   );
 }
-
 
 const POPUP_INITIAL = 25;
 const POPUP_STEP = 50;
