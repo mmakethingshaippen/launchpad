@@ -20,36 +20,46 @@ const SINGLE_WORLD_BOUNDS: L.LatLngBoundsExpression = [
 ];
 
 /**
- * Filter markers to a single company (by name, case-insensitive), returning a
- * new marker set whose roleCount/companyCount/roles reflect only that company.
- * Markers with no matching role are dropped so only that company's pins remain.
+ * Normalize company names before comparing.
+ * This tolerates capitalization and whitespace differences without matching
+ * unrelated companies with similar names.
+ */
+function companyKey(name: string): string {
+  return name.normalize('NFKC').trim().replace(/\s+/g, ' ').toLowerCase();
+}
+
+/**
+ * Isolate the roles for one selected company and recalculate marker counts.
+ * Locations with no matching roles are removed.
  */
 export function filterMarkersByCompany(markers: MapMarker[], companyName: string): MapMarker[] {
-  const q = companyName.trim().toLowerCase();
-  if (!q) return markers;
-  const out: MapMarker[] = [];
-  for (const m of markers) {
-    const roles = m.roles.filter((r) => r.companyName.toLowerCase() === q);
-    if (roles.length === 0) continue;
-    const distinctCompanies = new Set(roles.map((r) => r.companyName.toLowerCase())).size;
-    out.push({
-      ...m,
+  const selected = companyKey(companyName);
+  if (!selected) return markers;
+
+  return markers.flatMap((marker) => {
+    const roles = marker.roles.filter(
+      (role) => companyKey(role.companyName) === selected
+    );
+
+    if (roles.length === 0) return [];
+
+    return [{
+      ...marker,
       roles,
       roleCount: roles.length,
-      companyCount: distinctCompanies,
-    });
-  }
-  return out;
+      companyCount: new Set(roles.map((role) => companyKey(role.companyName))).size,
+    }];
+  });
 }
 
-/** Distinct company names across a marker set, sorted, for tests & autocomplete. */
+/** Distinct company names across the marker set, for tests and autocomplete. */
 export function companyNamesFromMarkers(markers: MapMarker[]): string[] {
-  const names = new Set<string>();
-  for (const m of markers) for (const r of m.roles) names.add(r.companyName);
-  return [...names].sort((a, b) => a.localeCompare(b));
+  return [...new Set(
+    markers.flatMap((marker) => marker.roles.map((role) => role.companyName.trim()))
+      .filter(Boolean)
+  )].sort((a, b) => a.localeCompare(b));
 }
 
-/** Distinct companies with their total mapped role counts and logo URLs. */
 export interface CompanyMapOption {
   name: string;
   roleCount: number;
@@ -57,53 +67,94 @@ export interface CompanyMapOption {
   logoUrl?: string | null;
 }
 
+/** Build the selector from the SAME unfiltered markers used by the map. */
 export function companyOptionsFromMarkers(markers: MapMarker[]): CompanyMapOption[] {
-  const stats = new Map<string, { roleCount: number; cities: Set<string>; logoUrl?: string | null }>();
-  for (const m of markers) {
-    for (const r of m.roles) {
-      const existing = stats.get(r.companyName);
+  const stats = new Map<string, {
+    name: string;
+    roleCount: number;
+    cities: Set<string>;
+    logoUrl?: string | null;
+  }>();
+
+  for (const marker of markers) {
+    for (const role of marker.roles) {
+      const name = role.companyName.trim();
+      const key = companyKey(name);
+      if (!key) continue;
+
+      const existing = stats.get(key);
       if (existing) {
         existing.roleCount += 1;
-        existing.cities.add(m.label);
-        if (!existing.logoUrl && r.companyLogoUrl) existing.logoUrl = r.companyLogoUrl;
+        existing.cities.add(marker.label);
+        if (!existing.logoUrl && role.companyLogoUrl) {
+          existing.logoUrl = role.companyLogoUrl;
+        }
       } else {
-        stats.set(r.companyName, {
+        stats.set(key, {
+          name,
           roleCount: 1,
-          cities: new Set([m.label]),
-          logoUrl: r.companyLogoUrl,
+          cities: new Set([marker.label]),
+          logoUrl: role.companyLogoUrl,
         });
       }
     }
   }
-  return [...stats.entries()]
-    .map(([name, info]) => ({
+
+  return [...stats.values()]
+    .map(({ name, roleCount, cities, logoUrl }) => ({
       name,
-      roleCount: info.roleCount,
-      cityCount: info.cities.size,
-      logoUrl: info.logoUrl,
+      roleCount,
+      cityCount: cities.size,
+      logoUrl,
     }))
     .sort((a, b) => a.name.localeCompare(b.name));
 }
 
-/** Recenter/zoom the Leaflet map to fit the given markers (company search). */
-function FitToMarkers({ markers, fitKey }: { markers: MapMarker[]; fitKey: string }) {
+/**
+ * Refit after BOTH the company selection and marker data change.
+ * This also handles a shareable company URL opened before the query finishes.
+ */
+function FitToMarkers({
+  markers,
+  selectedCompany,
+}: {
+  markers: MapMarker[];
+  selectedCompany: string;
+}) {
   const map = useMap();
+
   useEffect(() => {
-    if (!fitKey) {
-      map.setView([22, 0], 2.4, { animate: true });
+    if (!selectedCompany) {
+      map.setView([22, 0], 2.4, { animate: false });
       return;
     }
-    if (markers.length === 0) return;
-    const pts = markers.map((m) => [m.latitude, normalizeLongitude(m.longitude)] as [number, number]);
-    if (pts.length === 1) {
-      map.setView(pts[0], 6, { animate: true });
+
+    const coordinates = markers
+      .filter((marker) =>
+        Number.isFinite(marker.latitude) &&
+        Number.isFinite(marker.longitude)
+      )
+      .map((marker) =>
+        L.latLng(marker.latitude, normalizeLongitude(marker.longitude))
+      );
+
+    if (coordinates.length === 0) return;
+
+    // Avoid an animated fit racing against a changed cluster-marker set.
+    map.stop();
+    if (coordinates.length === 1) {
+      map.setView(coordinates[0], 7, { animate: false });
     } else {
-      map.fitBounds(L.latLngBounds(pts).pad(0.25), { animate: true, maxZoom: 6 });
+      map.fitBounds(L.latLngBounds(coordinates).pad(0.25), {
+        animate: false,
+        maxZoom: 7,
+      });
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [fitKey]);
+  }, [map, markers, selectedCompany]);
+
   return null;
 }
+
 
 // A pin whose badge shows the number of OPEN ROLES at that location.
 function roleCountIcon(count: number): L.DivIcon {
@@ -137,26 +188,33 @@ export function MapPage() {
   const { filters, toggleSeason } = useRoleFilters();
   const [searchParams, setSearchParams] = useSearchParams();
 
-  // Initialize from ?company= query param if present so map links are shareable
+  // Keep the SEARCH TEXT separate from the COMPANY THAT IS ACTUALLY SELECTED.
+  // Typing searches the dropdown; only choosing an option filters map pins.
   const initialCompany = searchParams.get('company') ?? '';
   const [companyQuery, setCompanyQuery] = useState(initialCompany);
+  const [selectedCompany, setSelectedCompany] = useState(initialCompany);
   const [dropdownOpen, setDropdownOpen] = useState(false);
+  const [showAllOptions, setShowAllOptions] = useState(false);
   const [copiedLink, setCopiedLink] = useState(false);
   const comboboxRef = useRef<HTMLDivElement>(null);
 
-  // Sync companyQuery if the URL ?company= param changes externally
+  // Support browser back/forward and directly shared ?company= URLs.
   useEffect(() => {
-    const paramCompany = searchParams.get('company') ?? '';
-    if (paramCompany !== companyQuery) {
-      setCompanyQuery(paramCompany);
+    const companyFromUrl = searchParams.get('company') ?? '';
+    if (companyFromUrl !== selectedCompany) {
+      setSelectedCompany(companyFromUrl);
+      setCompanyQuery(companyFromUrl);
     }
+    // The URL is the external source of truth. UI event handlers update both.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [searchParams]);
 
-  // Close custom dropdown when clicking outside
   useEffect(() => {
-    function handleClickOutside(e: MouseEvent) {
-      if (comboboxRef.current && !comboboxRef.current.contains(e.target as Node)) {
+    function handleClickOutside(event: MouseEvent) {
+      if (
+        comboboxRef.current &&
+        !comboboxRef.current.contains(event.target as Node)
+      ) {
         setDropdownOpen(false);
       }
     }
@@ -164,8 +222,7 @@ export function MapPage() {
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, []);
 
-  const updateCompanySelection = (nextCompany: string) => {
-    setCompanyQuery(nextCompany);
+  const setCompanyUrl = (nextCompany: string) => {
     const nextParams = new URLSearchParams(searchParams);
     if (nextCompany.trim()) {
       nextParams.set('company', nextCompany.trim());
@@ -175,41 +232,86 @@ export function MapPage() {
     setSearchParams(nextParams, { replace: true });
   };
 
-  const handleCopyShareLink = () => {
-    navigator.clipboard.writeText(window.location.href);
-    setCopiedLink(true);
-    setTimeout(() => setCopiedLink(false), 2000);
+  const handleCompanyTyping = (nextQuery: string) => {
+    setCompanyQuery(nextQuery);
+    setDropdownOpen(true);
+    setShowAllOptions(false);
+
+    // Never apply a half-typed company name to the map.
+    // Clear the previous selection; the full map stays visible while searching.
+    if (selectedCompany) {
+      setSelectedCompany('');
+      setCompanyUrl('');
+    }
   };
 
-  const { data, isLoading } = useQuery({
+  const handleSelectCompany = (company: string) => {
+    setCompanyQuery(company);
+    setSelectedCompany(company);
+    setDropdownOpen(false);
+    setShowAllOptions(false);
+    setCompanyUrl(company);
+  };
+
+  const handleClearCompany = () => {
+    setCompanyQuery('');
+    setSelectedCompany('');
+    setDropdownOpen(false);
+    setShowAllOptions(false);
+    setCompanyUrl('');
+  };
+
+  const handleCopyShareLink = async () => {
+    try {
+      await navigator.clipboard.writeText(window.location.href);
+      setCopiedLink(true);
+      window.setTimeout(() => setCopiedLink(false), 2000);
+    } catch {
+      setCopiedLink(false);
+    }
+  };
+
+  const { data, isLoading, isError } = useQuery({
     queryKey: ['map', filters],
     queryFn: () => adapter.getMapMarkers(filters),
   });
 
   const allMarkers = useMemo(() => data ?? [], [data]);
-  const companyOptions = useMemo(() => companyOptionsFromMarkers(allMarkers), [allMarkers]);
-
-  // Filter dropdown suggestions while typing
-  const filteredCompanyOptions = useMemo(() => {
-    const q = companyQuery.trim().toLowerCase();
-    if (!q) return companyOptions;
-    // If the user has an exact match selected, still show matching or all options cleanly
-    const matches = companyOptions.filter((c) => c.name.toLowerCase().includes(q));
-    return matches.length > 0 ? matches : companyOptions;
-  }, [companyOptions, companyQuery]);
-
-  // When a company is selected/typed, show only its pins (Req 3).
-  const markers = useMemo(
-    () => filterMarkersByCompany(allMarkers, companyQuery),
-    [allMarkers, companyQuery],
+  const companyOptions = useMemo(
+    () => companyOptionsFromMarkers(allMarkers),
+    [allMarkers]
   );
-  const activeCompany = companyQuery.trim();
 
-  const totalRoles = markers.reduce((s, m) => s + m.roleCount, 0);
-  const cities = markers.map((m) => m.label);
+  const filteredCompanyOptions = useMemo(() => {
+    if (showAllOptions) return companyOptions;
+    const q = companyKey(companyQuery);
+    if (!q) return companyOptions;
+    return companyOptions.filter((option) => companyKey(option.name).includes(q));
+  }, [companyOptions, companyQuery, showAllOptions]);
+
+  // This is deliberately based on SELECTED company, not the input's typing.
+  const markers = useMemo(
+    () => filterMarkersByCompany(allMarkers, selectedCompany),
+    [allMarkers, selectedCompany]
+  );
+  const activeCompany = selectedCompany.trim();
+
+  const totalRoles = useMemo(
+    () => markers.reduce((total, marker) => total + marker.roleCount, 0),
+    [markers]
+  );
+  const cityCount = useMemo(
+    () => new Set(markers.map((marker) => marker.label)).size,
+    [markers]
+  );
+
+  // Remount the cluster layer when its contents change so old clusters/markers
+  // cannot hang around after a company or season is selected.
   const markerSetKey = useMemo(
-    () => `${activeCompany}:${markers.length}:${markers.map((m) => `${m.id}#${m.roleCount}`).join('|')}`,
-    [markers, activeCompany],
+    () => `${companyKey(activeCompany)}:${markers.map(
+      (marker) => `${marker.id}#${marker.roleCount}`
+    ).join('|')}`,
+    [activeCompany, markers]
   );
 
   return (
@@ -234,28 +336,32 @@ export function MapPage() {
         </div>
 
         <div className="flex flex-wrap gap-1.5" role="group" aria-label="Quick season filter">
-          {[...SPECIFIC_SEASONS, 'Year-Round'].map((s) => {
-            const active = filters.seasons.includes(s as Season);
+          {[...SPECIFIC_SEASONS, 'Year-Round'].map((season) => {
+            const active = filters.seasons.includes(season as Season);
             return (
               <button
-                key={s}
-                onClick={() => toggleSeason(s as Season)}
+                key={season}
+                type="button"
+                onClick={() => toggleSeason(season as Season)}
                 aria-pressed={active}
                 className={
                   'rounded-full px-3 py-1 text-sm font-medium transition-colors ' +
-                  (active ? 'bg-cyan text-navy' : 'bg-white text-slate-600 ring-1 ring-slate-200 hover:ring-cyan')
+                  (active
+                    ? 'bg-cyan text-navy'
+                    : 'bg-white text-slate-600 ring-1 ring-slate-200 hover:ring-cyan')
                 }
               >
-                {s}
+                {season}
               </button>
             );
           })}
         </div>
       </div>
 
-      {/* Custom Polished Company Combobox + Shareable Summary Pill */}
-      <div className="mb-3 flex flex-col gap-2 sm:flex-row sm:items-center sm:flex-wrap">
-        <div ref={comboboxRef} className="relative w-full sm:w-96 z-[1000]">
+      {/* The entire selector sits in a HIGHER stacking layer than Leaflet.
+          Otherwise Leaflet's panes (z-index 400–700) can cover the dropdown. */}
+      <div className="relative z-[2000] mb-3 flex flex-col gap-2 sm:flex-row sm:flex-wrap sm:items-center">
+        <div ref={comboboxRef} className="relative w-full sm:w-96">
           <Search
             className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400"
             aria-hidden="true"
@@ -263,24 +369,36 @@ export function MapPage() {
           <input
             type="text"
             value={companyQuery}
-            onFocus={() => setDropdownOpen(true)}
-            onChange={(e) => {
-              updateCompanySelection(e.target.value);
+            onFocus={() => {
               setDropdownOpen(true);
+              setShowAllOptions(false);
+            }}
+            onChange={(event) => handleCompanyTyping(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === 'Escape') {
+                setDropdownOpen(false);
+              } else if (
+                event.key === 'Enter' &&
+                dropdownOpen &&
+                filteredCompanyOptions.length === 1
+              ) {
+                event.preventDefault();
+                handleSelectCompany(filteredCompanyOptions[0].name);
+              }
             }}
             placeholder="Filter by company (e.g. Waymo, Stripe, Nvidia)…"
             aria-label="Search the map by company"
             aria-expanded={dropdownOpen}
+            aria-controls="map-company-options"
+            aria-autocomplete="list"
             className="w-full rounded-lg border border-slate-300 bg-white py-2 pl-9 pr-14 text-sm text-navy placeholder:text-slate-400 outline-none transition-shadow focus:border-cyan focus:ring-2 focus:ring-cyan/20"
           />
+
           <div className="absolute right-2 top-1/2 flex -translate-y-1/2 items-center gap-0.5">
-            {companyQuery && (
+            {(companyQuery || activeCompany) && (
               <button
                 type="button"
-                onClick={() => {
-                  updateCompanySelection('');
-                  setDropdownOpen(false);
-                }}
+                onClick={handleClearCompany}
                 aria-label="Clear company search"
                 className="rounded p-1 text-slate-400 hover:bg-slate-100 hover:text-navy"
               >
@@ -289,7 +407,11 @@ export function MapPage() {
             )}
             <button
               type="button"
-              onClick={() => setDropdownOpen((o) => !o)}
+              onClick={() => {
+                const opening = !dropdownOpen;
+                setDropdownOpen(opening);
+                if (opening) setShowAllOptions(true);
+              }}
               aria-label="Toggle company list"
               className="rounded p-1 text-slate-400 hover:bg-slate-100 hover:text-navy"
             >
@@ -300,45 +422,55 @@ export function MapPage() {
             </button>
           </div>
 
-          {dropdownOpen && companyOptions.length > 0 && (
-            <div className="absolute left-0 right-0 top-full mt-1.5 max-h-64 overflow-y-auto rounded-xl border border-slate-200 bg-white p-1.5 shadow-xl ring-1 ring-black/5">
-              <div className="px-2.5 py-1 text-[11px] font-semibold uppercase tracking-wider text-slate-400 flex items-center justify-between">
-                <span>Companies with mapped roles ({filteredCompanyOptions.length})</span>
+          {dropdownOpen && (
+            <div
+              id="map-company-options"
+              className="absolute left-0 right-0 top-full z-[2001] mt-2 max-h-72 overflow-y-auto rounded-xl border border-slate-200 bg-white p-1.5 shadow-2xl ring-1 ring-slate-900/10"
+            >
+              <div className="sticky top-0 z-10 mb-1 flex items-center justify-between border-b border-slate-100 bg-white px-2.5 py-1.5 text-[11px] font-semibold uppercase tracking-wider text-slate-400">
+                <span>Companies ({filteredCompanyOptions.length})</span>
                 <span>Open Roles</span>
               </div>
-              {filteredCompanyOptions.map((opt) => {
-                const isSelected = opt.name.toLowerCase() === activeCompany.toLowerCase();
+
+              {filteredCompanyOptions.length === 0 && (
+                <p className="px-2.5 py-3 text-sm text-slate-500">
+                  {isLoading ? 'Loading companies…' : 'No matching companies.'}
+                </p>
+              )}
+
+              {filteredCompanyOptions.map((option) => {
+                const isSelected = companyKey(option.name) === companyKey(activeCompany);
                 return (
                   <button
-                    key={opt.name}
+                    key={option.name}
                     type="button"
-                    onClick={() => {
-                      updateCompanySelection(opt.name);
-                      setDropdownOpen(false);
-                    }}
+                    onClick={() => handleSelectCompany(option.name)}
                     className={`flex w-full items-center justify-between gap-2 rounded-lg px-2.5 py-2 text-left text-sm transition-colors ${
                       isSelected
                         ? 'bg-cyan/15 font-semibold text-navy'
                         : 'text-slate-700 hover:bg-slate-50'
                     }`}
                   >
-                    <span className="flex items-center gap-2 min-w-0">
-                      {opt.logoUrl ? (
+                    <span className="flex min-w-0 items-center gap-2">
+                      {option.logoUrl ? (
                         <img
-                          src={opt.logoUrl}
+                          src={option.logoUrl}
                           alt=""
                           className="h-4 w-4 flex-shrink-0 rounded object-contain"
-                          onError={(e) => {
-                            (e.currentTarget as HTMLImageElement).style.display = 'none';
+                          onError={(event) => {
+                            event.currentTarget.style.display = 'none';
                           }}
                         />
                       ) : (
-                        <Building2 className="h-4 w-4 flex-shrink-0 text-slate-400" aria-hidden="true" />
+                        <Building2
+                          className="h-4 w-4 flex-shrink-0 text-slate-400"
+                          aria-hidden="true"
+                        />
                       )}
-                      <span className="truncate">{opt.name}</span>
+                      <span className="truncate">{option.name}</span>
                     </span>
                     <span className="flex-shrink-0 rounded-full bg-slate-100 px-2 py-0.5 text-xs font-medium text-slate-600">
-                      {opt.roleCount} {opt.roleCount === 1 ? 'role' : 'roles'}
+                      {option.roleCount} {option.roleCount === 1 ? 'role' : 'roles'}
                     </span>
                   </button>
                 );
@@ -352,8 +484,8 @@ export function MapPage() {
             <span className="inline-flex items-center gap-2 rounded-full bg-cyan/10 px-3 py-1.5 text-sm font-medium text-navy ring-1 ring-cyan/30">
               <strong>{activeCompany}</strong>
               <span className="text-slate-500">
-                {totalRoles} open {totalRoles === 1 ? 'role' : 'roles'} · {cities.length}{' '}
-                {cities.length === 1 ? 'city' : 'cities'}
+                {totalRoles} open {totalRoles === 1 ? 'role' : 'roles'} · {cityCount}{' '}
+                {cityCount === 1 ? 'city' : 'cities'}
               </span>
             </span>
             <button
@@ -381,19 +513,21 @@ export function MapPage() {
       <p className="mb-1 text-sm text-slate-500" aria-live="polite">
         {isLoading
           ? 'Loading map…'
-          : activeCompany && markers.length === 0
-            ? `No open roles found for "${activeCompany}".`
-            : `${totalRoles} open roles across ${markers.length} locations`}
+          : isError
+            ? 'Could not load the map. Please try again.'
+            : activeCompany && markers.length === 0
+              ? `No open roles found for "${activeCompany}" with your current season filters.`
+              : `${totalRoles} open roles across ${markers.length} locations`}
       </p>
       <p className="mb-4 text-xs text-slate-400">
-        Pins show each role's actual job city. Click any company in the search bar to isolate its office hubs.
+        Pins show each role's actual job city. Search and select a company to show only its job locations.
       </p>
 
       {isLoading ? (
         <LoadingBlock label="Loading map" />
       ) : (
         <div
-          className="h-[70vh] w-full overflow-hidden rounded-xl border border-slate-200"
+          className="relative z-0 isolate h-[70vh] w-full overflow-hidden rounded-xl border border-slate-200"
           style={{ backgroundColor: '#aad3df' }}
         >
           <MapContainer
@@ -413,7 +547,7 @@ export function MapPage() {
               noWrap={true}
               bounds={SINGLE_WORLD_BOUNDS}
             />
-            <FitToMarkers markers={markers} fitKey={activeCompany} />
+            <FitToMarkers markers={markers} selectedCompany={activeCompany} />
             <MarkerClusterGroup
               key={markerSetKey}
               iconCreateFunction={clusterIcon as never}
@@ -421,15 +555,15 @@ export function MapPage() {
               maxClusterRadius={60}
               showCoverageOnHover={false}
             >
-              {markers.map((m) => (
+              {markers.map((marker) => (
                 <Marker
-                  key={m.id}
-                  position={[m.latitude, normalizeLongitude(m.longitude)]}
-                  icon={roleCountIcon(m.roleCount)}
-                  {...({ roleCount: m.roleCount } as object)}
+                  key={marker.id}
+                  position={[marker.latitude, normalizeLongitude(marker.longitude)]}
+                  icon={roleCountIcon(marker.roleCount)}
+                  {...({ roleCount: marker.roleCount } as object)}
                 >
                   <Popup maxWidth={320}>
-                    <MarkerPopup marker={m} />
+                    <MarkerPopup marker={marker} />
                   </Popup>
                 </Marker>
               ))}
@@ -441,6 +575,7 @@ export function MapPage() {
   );
 }
 
+
 const POPUP_INITIAL = 25;
 const POPUP_STEP = 50;
 
@@ -448,14 +583,12 @@ export function MarkerPopup({ marker }: { marker: MapMarker }) {
   const [visible, setVisible] = useState(POPUP_INITIAL);
   const shown = marker.roles.slice(0, visible);
   const remaining = marker.roles.length - visible;
-
   // Deep-link to Browse pre-filtered to this location. Prefer the city; fall
   // back to the state so the link always narrows to this pin's area.
   const browseParams = new URLSearchParams();
   if (marker.city) browseParams.set('city', marker.city);
   else if (marker.state) browseParams.set('state', marker.state);
   const browseHref = `/browse?${browseParams.toString()}`;
-
   return (
     <div className="min-w-[240px]">
       <p className="text-base font-semibold text-navy">{marker.label}</p>
@@ -490,7 +623,6 @@ export function MarkerPopup({ marker }: { marker: MapMarker }) {
           </li>
         ))}
       </ul>
-
       {remaining > 0 && (
         <button
           type="button"
@@ -500,7 +632,6 @@ export function MarkerPopup({ marker }: { marker: MapMarker }) {
           +{remaining} more… (show {Math.min(POPUP_STEP, remaining)})
         </button>
       )}
-
       <Link
         to={browseHref}
         className="mt-2 flex items-center justify-center gap-1 rounded-md border border-cyan px-2 py-1 text-xs font-semibold text-navy transition-colors hover:bg-cyan/10"
