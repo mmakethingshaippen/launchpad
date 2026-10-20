@@ -205,7 +205,6 @@ export function MapPage() {
       setSelectedCompany(companyFromUrl);
       setCompanyQuery(companyFromUrl);
     }
-    // The URL is the external source of truth. UI event handlers update both.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [searchParams]);
 
@@ -237,8 +236,6 @@ export function MapPage() {
     setDropdownOpen(true);
     setShowAllOptions(false);
 
-    // Never apply a half-typed company name to the map.
-    // Clear the previous selection; the full map stays visible while searching.
     if (selectedCompany) {
       setSelectedCompany('');
       setCompanyUrl('');
@@ -289,7 +286,6 @@ export function MapPage() {
     return companyOptions.filter((option) => companyKey(option.name).includes(q));
   }, [companyOptions, companyQuery, showAllOptions]);
 
-  // This is deliberately based on SELECTED company, not the input's typing.
   const markers = useMemo(
     () => filterMarkersByCompany(allMarkers, selectedCompany),
     [allMarkers, selectedCompany]
@@ -305,8 +301,6 @@ export function MapPage() {
     [markers]
   );
 
-  // Remount the cluster layer when its contents change so old clusters/markers
-  // cannot hang around after a company or season is selected.
   const markerSetKey = useMemo(
     () => `${companyKey(activeCompany)}:${markers.map(
       (marker) => `${marker.id}#${marker.roleCount}`
@@ -358,9 +352,8 @@ export function MapPage() {
         </div>
       </div>
 
-      {/* The entire selector sits in a HIGHER stacking layer than Leaflet.
-          Otherwise Leaflet's panes (z-index 400–700) can cover the dropdown. */}
-      <div className="relative z-[2000] mb-3 flex flex-col gap-2 sm:flex-row sm:flex-wrap sm:items-center">
+      {/* FIXED OVERLAP: High z-index wrapper container floating safely above Leaflet */}
+      <div className="relative z-[9999] mb-3 flex flex-col gap-2 sm:flex-row sm:flex-wrap sm:items-center">
         <div ref={comboboxRef} className="relative w-full sm:w-96">
           <Search
             className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400"
@@ -391,7 +384,7 @@ export function MapPage() {
             aria-expanded={dropdownOpen}
             aria-controls="map-company-options"
             aria-autocomplete="list"
-            className="w-full rounded-lg border border-slate-300 bg-white py-2 pl-9 pr-14 text-sm text-navy placeholder:text-slate-400 outline-none transition-shadow focus:border-cyan focus:ring-2 focus:ring-cyan/20"
+            className="w-full rounded-lg border border-slate-300 bg-white py-2 pl-9 pr-14 text-sm text-navy placeholder:text-slate-400 outline-none transition-shadow focus:border-cyan focus:ring-2 focus:ring-cyan/20 shadow-sm"
           />
 
           <div className="absolute right-2 top-1/2 flex -translate-y-1/2 items-center gap-0.5">
@@ -425,7 +418,7 @@ export function MapPage() {
           {dropdownOpen && (
             <div
               id="map-company-options"
-              className="absolute left-0 right-0 top-full z-[2001] mt-2 max-h-72 overflow-y-auto rounded-xl border border-slate-200 bg-white p-1.5 shadow-2xl ring-1 ring-slate-900/10"
+              className="absolute left-0 right-0 top-full z-[10000] mt-2 max-h-72 overflow-y-auto rounded-xl border border-slate-200 bg-white p-1.5 shadow-2xl ring-1 ring-slate-900/10"
             >
               <div className="sticky top-0 z-10 mb-1 flex items-center justify-between border-b border-slate-100 bg-white px-2.5 py-1.5 text-[11px] font-semibold uppercase tracking-wider text-slate-400">
                 <span>Companies ({filteredCompanyOptions.length})</span>
@@ -583,8 +576,6 @@ export function MarkerPopup({ marker }: { marker: MapMarker }) {
   const [visible, setVisible] = useState(POPUP_INITIAL);
   const shown = marker.roles.slice(0, visible);
   const remaining = marker.roles.length - visible;
-  // Deep-link to Browse pre-filtered to this location. Prefer the city; fall
-  // back to the state so the link always narrows to this pin's area.
   const browseParams = new URLSearchParams();
   if (marker.city) browseParams.set('city', marker.city);
   else if (marker.state) browseParams.set('state', marker.state);

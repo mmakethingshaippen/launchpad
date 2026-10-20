@@ -41,15 +41,15 @@ const BRAND_RULES: BrandRule[] = [
     fields: ['Business'],
     employeeRange: '501+',
   },
-  // Big Tech / enterprise software / internet
+  // Big Tech / AI / enterprise software / internet
   {
-    re: /\b(tiktok|bytedance|google|alphabet|amazon|aws|microsoft|apple|meta|facebook|netflix|nvidia|tesla|spacex|oracle|salesforce|adobe|sap|ibm|intel|amd|qualcomm|cisco|dell|hp|hewlett|samsung|sony|uber|lyft|airbnb|spotify|snap|pinterest|reddit|linkedin|dropbox|twilio|snowflake|databricks|palantir|servicenow|workday|atlassian|datadog|cloudflare|mongodb|roblox|epic games|riot games|doordash|instacart|coinbase|block|square|paypal|intuit|vmware|broadcom|texas instruments|micron|western digital|seagate|autodesk)\b/,
+    re: /\b(tiktok|bytedance|google|alphabet|amazon|aws|microsoft|apple|meta|facebook|netflix|nvidia|tesla|spacex|oracle|salesforce|adobe|sap|ibm|intel|amd|qualcomm|cisco|dell|hp|hewlett|samsung|sony|uber|lyft|airbnb|spotify|snap|pinterest|reddit|linkedin|dropbox|twilio|snowflake|databricks|palantir|servicenow|workday|atlassian|datadog|cloudflare|mongodb|roblox|epic games|riot games|doordash|instacart|coinbase|block|square|paypal|intuit|vmware|broadcom|texas instruments|micron|western digital|seagate|autodesk|mercor)\b/,
     fields: ['Technology'],
     employeeRange: '501+',
   },
-  // Aerospace / industrial / engineering
+  // Aerospace / industrial / engineering / research institutions (including EPRI)
   {
-    re: /\b(boeing|lockheed|lockheed martin|raytheon|rtx|northrop|general dynamics|ge aerospace|general electric|ge\b|honeywell|3m|caterpillar|john deere|deere|siemens|bosch|ford|general motors|gm\b|stellantis|rivian|lucid|anduril|relativity space|blue origin|rocket lab|collins aerospace)\b/,
+    re: /\b(boeing|lockheed|lockheed martin|raytheon|rtx|northrop|general dynamics|ge aerospace|general electric|ge\b|honeywell|3m|caterpillar|john deere|deere|siemens|bosch|ford|general motors|gm\b|stellantis|rivian|lucid|anduril|relativity space|blue origin|rocket lab|collins aerospace|epri|electric power research institute)\b/,
     fields: ['Engineering'],
     employeeRange: '501+',
   },
@@ -93,6 +93,39 @@ export function classifyCompanyByName(name: string): CompanyClassification | nul
 }
 
 /**
+ * Fallback keyword-based classifier used when a company name doesn't hit the direct BRAND_RULES.
+ * Analyzes name keywords to assign a smart industry field instead of falling back to 'Other'.
+ */
+export function classifyCompanyFields(companyName: string, roleTitles: string[] = []): FieldType[] {
+  const brand = classifyCompanyByName(companyName);
+  if (brand) return brand.fields;
+
+  const nameLower = companyName.toLowerCase();
+  const textBlob = [nameLower, ...roleTitles.map((t) => t.toLowerCase())].join(' ');
+
+  const fields = new Set<FieldType>();
+
+  if (/\b(software|tech|ai|data|cyber|cloud|platform|digital|systems|networks|robotics|automation)\b/.test(textBlob)) {
+    fields.add('Technology');
+  }
+  if (/\b(hardware|firmware|mechanical|electrical|civil|energy|power|manufacturing|semiconductor|research)\b/.test(textBlob)) {
+    fields.add('Engineering');
+  }
+  if (/\b(health|medical|biotech|pharma|clinical|hospital|care)\b/.test(textBlob)) {
+    fields.add('Healthcare');
+  }
+  if (/\b(finance|financial|bank|capital|venture|consulting|strategy|analyst)\b/.test(textBlob)) {
+    fields.add('Finance');
+  }
+
+  if (fields.size === 0) {
+    fields.add('Technology');
+  }
+
+  return [...fields];
+}
+
+/**
  * Given a company's current (possibly unknown) metadata, compute a cleaned-up
  * classification. Guarantees a non-"Other / Unknown" result:
  *   1. Known brand → its mapped industry + Established Company + size.
@@ -112,7 +145,7 @@ export function resolveCompanyClassification(input: {
   if (brand) return brand;
 
   const existingFields = (input.fields ?? []).filter((f) => f && f !== 'Other');
-  const fields: FieldType[] = existingFields.length ? existingFields : ['Technology'];
+  const fields: FieldType[] = existingFields.length ? existingFields : classifyCompanyFields(input.name);
   const companyType: CompanyType =
     input.companyType === 'Other / Unknown' ? 'Established Company' : input.companyType;
   const employeeRange: EmployeeRange = input.employeeRange ?? '501+';
