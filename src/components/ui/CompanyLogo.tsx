@@ -1,6 +1,6 @@
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import { Building2 } from 'lucide-react';
-import { logoForCompany } from '../../lib/logo';
+import { logoForCompany, domainFromUrl, fallbackFaviconUrl } from '../../lib/logo';
 import { cn } from '../../lib/cn';
 
 /**
@@ -21,13 +21,29 @@ export function CompanyLogo({
   size?: number;
   className?: string;
 }) {
-  const resolved = logoForCompany({ logoUrl, websiteUrl }, Math.max(64, size * 2));
-  const [failed, setFailed] = useState(false);
+  const px = Math.max(64, size * 2);
+  // Build an ordered source chain: explicit logo → primary favicon → secondary
+  // favicon. We advance through it on each load error, landing on the building
+  // icon only when every source has failed.
+  const sources = useMemo(() => {
+    const chain: string[] = [];
+    const primary = logoForCompany({ logoUrl, websiteUrl }, px);
+    if (primary) chain.push(primary);
+    const domain = domainFromUrl(websiteUrl);
+    if (domain) {
+      const secondary = fallbackFaviconUrl(domain, px);
+      if (!chain.includes(secondary)) chain.push(secondary);
+    }
+    return chain;
+  }, [logoUrl, websiteUrl, px]);
+
+  const [index, setIndex] = useState(0);
+  const src = sources[index];
 
   const box = cn('flex items-center justify-center rounded-lg bg-slate-100 text-slate-400', className);
   const dim = { width: size, height: size };
 
-  if (!resolved || failed) {
+  if (!src) {
     return (
       <span className={box} style={dim} aria-hidden="true">
         <Building2 style={{ width: size * 0.5, height: size * 0.5 }} />
@@ -37,12 +53,12 @@ export function CompanyLogo({
 
   return (
     <img
-      src={resolved}
+      src={src}
       alt={`${name} logo`}
       width={size}
       height={size}
       loading="lazy"
-      onError={() => setFailed(true)}
+      onError={() => setIndex((i) => i + 1)}
       className={cn('rounded-lg bg-white object-contain', className)}
       style={dim}
     />

@@ -21,7 +21,8 @@ export type QueryOp =
   | { type: 'in'; column: string; values: string[] }
   | { type: 'ilike'; column: string; value: string };
 
-const PAGE_SIZE = 24;
+// 21 fits a 3-column grid cleanly (7 rows × 3). Shared by roles & companies.
+export const PAGE_SIZE = 21;
 
 export function buildRolePlan(filters: RoleFilters): QueryPlan {
   const ops: QueryOp[] = [];

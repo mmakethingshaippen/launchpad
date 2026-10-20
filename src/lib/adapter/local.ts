@@ -27,8 +27,7 @@ import { filterRoles, sortRoles, filterCompanies } from '../roleQuery';
 import { buildMapMarkers, type MapRoleInput } from './mapMarkers';
 import * as store from '../localStore';
 import { syncAll } from '../ats/sync';
-
-const PAGE_SIZE = 24;
+import { PAGE_SIZE } from './supabaseQuery';
 
 function paginate<T>(items: T[], page: number, pageSize = PAGE_SIZE): Paginated<T> {
   const start = (page - 1) * pageSize;
@@ -154,9 +153,12 @@ export class LocalAdapter implements DataAdapter {
       if (!company) continue;
       if (filters.companyType !== 'All' && company.companyType !== filters.companyType) continue;
 
-      const hq = (this.data.companyLocations(company.id) ?? []).find((l) => l.latitude != null);
+      const locs = this.data.companyLocations(company.id) ?? [];
+      const hq = locs.find((l) => l.latitude != null) ?? locs[0];
       const locationString = [role.city, role.state, role.country].filter(Boolean).join(', ');
       inputs.push({
+        hqCity: hq?.city ?? null,
+        hqState: hq?.state ?? null,
         id: role.id,
         slug: role.slug,
         title: role.title,

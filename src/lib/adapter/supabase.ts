@@ -23,7 +23,7 @@ import type {
 } from './types';
 import type { RoleFilters } from '../filters';
 import { getSupabaseClient } from '../supabaseClient';
-import { buildRolePlan } from './supabaseQuery';
+import { buildRolePlan, PAGE_SIZE } from './supabaseQuery';
 import { buildMapMarkers, type MapRoleInput } from './mapMarkers';
 import {
   mapRoleCard,
@@ -107,8 +107,8 @@ export class SupabaseAdapter implements DataAdapter {
     if (filters.employeeRanges.length) q = q.in('employee_count_range', filters.employeeRanges);
     if (filters.keyword) q = q.ilike('name', `%${filters.keyword}%`);
 
-    const from = (filters.page - 1) * 24;
-    q = q.order('name', { ascending: true }).range(from, from + 23);
+    const from = (filters.page - 1) * PAGE_SIZE;
+    q = q.order('name', { ascending: true }).range(from, from + PAGE_SIZE - 1);
 
     const { data, count, error } = await q;
     if (error) throw error;
@@ -124,7 +124,7 @@ export class SupabaseAdapter implements DataAdapter {
         return mapCompanyCard(c as never, rc ?? 0);
       }),
     );
-    return { items: cards, total: count ?? 0, page: filters.page, pageSize: 24 };
+    return { items: cards, total: count ?? 0, page: filters.page, pageSize: PAGE_SIZE };
   }
 
   async getCompany(slug: string): Promise<CompanyDetailView | null> {
@@ -210,7 +210,7 @@ export class SupabaseAdapter implements DataAdapter {
       .from('public_roles')
       .select(
         'id, slug, title, seasons, cohort_year, city, state, country, work_arrangement, company_id, ' +
-          'companies!inner(slug,name,company_type,website_url,logo_url,company_locations(latitude,longitude,location_type))',
+          'companies!inner(slug,name,company_type,website_url,logo_url,company_locations(city,state,latitude,longitude,location_type))',
       );
 
     if (filters.seasons.length) q = q.overlaps('seasons', filters.seasons);
@@ -235,6 +235,8 @@ export class SupabaseAdapter implements DataAdapter {
 
       const locationString = [r.city, r.state, r.country].filter(Boolean).join(', ');
       inputs.push({
+        hqCity: (hq?.city as string) ?? null,
+        hqState: (hq?.state as string) ?? null,
         id: r.id as string,
         slug: r.slug as string,
         title: r.title as string,

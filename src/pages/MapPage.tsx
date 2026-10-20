@@ -1,8 +1,10 @@
+import { useState } from 'react';
 import { Helmet } from 'react-helmet-async';
 import { useQuery } from '@tanstack/react-query';
 import { MapContainer, TileLayer, Marker, Popup } from 'react-leaflet';
 import MarkerClusterGroup from 'react-leaflet-cluster';
 import L from 'leaflet';
+import { ArrowRight } from 'lucide-react';
 import { Link } from 'react-router-dom';
 import { useAdapter } from '../hooks/useAdapter';
 import { useRoleFilters } from '../hooks/useRoleFilters';
@@ -116,7 +118,21 @@ export function MapPage() {
   );
 }
 
-function MarkerPopup({ marker }: { marker: MapMarker }) {
+const POPUP_INITIAL = 25;
+const POPUP_STEP = 50;
+
+export function MarkerPopup({ marker }: { marker: MapMarker }) {
+  const [visible, setVisible] = useState(POPUP_INITIAL);
+  const shown = marker.roles.slice(0, visible);
+  const remaining = marker.roles.length - visible;
+
+  // Deep-link to Browse pre-filtered to this location. Prefer the city; fall
+  // back to the state so the link always narrows to this pin's area.
+  const browseParams = new URLSearchParams();
+  if (marker.city) browseParams.set('city', marker.city);
+  else if (marker.state) browseParams.set('state', marker.state);
+  const browseHref = `/browse?${browseParams.toString()}`;
+
   return (
     <div className="min-w-[240px]">
       <p className="text-base font-semibold text-navy">{marker.label}</p>
@@ -125,7 +141,7 @@ function MarkerPopup({ marker }: { marker: MapMarker }) {
         {marker.companyCount === 1 ? 'company' : 'companies'}
       </p>
       <ul className="mt-2 max-h-56 space-y-2 overflow-y-auto pr-1">
-        {marker.roles.slice(0, 25).map((r) => (
+        {shown.map((r) => (
           <li key={r.id} className="flex items-start gap-2">
             {r.companyLogoUrl ? (
               <img
@@ -151,9 +167,24 @@ function MarkerPopup({ marker }: { marker: MapMarker }) {
           </li>
         ))}
       </ul>
-      {marker.roles.length > 25 && (
-        <p className="mt-1 text-xs text-slate-400">+{marker.roles.length - 25} more…</p>
+
+      {remaining > 0 && (
+        <button
+          type="button"
+          onClick={() => setVisible((v) => Math.min(v + POPUP_STEP, marker.roles.length))}
+          className="mt-2 w-full rounded-md bg-slate-100 px-2 py-1 text-xs font-medium text-navy transition-colors hover:bg-slate-200"
+        >
+          +{remaining} more… (show {Math.min(POPUP_STEP, remaining)})
+        </button>
       )}
+
+      <Link
+        to={browseHref}
+        className="mt-2 flex items-center justify-center gap-1 rounded-md border border-cyan px-2 py-1 text-xs font-semibold text-navy transition-colors hover:bg-cyan/10"
+      >
+        View all {marker.roleCount} {marker.roleCount === 1 ? 'role' : 'roles'} in Browse
+        <ArrowRight className="h-3 w-3" aria-hidden="true" />
+      </Link>
     </div>
   );
 }

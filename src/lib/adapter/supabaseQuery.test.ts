@@ -33,7 +33,11 @@ describe('buildRolePlan', () => {
     });
   });
 
-  it('computes pagination range from the page number', () => {
-    expect(buildRolePlan({ ...DEFAULT_FILTERS, page: 2 }).range).toEqual({ from: 24, to: 47 });
+  it('computes pagination range from the page number (21 per page)', () => {
+    // Page 1 → rows 0–20; page 2 → rows 21–41. Range caps each request at 21
+    // rows + exact count, so results past the PostgREST 1,000-row default are
+    // reachable page-by-page.
+    expect(buildRolePlan({ ...DEFAULT_FILTERS, page: 1 }).range).toEqual({ from: 0, to: 20 });
+    expect(buildRolePlan({ ...DEFAULT_FILTERS, page: 2 }).range).toEqual({ from: 21, to: 41 });
   });
 });

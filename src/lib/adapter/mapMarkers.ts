@@ -20,6 +20,9 @@ export interface MapRoleInput {
   /** Company HQ fallback, used only for Remote / country-only / unresolvable roles. */
   hqLatitude: number | null;
   hqLongitude: number | null;
+  /** Company HQ city/state, used to label the fallback pin with a real place. */
+  hqCity?: string | null;
+  hqState?: string | null;
 }
 
 /** Round a coordinate so near-identical city points share one bucket. */
@@ -93,12 +96,23 @@ export function buildMapMarkers(roles: MapRoleInput[]): MapMarker[] {
     }
     // Fallback: Remote / country-only / unresolvable → company HQ (if present).
     if (role.hqLatitude != null && role.hqLongitude != null) {
+      // Always label the pin with the real HQ place name — never the literal
+      // string "HQ". Remote roles get a "(Remote)" suffix for context.
+      const hqLabel = [role.hqCity, role.hqState].filter(Boolean).join(', ');
+      const isRemote = Boolean(role.locationString && /remote/i.test(role.locationString));
+      const label = hqLabel
+        ? isRemote
+          ? `${hqLabel} (Remote)`
+          : hqLabel
+        : isRemote
+          ? 'Remote'
+          : 'Location unavailable';
       place(role, {
         latitude: role.hqLatitude,
         longitude: role.hqLongitude,
-        label: role.locationString && /remote/i.test(role.locationString) ? 'Remote (HQ)' : 'HQ',
-        city: null,
-        state: null,
+        label,
+        city: role.hqCity ?? null,
+        state: role.hqState ?? null,
       });
     }
   }

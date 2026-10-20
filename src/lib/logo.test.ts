@@ -19,10 +19,13 @@ describe('logoForCompany', () => {
       'https://cdn/x.png',
     );
   });
-  it('derives a favicon URL from the website domain', () => {
+  it('derives a real-logo favicon URL from the website domain', () => {
     const url = logoForCompany({ websiteUrl: 'https://www.stripe.com' });
-    expect(url).toContain('favicons');
-    expect(url).toContain('domain=stripe.com');
+    expect(url).toContain('icon.horse/icon/stripe.com');
+  });
+  it('resolves a logo for domains Google serves a blank placeholder for (e.g. Anduril)', () => {
+    const url = logoForCompany({ websiteUrl: 'https://www.anduril.com' });
+    expect(url).toBe('https://icon.horse/icon/anduril.com');
   });
   it('returns null when neither logo nor website is available', () => {
     expect(logoForCompany({})).toBeNull();

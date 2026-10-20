@@ -73,7 +73,24 @@ describe('buildMapMarkers', () => {
 
   it('includes per-role details with a resolved logo', () => {
     const [marker] = buildMapMarkers([role({ companyWebsiteUrl: 'https://acme.com', companyLogoUrl: null })]);
-    expect(marker.roles[0].companyLogoUrl).toContain('favicons');
+    expect(marker.roles[0].companyLogoUrl).toContain('icon.horse/icon/acme.com');
     expect(marker.roles[0].title).toBe('Intern');
+  });
+
+  it('labels the HQ fallback pin with the real HQ place, never the literal "HQ"', () => {
+    const markers = buildMapMarkers([
+      role({
+        id: 'hq',
+        locationString: 'Remote',
+        hqLatitude: 37.3541,
+        hqLongitude: -121.9552,
+        hqCity: 'Santa Clara',
+        hqState: 'CA',
+      }),
+    ]);
+    const m = markers[0];
+    expect(m.label).toBe('Santa Clara, CA (Remote)');
+    expect(m.city).toBe('Santa Clara');
+    expect(m.label).not.toBe('HQ');
   });
 });

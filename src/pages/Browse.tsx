@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import { Helmet } from 'react-helmet-async';
 import { useQuery } from '@tanstack/react-query';
 import { SlidersHorizontal, LayoutGrid, Building2 } from 'lucide-react';
@@ -7,6 +7,7 @@ import { useRoleFilters } from '../hooks/useRoleFilters';
 import { useSaved } from '../hooks/useSaved';
 import { FilterPanel } from '../components/browse/FilterPanel';
 import { ActiveChips } from '../components/browse/ActiveChips';
+import { Pagination } from '../components/browse/Pagination';
 import { RoleCard } from '../components/cards/RoleCard';
 import { CompanyCard } from '../components/cards/CompanyCard';
 import { Drawer } from '../components/ui/Drawer';
@@ -44,8 +45,19 @@ export function Browse() {
   });
 
   const isCompanies = filters.view === 'companies';
-  const total = isCompanies ? companyQuery.data?.total ?? 0 : roleQuery.data?.total ?? 0;
-  const loading = isCompanies ? companyQuery.isLoading : roleQuery.isLoading;
+  const activeQuery = isCompanies ? companyQuery : roleQuery;
+  const total = activeQuery.data?.total ?? 0;
+  const pageSize = activeQuery.data?.pageSize ?? 21;
+  const loading = activeQuery.isLoading;
+  const gridRef = useRef<HTMLDivElement>(null);
+
+  const goToPage = (page: number) => {
+    setFilters({ page });
+    // Smoothly return to the top of the results grid on page change.
+    if (typeof window !== 'undefined') {
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+    }
+  };
 
   return (
     <div>
@@ -149,17 +161,29 @@ export function Browse() {
                 ) : undefined
               }
             />
-          ) : isCompanies ? (
-            <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-3">
-              {companyQuery.data!.items.map((c) => (
-                <CompanyCard key={c.id} company={c} />
-              ))}
-            </div>
           ) : (
-            <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-3">
-              {roleQuery.data!.items.map((r) => (
-                <RoleCard key={r.id} role={r} saved={savedIds.has(r.id)} onToggleSave={toggleSave} />
-              ))}
+            <div ref={gridRef}>
+              {isCompanies ? (
+                <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-3">
+                  {companyQuery.data!.items.map((c) => (
+                    <CompanyCard key={c.id} company={c} />
+                  ))}
+                </div>
+              ) : (
+                <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-3">
+                  {roleQuery.data!.items.map((r) => (
+                    <RoleCard key={r.id} role={r} saved={savedIds.has(r.id)} onToggleSave={toggleSave} />
+                  ))}
+                </div>
+              )}
+
+              <Pagination
+                page={filters.page}
+                pageSize={pageSize}
+                total={total}
+                noun={isCompanies ? 'companies' : 'opportunities'}
+                onPageChange={goToPage}
+              />
             </div>
           )}
         </div>
