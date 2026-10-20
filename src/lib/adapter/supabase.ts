@@ -45,7 +45,7 @@ const ROLE_SELECT_WITH_COMPANY = `*, companies!inner(${COMPANY_SELECT})`;
  * falls back to "Other" or has an empty field array.
  */
 function sanitizeFields(fields: FieldType[] | undefined, companyName: string): FieldType[] {
-  const valid = (fields || []).filter((f): f is FieldType => Boolean(f) && f !== 'Other' && f !== 'Unknown');
+  const valid = (fields || []).filter((f): f is FieldType => Boolean(f) && f !== 'Other');
   if (valid.length > 0) return valid;
 
   const n = (companyName || '').toLowerCase();
