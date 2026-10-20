@@ -472,11 +472,35 @@ export class SupabaseAdapter implements DataAdapter {
   }
 
   async sync(companyId?: string): Promise<SyncResult[]> {
-    // Production sync runs server-side (api/sync.ts). The browser calls it.
+    // Production sync runs server-side (api/sync.ts), which authorizes the
+    // caller by verifying their Supabase access token and admin role. Attach
+    // the active session's access token so the function can identify the user.
+    const { data: sessionData } = await this.db.auth.getSession();
+    const accessToken = sessionData.session?.access_token;
+    if (!accessToken) {
+      throw new Error('You must be signed in as an admin to run a sync.');
+    }
+
     const res = await fetch(`/api/sync${companyId ? `?id=${encodeURIComponent(companyId)}` : ''}`, {
       method: 'POST',
+      headers: { Authorization: `Bearer ${accessToken}` },
     });
-    if (!res.ok) throw new Error(`Sync failed: HTTP ${res.status}`);
+
+    if (!res.ok) {
+      let message = `Sync failed: HTTP ${res.status}`;
+      if (res.status === 401) message = 'Sync failed: your session is not authenticated. Please sign in again.';
+      else if (res.status === 403) message = 'Sync failed: your account is not an admin.';
+      else {
+        // Surface the server error message when available (no secrets are returned).
+        try {
+          const body = (await res.json()) as { error?: string };
+          if (body?.error) message = `Sync failed: ${body.error}`;
+        } catch {
+          /* non-JSON error body */
+        }
+      }
+      throw new Error(message);
+    }
     return (await res.json()) as SyncResult[];
   }
 }

@@ -12,7 +12,8 @@ export interface AuthState {
   loading: boolean;
   isCloud: boolean;
   signIn: (email: string, password: string) => Promise<void>;
-  signUp: (email: string, password: string) => Promise<void>;
+  /** Returns true if a session was created (email confirmation disabled), false if a confirmation email was sent. */
+  signUp: (email: string, password: string) => Promise<{ needsConfirmation: boolean }>;
   signOut: () => Promise<void>;
 }
 
@@ -87,8 +88,11 @@ function SupabaseAuthProvider({ children }: { children: ReactNode }) {
 
   const signUp = useCallback(async (email: string, password: string) => {
     const { getSupabaseClient } = await import('../lib/supabaseClient');
-    const { error } = await getSupabaseClient().auth.signUp({ email, password });
+    const { data, error } = await getSupabaseClient().auth.signUp({ email, password });
     if (error) throw error;
+    // If a session is present, email confirmation is disabled and the user is
+    // already signed in. Otherwise a confirmation email was sent.
+    return { needsConfirmation: !data.session };
   }, []);
 
   const signOut = useCallback(async () => {

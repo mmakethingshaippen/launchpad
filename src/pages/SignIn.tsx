@@ -1,13 +1,14 @@
-import { useState, type FormEvent } from 'react';
+import { useEffect, useState, type FormEvent } from 'react';
 import { Helmet } from 'react-helmet-async';
 import { Link, useNavigate } from 'react-router-dom';
 import { LogIn } from 'lucide-react';
 import { useAuth } from '../hooks/useAuth';
 import { Card } from '../components/ui/Card';
 import { Button } from '../components/ui/Button';
+import { LoadingBlock } from '../components/ui/Spinner';
 
 export function SignIn() {
-  const { signIn, signUp, isCloud, user } = useAuth();
+  const { signIn, signUp, isCloud, user, loading } = useAuth();
   const navigate = useNavigate();
   const [mode, setMode] = useState<'signin' | 'signup'>('signin');
   const [email, setEmail] = useState('');
@@ -16,10 +17,12 @@ export function SignIn() {
   const [busy, setBusy] = useState(false);
   const [sentConfirm, setSentConfirm] = useState(false);
 
-  // Already signed in → send to applications.
-  if (user) {
-    navigate('/applications', { replace: true });
-  }
+  // Redirect once we know the user is authenticated (never during render).
+  useEffect(() => {
+    if (user) navigate('/applications', { replace: true });
+  }, [user, navigate]);
+
+  if (loading) return <LoadingBlock label="Checking your session" />;
 
   const onSubmit = async (e: FormEvent) => {
     e.preventDefault();
@@ -28,13 +31,19 @@ export function SignIn() {
     try {
       if (mode === 'signin') {
         await signIn(email, password);
-        navigate('/applications');
+        // onAuthStateChange updates `user`, which triggers the redirect effect.
+        navigate('/applications', { replace: true });
       } else {
-        await signUp(email, password);
-        setSentConfirm(true);
+        const { needsConfirmation } = await signUp(email, password);
+        if (needsConfirmation) {
+          setSentConfirm(true);
+        } else {
+          // Email confirmation disabled → already signed in.
+          navigate('/applications', { replace: true });
+        }
       }
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Something went wrong. Please try again.');
+      setError(friendlyAuthError(err));
     } finally {
       setBusy(false);
     }
@@ -103,7 +112,7 @@ export function SignIn() {
             </label>
 
             {error && (
-              <p className="text-sm text-red-600" role="alert">
+              <p className="rounded-lg bg-red-50 px-3 py-2 text-sm text-red-700" role="alert">
                 {error}
               </p>
             )}
@@ -135,4 +144,17 @@ export function SignIn() {
       )}
     </div>
   );
+}
+
+/** Map common Supabase auth errors to clear, user-facing messages. */
+function friendlyAuthError(err: unknown): string {
+  const raw = err instanceof Error ? err.message : String(err);
+  const lower = raw.toLowerCase();
+  if (lower.includes('invalid login credentials')) return 'Incorrect email or password.';
+  if (lower.includes('email not confirmed')) return 'Please confirm your email address first, then sign in.';
+  if (lower.includes('user already registered')) return 'An account with this email already exists. Try signing in.';
+  if (lower.includes('password should be at least')) return 'Password must be at least 6 characters.';
+  if (lower.includes('rate limit') || lower.includes('too many')) return 'Too many attempts. Please wait a moment and try again.';
+  if (lower.includes('without vite_supabase')) return 'Accounts are unavailable: the backend is not configured.';
+  return raw || 'Something went wrong. Please try again.';
 }

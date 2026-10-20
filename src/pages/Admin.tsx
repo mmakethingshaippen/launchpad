@@ -24,6 +24,7 @@ function AdminDashboard() {
   const qc = useQueryClient();
   const [syncResults, setSyncResults] = useState<SyncResult[] | null>(null);
   const [syncing, setSyncing] = useState(false);
+  const [syncError, setSyncError] = useState<string | null>(null);
 
   const pending = useQuery({
     queryKey: ['admin', 'pending'],
@@ -51,9 +52,12 @@ function AdminDashboard() {
 
   const runSync = async (companyId?: string) => {
     setSyncing(true);
+    setSyncError(null);
     try {
       const results = await adapter.sync!(companyId);
       setSyncResults(results);
+    } catch (err) {
+      setSyncError(err instanceof Error ? err.message : 'Sync failed. Please try again.');
     } finally {
       setSyncing(false);
     }
@@ -79,6 +83,11 @@ function AdminDashboard() {
               Imports open early-career roles, verifies links, and closes roles removed from live feeds.
             </p>
           </div>
+          {syncError && (
+            <p className="mt-3 rounded-lg bg-red-50 px-3 py-2 text-sm text-red-700" role="alert">
+              {syncError}
+            </p>
+          )}
           {syncResults && (
             <div className="mt-4 overflow-x-auto">
               <table className="w-full text-left text-sm">
