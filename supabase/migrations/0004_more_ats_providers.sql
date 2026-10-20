@@ -8,3 +8,4 @@
 
 alter type ats_provider add value if not exists 'smartrecruiters';
 alter type ats_provider add value if not exists 'workable';
+alter type ats_provider add value if not exists 'workday';

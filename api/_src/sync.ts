@@ -26,7 +26,10 @@ interface VercelResponse {
 }
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
-  if (req.method !== 'POST') {
+  // Allowed callers:
+  //   1. Vercel Cron: GET or POST with Authorization: Bearer <CRON_SECRET>.
+  //   2. An admin user: POST with their Supabase access token.
+  if (req.method !== 'POST' && req.method !== 'GET') {
     res.status(405).json({ error: 'Method not allowed' });
     return;
   }
@@ -34,27 +37,32 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   try {
     const db = createServiceClient();
 
-    // Admin check via bearer token.
     const authHeader = req.headers['authorization'];
-    const token = Array.isArray(authHeader) ? authHeader[0] : authHeader;
-    const jwt = token?.replace(/^Bearer /, '');
-    if (!jwt) {
-      res.status(401).json({ error: 'Unauthorized' });
-      return;
-    }
-    const { data: userData } = await db.auth.getUser(jwt);
-    if (!userData.user) {
-      res.status(401).json({ error: 'Unauthorized' });
-      return;
-    }
-    const { data: profile } = await db
-      .from('user_profiles')
-      .select('account_role')
-      .eq('id', userData.user.id)
-      .maybeSingle();
-    if (profile?.account_role !== 'admin') {
-      res.status(403).json({ error: 'Forbidden' });
-      return;
+    const token = (Array.isArray(authHeader) ? authHeader[0] : authHeader)?.replace(/^Bearer /, '');
+
+    const cronSecret = process.env.CRON_SECRET;
+    const isCron = Boolean(cronSecret && token && token === cronSecret);
+
+    if (!isCron) {
+      // Fall back to admin-user authorization.
+      if (!token) {
+        res.status(401).json({ error: 'Unauthorized' });
+        return;
+      }
+      const { data: userData } = await db.auth.getUser(token);
+      if (!userData.user) {
+        res.status(401).json({ error: 'Unauthorized' });
+        return;
+      }
+      const { data: profile } = await db
+        .from('user_profiles')
+        .select('account_role')
+        .eq('id', userData.user.id)
+        .maybeSingle();
+      if (profile?.account_role !== 'admin') {
+        res.status(403).json({ error: 'Forbidden' });
+        return;
+      }
     }
 
     const id = new URLSearchParams((req.url ?? '').split('?')[1] ?? '').get('id');

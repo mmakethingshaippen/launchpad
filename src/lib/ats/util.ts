@@ -47,3 +47,34 @@ export function isValidHttpUrl(url: string | null | undefined): boolean {
     return false;
   }
 }
+
+/**
+ * Normalize an apply URL for deduplication across connectors:
+ * - lowercase host
+ * - drop tracking query params (utm_*, gh_src, source, ref, etc.)
+ * - drop the hash and a trailing slash
+ * Returns the original string if it can't be parsed as a URL.
+ */
+const TRACKING_PARAM_RE = /^(utm_|gh_|ref$|source$|src$|campaign$|fbclid$|gclid$|mc_)/i;
+
+export function normalizeApplyUrl(url: string | null | undefined): string {
+  if (!url) return '';
+  try {
+    const u = new URL(url.trim());
+    u.hash = '';
+    u.hostname = u.hostname.toLowerCase();
+    const keep: Array<[string, string]> = [];
+    for (const [k, v] of u.searchParams) {
+      if (!TRACKING_PARAM_RE.test(k)) keep.push([k, v]);
+    }
+    keep.sort(([a], [b]) => a.localeCompare(b));
+    u.search = '';
+    for (const [k, v] of keep) u.searchParams.append(k, v);
+    let out = u.toString();
+    // Strip a trailing slash on the path (but keep the root "/").
+    out = out.replace(/\/(?=(\?|$))/, (m, _o, s: string) => (s.length <= 1 ? m : ''));
+    return out.replace(/\/$/, '');
+  } catch {
+    return url.trim();
+  }
+}

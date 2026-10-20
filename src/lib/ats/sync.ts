@@ -6,6 +6,7 @@ import { createAshbyClient } from './providers/ashby';
 import { createLeverClient } from './providers/lever';
 import { createSmartRecruitersClientFor } from './providers/smartrecruiters';
 import { createWorkableClient } from './providers/workable';
+import { createWorkdayClient } from './providers/workday';
 import type { AtsProvider, FieldType } from '../adapter/types';
 
 export interface SyncableCompany {
@@ -73,6 +74,8 @@ function clientFor(
       return createSmartRecruitersClientFor(token, fetchImpl) as ProviderClient;
     case 'workable':
       return createWorkableClient(fetchImpl) as ProviderClient;
+    case 'workday':
+      return createWorkdayClient(fetchImpl) as ProviderClient;
     default:
       return null;
   }

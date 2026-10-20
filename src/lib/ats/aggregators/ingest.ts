@@ -2,10 +2,11 @@ import type { SupabaseClient } from '@supabase/supabase-js';
 import type { AggregatedPosting, AggregatorClient } from './types';
 import { createTheMuseClient } from './themuse';
 import { createRemotiveClient } from './remotive';
+import { createAdzunaClient } from './adzuna';
 import { enrich } from '../normalize';
 import { isEarlyCareer, classifyField } from '../classify';
 import { resolveRoleCoords, isRemoteLocation } from '../cityCoords';
-import { isValidHttpUrl } from '../util';
+import { isValidHttpUrl, normalizeApplyUrl } from '../util';
 import { roleConcluded } from '../seasons';
 
 export interface AggregatorResult {
@@ -37,9 +38,20 @@ export async function ingestAggregators(
   const clients: AggregatorClient[] = [
     createTheMuseClient(opts.fetchImpl),
     createRemotiveClient(opts.fetchImpl),
+    createAdzunaClient(opts.fetchImpl), // safe no-op when env vars are absent
   ];
   const now = opts.now ?? new Date();
   const results: AggregatorResult[] = [];
+
+  // Dedup across all connectors by normalized apply URL, and never duplicate a
+  // direct ATS role already in the DB (also matched by normalized apply URL).
+  const seenUrls = new Set<string>();
+  {
+    const { data: existingRoles } = await db.from('roles').select('apply_url');
+    for (const r of (existingRoles ?? []) as Array<{ apply_url: string }>) {
+      seenUrls.add(normalizeApplyUrl(r.apply_url));
+    }
+  }
 
   for (const client of clients) {
     const result: AggregatorResult = {
@@ -64,6 +76,12 @@ export async function ingestAggregators(
       try {
         if (!isValidHttpUrl(p.applyUrl)) continue;
         if (!isEarlyCareer({ title: p.title, employmentTypeRaw: p.employmentTypeRaw })) continue;
+
+        // Strict dedup by normalized apply URL (strips utm_*, etc.). Skips both
+        // intra-run duplicates and any role already present from a direct ATS feed.
+        const normUrl = normalizeApplyUrl(p.applyUrl);
+        if (seenUrls.has(normUrl)) continue;
+        seenUrls.add(normUrl);
 
         const enriched = enrich(p);
         if (roleConcluded(enriched.seasons, enriched.cohortYear, now)) continue;

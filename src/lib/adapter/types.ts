@@ -19,6 +19,7 @@ export type AtsProvider =
   | 'ashby'
   | 'smartrecruiters'
   | 'workable'
+  | 'workday'
   | 'none';
 
 export type ModerationStatus = 'Pending' | 'Approved' | 'Rejected';

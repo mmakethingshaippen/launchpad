@@ -20,7 +20,14 @@ export interface NormalizedPosting {
   updatedAt?: string;
 }
 
-export type ProviderName = 'greenhouse' | 'ashby' | 'lever' | 'smartrecruiters' | 'workable';
+export type ProviderName =
+  | 'greenhouse'
+  | 'ashby'
+  | 'lever'
+  | 'smartrecruiters'
+  | 'workable'
+  | 'workday'
+  | 'adzuna';
 
 /** A provider adapter: fetch raw postings, then map each to NormalizedPosting. */
 export interface ProviderClient<Raw = unknown> {

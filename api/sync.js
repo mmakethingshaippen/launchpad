@@ -14311,6 +14311,67 @@ function createWorkableClient(fetchImpl = fetch) {
   };
 }
 
+// src/lib/ats/providers/workday.ts
+function parseWorkdayToken(token) {
+  const parts = token.split("|");
+  if (parts.length !== 3 || parts.some((p) => !p)) return null;
+  return { host: parts[0], tenant: parts[1], site: parts[2] };
+}
+var PAGE_LIMIT = 20;
+var MAX_PAGES = 5;
+function createWorkdayClient(fetchImpl = fetch) {
+  return {
+    provider: "workday",
+    async fetchPostings(token, signal) {
+      const coords = parseWorkdayToken(token);
+      if (!coords) throw new Error(`Workday ${token}: malformed token (expected host|tenant|site)`);
+      const { host, tenant, site } = coords;
+      const base = `https://${host}/wday/cxs/${tenant}/${site}/jobs`;
+      const collected = [];
+      for (let page = 0; page < MAX_PAGES; page++) {
+        const res = await fetchImpl(base, {
+          signal,
+          method: "POST",
+          headers: { "Content-Type": "application/json", Accept: "application/json" },
+          body: JSON.stringify({
+            appliedFacets: {},
+            limit: PAGE_LIMIT,
+            offset: page * PAGE_LIMIT,
+            searchText: "intern"
+          })
+        });
+        if (!res.ok) {
+          if (page === 0) throw new Error(`Workday ${tenant}: HTTP ${res.status}`);
+          break;
+        }
+        const data = await res.json();
+        const batch = data.jobPostings ?? [];
+        for (const p of batch) collected.push({ ...p, __coords: coords });
+        if (batch.length < PAGE_LIMIT) break;
+      }
+      return collected;
+    },
+    toNormalized(raw) {
+      if (!raw || !raw.title || !raw.externalPath) return null;
+      const { host, site } = raw.__coords;
+      const applyUrl = `https://${host}/en-US/${site}${raw.externalPath}`;
+      const externalJobId = raw.bulletFields?.[0] ?? raw.externalPath.split("_").pop() ?? raw.externalPath;
+      const locText = raw.locationsText ?? "";
+      const remote = /remote/i.test(locText);
+      const loc = remote || /\blocations?\b/i.test(locText) ? {} : splitLocation(locText);
+      return {
+        externalJobId: String(externalJobId),
+        title: raw.title,
+        descriptionHtml: "",
+        applyUrl,
+        ...loc,
+        workArrangement: remote ? "Remote" : void 0,
+        employmentTypeRaw: "Intern"
+      };
+    }
+  };
+}
+
 // src/lib/ats/sync.ts
 function clientFor(provider, token, fetchImpl) {
   switch (provider) {
@@ -14324,6 +14385,8 @@ function clientFor(provider, token, fetchImpl) {
       return createSmartRecruitersClientFor(token, fetchImpl);
     case "workable":
       return createWorkableClient(fetchImpl);
+    case "workday":
+      return createWorkdayClient(fetchImpl);
     default:
       return null;
   }
@@ -22840,28 +22903,31 @@ async function loadSyncableCompanies(db, slug) {
 
 // api/_src/sync.ts
 async function handler(req, res) {
-  if (req.method !== "POST") {
+  if (req.method !== "POST" && req.method !== "GET") {
     res.status(405).json({ error: "Method not allowed" });
     return;
   }
   try {
     const db = createServiceClient();
     const authHeader = req.headers["authorization"];
-    const token = Array.isArray(authHeader) ? authHeader[0] : authHeader;
-    const jwt = token?.replace(/^Bearer /, "");
-    if (!jwt) {
-      res.status(401).json({ error: "Unauthorized" });
-      return;
-    }
-    const { data: userData } = await db.auth.getUser(jwt);
-    if (!userData.user) {
-      res.status(401).json({ error: "Unauthorized" });
-      return;
-    }
-    const { data: profile } = await db.from("user_profiles").select("account_role").eq("id", userData.user.id).maybeSingle();
-    if (profile?.account_role !== "admin") {
-      res.status(403).json({ error: "Forbidden" });
-      return;
+    const token = (Array.isArray(authHeader) ? authHeader[0] : authHeader)?.replace(/^Bearer /, "");
+    const cronSecret = process.env.CRON_SECRET;
+    const isCron = Boolean(cronSecret && token && token === cronSecret);
+    if (!isCron) {
+      if (!token) {
+        res.status(401).json({ error: "Unauthorized" });
+        return;
+      }
+      const { data: userData } = await db.auth.getUser(token);
+      if (!userData.user) {
+        res.status(401).json({ error: "Unauthorized" });
+        return;
+      }
+      const { data: profile } = await db.from("user_profiles").select("account_role").eq("id", userData.user.id).maybeSingle();
+      if (profile?.account_role !== "admin") {
+        res.status(403).json({ error: "Forbidden" });
+        return;
+      }
     }
     const id = new URLSearchParams((req.url ?? "").split("?")[1] ?? "").get("id");
     let companies;

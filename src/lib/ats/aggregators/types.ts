@@ -5,13 +5,15 @@ import type { NormalizedPosting } from '../types';
  * carries its own company name/landing-site so we can attach roles to the right
  * company (matched by name, else grouped under an aggregator-sourced company).
  */
+export type AggregatorSource = 'themuse' | 'remotive' | 'adzuna';
+
 export interface AggregatedPosting extends NormalizedPosting {
   companyName: string;
   companyWebsite?: string;
-  source: 'themuse' | 'remotive';
+  source: AggregatorSource;
 }
 
 export interface AggregatorClient {
-  readonly source: 'themuse' | 'remotive';
+  readonly source: AggregatorSource;
   fetchEarlyCareer(signal?: AbortSignal): Promise<AggregatedPosting[]>;
 }
