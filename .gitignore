@@ -6,7 +6,6 @@ dist-ssr
 .env.*
 !.env.example
 .vercel
-api/sync.js
 coverage
 playwright-report
 test-results
