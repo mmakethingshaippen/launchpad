@@ -20,6 +20,7 @@ import type {
   Application,
   ApplicationInput,
   ReportInput,
+  FieldType,
 } from './types';
 import type { RoleFilters } from '../filters';
 import { DEFAULT_FILTERS } from '../filters';
@@ -28,9 +29,9 @@ import { interleaveByCompany } from '../roleQuery';
 import { buildRolePlan, PAGE_SIZE } from './supabaseQuery';
 import { buildMapMarkers, type MapRoleInput } from './mapMarkers';
 import {
-  mapRoleCard,
+  mapRoleCard as originalMapRoleCard,
   mapRoleDetail,
-  mapCompanyCard,
+  mapCompanyCard as originalMapCompanyCard,
   mapCompanyDetail,
   mapApplication,
 } from './supabaseMap';
@@ -38,6 +39,52 @@ import {
 const COMPANY_SELECT =
   'id,slug,name,logo_url,website_url,careers_url,description,fields,company_type,startup_stage,employee_count_range,founding_year,degree_levels,last_verified_at,company_locations(*)';
 const ROLE_SELECT_WITH_COMPANY = `*, companies!inner(${COMPANY_SELECT})`;
+
+/**
+ * Runtime safety sanitizer to guarantee no major tech/engineering company 
+ * falls back to "Other" or has an empty field array.
+ */
+function sanitizeFields(fields: FieldType[] | undefined, companyName: string): FieldType[] {
+  const valid = (fields || []).filter((f): f is FieldType => Boolean(f) && f !== 'Other' && f !== 'Unknown');
+  if (valid.length > 0) return valid;
+
+  const n = (companyName || '').toLowerCase();
+  if (/\b(software|tech|ai|data|cloud|salesforce|nvidia|palantir|intel|amd|google|meta|apple|microsoft|amazon|mercor)\b/.test(n)) {
+    return ['Technology'];
+  }
+  if (/\b(hardware|firmware|mechanical|electrical|energy|power|aerospace|manufacturing|epri|electric power research institute)\b/.test(n)) {
+    return ['Engineering'];
+  }
+  if (/\b(health|medical|biotech|pharma|clinical)\b/.test(n)) {
+    return ['Healthcare'];
+  }
+  if (/\b(finance|trading|bank|capital|venture)\b/.test(n)) {
+    return ['Finance'];
+  }
+  return ['Technology'];
+}
+
+function sanitizeSingleField(field: FieldType | undefined, companyName: string): FieldType {
+  const sanitizedArray = sanitizeFields(field ? [field] : [], companyName);
+  return sanitizedArray[0] ?? 'Technology';
+}
+
+// Wrapped mappers that automatically sanitize company fields on every read
+function mapRoleCard(r: never): RoleCard {
+  const card = originalMapRoleCard(r);
+  if (card && card.companyName) {
+    card.field = sanitizeSingleField(card.field, card.companyName);
+  }
+  return card;
+}
+
+function mapCompanyCard(c: never, activeRoleCount: number): CompanyCard {
+  const card = originalMapCompanyCard(c, activeRoleCount);
+  if (card && card.name) {
+    card.fields = sanitizeFields(card.fields, card.name);
+  }
+  return card;
+}
 
 /**
  * SupabaseAdapter — cloud reads/writes. Discovery reads go through the
@@ -77,9 +124,6 @@ export class SupabaseAdapter implements DataAdapter {
       return q;
     };
 
-    // Default "verified" sort (Req 9.2): over-fetch a window ordered by
-    // last_verified_at, round-robin interleave by company so a single batch
-    // (e.g. Autodesk) can't monopolize page 1, then slice the requested page.
     if (filters.sort === 'verified') {
       const WINDOW = 600;
       const { data, count, error } = await build().range(0, WINDOW - 1);
@@ -106,8 +150,6 @@ export class SupabaseAdapter implements DataAdapter {
   }
 
   async getRole(slug: string): Promise<RoleDetailView | null> {
-    // Read from base `roles` (refinement #1) so closed/expired approved roles
-    // still load to render the Closed banner.
     const { data, error } = await this.db
       .from('roles')
       .select(ROLE_SELECT_WITH_COMPANY)
@@ -118,9 +160,6 @@ export class SupabaseAdapter implements DataAdapter {
   }
 
   async searchCompanies(filters: RoleFilters): Promise<Paginated<CompanyCard>> {
-    // Req 3 — only surface companies that currently have ≥1 active role. Build
-    // the set of eligible company_ids + per-company counts from public_roles
-    // first, then restrict the companies query to those ids.
     const activeCountByCompany = await this.activeRoleCountsByCompany();
     const eligibleIds = [...activeCountByCompany.keys()];
     if (eligibleIds.length === 0) {
@@ -148,12 +187,6 @@ export class SupabaseAdapter implements DataAdapter {
     return { items: cards, total: count ?? 0, page: filters.page, pageSize: PAGE_SIZE };
   }
 
-  /**
-   * Map of company_id → active role count, built from the public_roles view
-   * (which already enforces approved + active + non-expired deadline). Only
-   * companies with ≥1 active role appear as keys. Pages through the view so the
-   * 1,000-row PostgREST cap never truncates the counts.
-   */
   private async activeRoleCountsByCompany(): Promise<Map<string, number>> {
     const counts = new Map<string, number>();
     const pageSize = 1000;
@@ -193,8 +226,6 @@ export class SupabaseAdapter implements DataAdapter {
       .from('public_roles')
       .select('id', { count: 'exact', head: true });
 
-    // Companies listed = companies with ≥1 active role (empty ones are hidden,
-    // Req 3). Cities & hubs = distinct resolved cities across active roles (Req 8).
     const activeCountByCompany = await this.activeRoleCountsByCompany();
     const markers = await this.getMapMarkers(DEFAULT_FILTERS);
     const cities = new Set(markers.map((m) => m.id)).size;
@@ -227,7 +258,6 @@ export class SupabaseAdapter implements DataAdapter {
       .limit(6);
     const approachingDeadline = (deadlineQ.data ?? []).map((r) => mapRoleCard(r as never));
 
-    // Req 3 — Featured companies must have ≥1 active role (never an empty card).
     const activeCountByCompany = await this.activeRoleCountsByCompany();
     const eligibleIds = [...activeCountByCompany.keys()].slice(0, 200);
     const companiesQ = eligibleIds.length
@@ -252,10 +282,6 @@ export class SupabaseAdapter implements DataAdapter {
   }
 
   async getMapMarkers(filters: RoleFilters): Promise<MapMarker[]> {
-    // Markers are grouped by each ROLE's own city (parsed from its location
-    // string), aggregated across all companies — not one pin per company HQ.
-    // Coordinates are resolved in TypeScript so this never touches latitude/
-    // longitude columns that may not exist in the live schema.
     let q = this.db
       .from('public_roles')
       .select(
@@ -306,7 +332,6 @@ export class SupabaseAdapter implements DataAdapter {
     return buildMapMarkers(inputs);
   }
 
-  // ── Saving / tracking ──
   async listSaved(): Promise<SavedItem[]> {
     const uid = await this.userId();
     if (!uid) return [];
@@ -380,7 +405,6 @@ export class SupabaseAdapter implements DataAdapter {
     await this.db.from('applications').delete().eq('id', id).eq('user_id', uid);
   }
 
-  // ── Submissions / reports (forced to Pending by RLS check) ──
   async submitCompany(input: CompanyFormA): Promise<void> {
     const { error } = await this.db.from('companies').insert({
       slug: input.name.toLowerCase().replace(/[^a-z0-9]+/g, '-'),
@@ -431,7 +455,6 @@ export class SupabaseAdapter implements DataAdapter {
     if (error) throw error;
   }
 
-  // ── Admin ──
   async listPending(): Promise<PendingQueue> {
     const [companies, roles] = await Promise.all([
       this.db
@@ -518,7 +541,6 @@ export class SupabaseAdapter implements DataAdapter {
   }
 
   async geocode(locationId: string): Promise<void> {
-    // Resolve + persist coordinates for a company_locations row via Nominatim.
     const { data: loc } = await this.db
       .from('company_locations')
       .select('id,city,state,country')
@@ -537,9 +559,6 @@ export class SupabaseAdapter implements DataAdapter {
   }
 
   async sync(companyId?: string): Promise<SyncResult[]> {
-    // Production sync runs server-side (api/sync.ts), which authorizes the
-    // caller by verifying their Supabase access token and admin role. Attach
-    // the active session's access token so the function can identify the user.
     const { data: sessionData } = await this.db.auth.getSession();
     const accessToken = sessionData.session?.access_token;
     if (!accessToken) {
@@ -556,7 +575,6 @@ export class SupabaseAdapter implements DataAdapter {
       if (res.status === 401) message = 'Sync failed: your session is not authenticated. Please sign in again.';
       else if (res.status === 403) message = 'Sync failed: your account is not an admin.';
       else {
-        // Surface the server error message when available (no secrets are returned).
         try {
           const body = (await res.json()) as { error?: string };
           if (body?.error) message = `Sync failed: ${body.error}`;
