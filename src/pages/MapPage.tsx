@@ -68,7 +68,7 @@ export interface CompanyMapOption {
 }
 
 /** Build the selector from the SAME unfiltered markers used by the map. */
-export function companyOptionsFromMarkers(markers: MapMarker[]): CompanyMapOption[] {
+eexport function companyOptionsFromMarkers(markers: MapMarker[]): CompanyMapOption[] {
   const stats = new Map<string, {
     name: string;
     roleCount: number;
@@ -103,8 +103,8 @@ export function companyOptionsFromMarkers(markers: MapMarker[]): CompanyMapOptio
   return [...stats.values()]
     .map(({ name, roleCount, cities, logoUrl }) => ({
       name,
-      roleCount,
-      cityCount: cities.size,
+      roleCount: Math.max(roleCount, 1),
+      cityCount: Math.max(cities.size, 1),
       logoUrl,
     }))
     .sort((a, b) => a.name.localeCompare(b.name));
