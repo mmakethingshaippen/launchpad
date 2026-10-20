@@ -95,7 +95,9 @@ export async function syncCompany(
   sink: SyncSink,
   options: SyncOptions = {},
 ): Promise<SyncResult> {
-  const { now = new Date(), timeoutMs = 10_000, fetchImpl } = options;
+  // 20s default: large Greenhouse boards (e.g. SpaceX's ~2,700 jobs) need more
+  // than 10s to fetch + parse reliably under concurrency.
+  const { now = new Date(), timeoutMs = 20_000, fetchImpl } = options;
   const result: SyncResult = {
     company: company.name,
     companyId: company.id,

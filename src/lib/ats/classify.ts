@@ -51,11 +51,21 @@ export const RECRUITER_RE =
 
 /** Rule B — positive internship / co-op patterns. */
 export const INTERNSHIP_TITLE_RE =
-  /\b(intern|interns|internship|internships|co-?op|summer analyst|winter analyst|spring analyst|fall analyst|extern|externship|apprentice|apprenticeship|undergraduate intern|phd intern|mba intern)\b/i;
+  /\b(intern|interns|internship|internships|co-?op|summer analyst|winter analyst|spring analyst|fall analyst|extern|externship|apprentice|apprenticeship|fellowship|undergraduate intern|phd intern|mba intern)\b/i;
 
-/** Rule B — positive entry-level / new-grad patterns. */
+/**
+ * Rule B — positive entry-level / new-grad patterns.
+ *
+ * NOTE: the ambiguous "level I" tokens (`engineer i`, `analyst i`, `associate i`,
+ * `developer i`) and bare `junior`/`jr` were REMOVED. Real postings like
+ * "Software Engineer I, Backend (Collections)" are ordinary full-time roles, not
+ * early-career-only roles, and were cluttering results. A title now qualifies as
+ * new-grad only via an unambiguous signal below. If a posting genuinely is an
+ * internship/new-grad it will also carry one of these explicit words (or an
+ * INTERNSHIP_TITLE_RE word), so nothing real is lost.
+ */
 export const NEWGRAD_TITLE_RE =
-  /\b(new grad|new graduate|recent grad|early career|entry[- ]level|university grad|graduate engineer|graduate analyst|graduate software|rotational program|leadership development program|ldp|analyst development program|junior|jr\.?|associate i|engineer i|analyst i|developer i)\b/i;
+  /\b(new grad|new graduate|recent grad|early career|entry[- ]level|university grad|graduate engineer|graduate analyst|graduate software|rotational program|rotational|leadership development program|ldp|analyst development program)\b/i;
 
 /**
  * Strict, title-only early-career gate. Returns the matched opportunity type

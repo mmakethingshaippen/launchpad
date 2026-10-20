@@ -11,20 +11,14 @@ import { resolveRoleCoords, isRemoteLocation } from '../cityCoords';
 import { isValidHttpUrl, normalizeApplyUrl } from '../util';
 import { roleConcluded } from '../seasons';
 import { isUsableCity } from '../supabaseSink';
+import { canonicalCompanySlug } from '../companyMatch';
+import { createAmazonClient } from './amazon';
 
 export interface AggregatorResult {
   source: string;
   companiesUpserted: number;
   rolesUpserted: number;
   errors: string[];
-}
-
-function slugify(s: string): string {
-  return s
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, '-')
-    .replace(/^-+|-+$/g, '')
-    .slice(0, 60);
 }
 
 /**
@@ -40,9 +34,10 @@ export async function ingestAggregators(
 ): Promise<AggregatorResult[]> {
   const clients: AggregatorClient[] = [
     createSimplifyClient(opts.fetchImpl), // keyless GitHub JSON — largest source
+    createAmazonClient(opts.fetchImpl), // keyless Amazon public JSON
     createTheMuseClient(opts.fetchImpl),
     createRemotiveClient(opts.fetchImpl),
-    createAdzunaClient(opts.fetchImpl), // safe no-op when env vars are absent
+    createAdzunaClient(opts.fetchImpl), // targeted employer queries; no-op without keys
     createUsaJobsClient(opts.fetchImpl), // safe no-op when USAJOBS_API_KEY is absent
   ];
   const now = opts.now ?? new Date();
@@ -91,8 +86,10 @@ export async function ingestAggregators(
         const enriched = enrich(p);
         if (roleConcluded(enriched.seasons, enriched.cohortYear, now)) continue;
 
-        // Resolve or create the company (matched by name).
-        const slug = slugify(p.companyName);
+        // Resolve or create the company. canonicalCompanySlug maps big-employer
+        // aliases (e.g. "Amazon.com Services LLC", "Google LLC") onto the seeded
+        // official slug so roles attach to the real company page / map pin.
+        const slug = canonicalCompanySlug(p.companyName);
         let companyId = companyIdByName.get(slug);
         if (!companyId) {
           const { data: existing } = await db

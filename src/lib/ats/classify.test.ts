@@ -30,7 +30,35 @@ describe('isEarlyCareerTitle — strict title gate', () => {
       'Entry-level Analyst',
       'Graduate Engineer',
       'Rotational Program Associate',
+      'Fall Analyst, Investment Banking',
+      'Software Engineering Apprenticeship',
+    ]) {
+      expect(isEarlyCareerTitle(title), title).toBe(true);
+    }
+  });
+
+  // ── Tightened rule: generic full-time "level I" / "junior" titles are NOT
+  //    early-career unless the title ALSO carries an explicit intern/new-grad word. ──
+  it('rejects generic full-time "Software Engineer I" / "Analyst I" / "Junior" titles', () => {
+    for (const title of [
+      'Software Engineer I, Backend (Collections)',
+      'Software Engineer I, Frontend (Upfunnel)',
+      'Software Engineer I',
+      'Analyst I',
+      'Associate I, Operations',
+      'Developer I',
       'Junior Developer',
+      'Junior Data Analyst',
+    ]) {
+      expect(isEarlyCareerTitle(title), title).toBe(false);
+    }
+  });
+
+  it('still accepts a "level I" / "junior" title when it explicitly says intern / new grad', () => {
+    for (const title of [
+      'Software Engineer I Intern',
+      'Junior Developer - New Grad Program',
+      'Analyst I, Summer Internship',
     ]) {
       expect(isEarlyCareerTitle(title), title).toBe(true);
     }
@@ -104,6 +132,8 @@ describe('matchEarlyCareerType — opportunity type', () => {
   it('returns null for rejected titles', () => {
     expect(matchEarlyCareerType('Vice President, Aladdin Client Engagement')).toBeNull();
     expect(matchEarlyCareerType('University Recruiter')).toBeNull();
+    expect(matchEarlyCareerType('Software Engineer I, Backend (Collections)')).toBeNull();
+    expect(matchEarlyCareerType('Software Engineer I, Frontend (Upfunnel)')).toBeNull();
   });
 });
 

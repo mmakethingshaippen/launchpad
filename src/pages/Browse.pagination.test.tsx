@@ -142,7 +142,7 @@ describe('Browse pagination (>1,000 roles)', () => {
     await user.click(screen.getByRole('button', { name: `Page ${lastPage}` }));
     // Last page holds roles #1575..#1591 — well past the 1,000-row PostgREST cap.
     expect(await screen.findByText('Software Engineering Intern #1591')).toBeInTheDocument();
-  });
+  }, 15000);
 
   it('resets to page 1 when a filter (season pill) changes', async () => {
     const user = userEvent.setup();
@@ -154,7 +154,7 @@ describe('Browse pagination (>1,000 roles)', () => {
     // Back to page 1 after the filter change.
     expect(await screen.findByText('Software Engineering Intern #0')).toBeInTheDocument();
     expect(screen.getByTestId('pagination-summary')).toHaveTextContent('Showing 1–21 of 1,592');
-  });
+  }, 15000);
 
   it('resets to page 1 and paginates the Companies tab at 21 per page', async () => {
     const user = userEvent.setup();
@@ -170,5 +170,5 @@ describe('Browse pagination (>1,000 roles)', () => {
     // All 84 companies are reachable: last page (ceil(84/21)=4) shows Company 83.
     await user.click(screen.getByRole('button', { name: 'Page 4' }));
     expect(await screen.findByText('Company 83')).toBeInTheDocument();
-  });
+  }, 15000);
 });

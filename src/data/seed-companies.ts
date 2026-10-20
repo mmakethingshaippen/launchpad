@@ -849,7 +849,7 @@ export const SEED_COMPANIES: SeedCompany[] = [
     degreeLevels: ['Undergraduate', 'Graduate', 'New Grad'],
     atsProvider: 'greenhouse',
     atsBoardToken: 'spacex',
-    locations: [{ city: 'Hawthorne', state: 'CA', country: 'USA', latitude: 33.9164, longitude: -118.3526 }],
+    locations: [{ city: 'Hawthorne', state: 'CA', country: 'USA', latitude: 33.9207, longitude: -118.328 }],
   },
   {
     slug: 'lyft',
@@ -1669,6 +1669,156 @@ export const SEED_COMPANIES: SeedCompany[] = [
     fields: ['Technology', 'Business'], companyType: 'Established Company', employeeCountRange: '501+', foundingYear: 1994,
     degreeLevels: ['Undergraduate', 'New Grad'], atsProvider: 'workday', atsBoardToken: 'tmobile.wd1.myworkdayjobs.com|tmobile|External',
     locations: [{ city: 'Bellevue', state: 'WA', country: 'USA', latitude: 47.6101, longitude: -122.2015 }],
+  },
+
+  // ── Major employers ingested via structured aggregator feeds (Amazon public
+  //    JSON, SimplifyJobs GitHub JSON, targeted Adzuna) rather than a public ATS
+  //    board. atsProvider:'none' — roles attach by canonical company name. ──
+  {
+    slug: 'google',
+    name: 'Google',
+    websiteUrl: 'https://www.google.com',
+    careersUrl: 'https://www.google.com/about/careers/applications/jobs/results/?employment_type=INTERN',
+    description:
+      'A multinational technology company specializing in search, cloud computing, advertising, and consumer electronics.',
+    fields: ['Technology', 'Engineering'],
+    companyType: 'Established Company',
+    employeeCountRange: '501+',
+    foundingYear: 1998,
+    degreeLevels: ['Undergraduate', 'Graduate', 'New Grad'],
+    atsProvider: 'none',
+    atsBoardToken: null,
+    locations: [{ city: 'Mountain View', state: 'CA', country: 'USA', latitude: 37.422, longitude: -122.0841 }],
+  },
+  {
+    slug: 'amazon',
+    name: 'Amazon',
+    websiteUrl: 'https://www.amazon.com',
+    careersUrl: 'https://www.amazon.jobs/en/teams/internships-for-students',
+    description:
+      'A multinational technology and e-commerce company spanning retail, cloud computing (AWS), devices, and logistics.',
+    fields: ['Technology', 'Business', 'Engineering'],
+    companyType: 'Established Company',
+    employeeCountRange: '501+',
+    foundingYear: 1994,
+    degreeLevels: ['Undergraduate', 'Graduate', 'New Grad'],
+    atsProvider: 'none',
+    atsBoardToken: null,
+    locations: [{ city: 'Seattle', state: 'WA', country: 'USA', latitude: 47.6229, longitude: -122.3365 }],
+  },
+  {
+    slug: 'tesla',
+    name: 'Tesla',
+    websiteUrl: 'https://www.tesla.com',
+    careersUrl: 'https://www.tesla.com/careers/search/?type=3',
+    description:
+      'An electric-vehicle and clean-energy company designing cars, batteries, and solar products.',
+    fields: ['Engineering', 'Technology'],
+    companyType: 'Established Company',
+    employeeCountRange: '501+',
+    foundingYear: 2003,
+    degreeLevels: ['Undergraduate', 'Graduate', 'New Grad'],
+    atsProvider: 'none',
+    atsBoardToken: null,
+    locations: [{ city: 'Austin', state: 'TX', country: 'USA', latitude: 30.2223, longitude: -97.6171 }],
+  },
+  {
+    slug: 'kaiser-permanente',
+    name: 'Kaiser Permanente',
+    websiteUrl: 'https://www.kaiserpermanente.org',
+    careersUrl: 'https://www.kaiserpermanentejobs.org/internships/',
+    description:
+      'An integrated managed-care consortium operating hospitals and health plans across the United States.',
+    fields: ['Healthcare', 'Business'],
+    companyType: 'Established Company',
+    employeeCountRange: '501+',
+    foundingYear: 1945,
+    degreeLevels: ['Undergraduate', 'Graduate', 'New Grad'],
+    atsProvider: 'none',
+    atsBoardToken: null,
+    locations: [{ city: 'Oakland', state: 'CA', country: 'USA', latitude: 37.8044, longitude: -122.2712 }],
+  },
+  {
+    slug: 'sutter-health',
+    name: 'Sutter Health',
+    websiteUrl: 'https://www.sutterhealth.org',
+    careersUrl: 'https://jobs.sutterhealth.org/search-jobs/intern',
+    description:
+      'A not-for-profit integrated health-care delivery system serving Northern California.',
+    fields: ['Healthcare'],
+    companyType: 'Established Company',
+    employeeCountRange: '501+',
+    foundingYear: 1921,
+    degreeLevels: ['Undergraduate', 'Graduate', 'New Grad'],
+    atsProvider: 'none',
+    atsBoardToken: null,
+    locations: [{ city: 'Sacramento', state: 'CA', country: 'USA', latitude: 38.5816, longitude: -121.4944 }],
+  },
+
+  // ── State government portals. No open structured JSON exists for these
+  //    NEOGOV/custom portals, so we seed the official profile (HQ pin + careers
+  //    link, which the product rules keep available even at 0 roles). Public-
+  //    sector internships that surface via USAJOBS / Adzuna / SimplifyJobs attach
+  //    here by canonical name. ──
+  {
+    slug: 'state-of-california',
+    name: 'State of California (CalCareers)',
+    websiteUrl: 'https://www.ca.gov',
+    careersUrl: 'https://www.calcareers.ca.gov/',
+    description:
+      'The U.S. state of California government — its CalCareers portal lists civil-service jobs, student assistant roles, and internships across state departments.',
+    fields: ['Business', 'Technology', 'Healthcare'],
+    companyType: 'Other / Unknown',
+    employeeCountRange: '501+',
+    degreeLevels: ['Undergraduate', 'Graduate', 'New Grad'],
+    atsProvider: 'none',
+    atsBoardToken: null,
+    locations: [{ city: 'Sacramento', state: 'CA', country: 'USA', latitude: 38.5767, longitude: -121.4934 }],
+  },
+  {
+    slug: 'new-york-state',
+    name: 'New York State Government',
+    websiteUrl: 'https://www.ny.gov',
+    careersUrl: 'https://statejobs.ny.gov/',
+    description:
+      'The U.S. state of New York government — the StateJobsNY portal lists civil-service positions and student/intern opportunities across state agencies.',
+    fields: ['Business', 'Technology', 'Healthcare'],
+    companyType: 'Other / Unknown',
+    employeeCountRange: '501+',
+    degreeLevels: ['Undergraduate', 'Graduate', 'New Grad'],
+    atsProvider: 'none',
+    atsBoardToken: null,
+    locations: [{ city: 'Albany', state: 'NY', country: 'USA', latitude: 42.6526, longitude: -73.7562 }],
+  },
+  {
+    slug: 'state-of-texas',
+    name: 'State of Texas Government',
+    websiteUrl: 'https://www.texas.gov',
+    careersUrl: 'https://capps.taleo.net/careersection/ex/jobsearch.ftl',
+    description:
+      'The U.S. state of Texas government — the Texas CAPPS portal lists state-agency jobs, student roles, and internships.',
+    fields: ['Business', 'Technology', 'Healthcare'],
+    companyType: 'Other / Unknown',
+    employeeCountRange: '501+',
+    degreeLevels: ['Undergraduate', 'Graduate', 'New Grad'],
+    atsProvider: 'none',
+    atsBoardToken: null,
+    locations: [{ city: 'Austin', state: 'TX', country: 'USA', latitude: 30.2747, longitude: -97.7404 }],
+  },
+  {
+    slug: 'state-of-washington',
+    name: 'State of Washington Government',
+    websiteUrl: 'https://www.wa.gov',
+    careersUrl: 'https://www.careers.wa.gov/',
+    description:
+      'The U.S. state of Washington government — the careers.wa.gov portal lists state-agency jobs, student roles, and internships.',
+    fields: ['Business', 'Technology', 'Healthcare'],
+    companyType: 'Other / Unknown',
+    employeeCountRange: '501+',
+    degreeLevels: ['Undergraduate', 'Graduate', 'New Grad'],
+    atsProvider: 'none',
+    atsBoardToken: null,
+    locations: [{ city: 'Olympia', state: 'WA', country: 'USA', latitude: 47.0358, longitude: -122.905 }],
   },
 ];
 

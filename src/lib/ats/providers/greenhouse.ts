@@ -30,9 +30,15 @@ export function createGreenhouseClient(fetchImpl: FetchLike = fetch): ProviderCl
   return {
     provider: 'greenhouse',
     async fetchPostings(token, signal) {
+      // Use content=false: the list endpoint with full descriptions can be
+      // enormous for large boards (e.g. SpaceX ships ~2,700 jobs ≈ 31 MB with
+      // content=true, which reliably times out). content=false returns the same
+      // jobs (title/location/url) in ~2.6 MB, so every internship/co-op/associate
+      // role is ingested on every run. Early-career filtering is title-only, so
+      // the dropped description HTML does not affect which roles we keep.
       const url = `https://boards-api.greenhouse.io/v1/boards/${encodeURIComponent(
         token,
-      )}/jobs?content=true`;
+      )}/jobs?content=false`;
       const res = await fetchImpl(url, { signal });
       if (!res.ok) throw new Error(`Greenhouse ${token}: HTTP ${res.status}`);
       const data = (await res.json()) as GreenhouseResponse;

@@ -13955,8 +13955,8 @@ var EXPLICIT_INTERN_RE = /\b(intern|interns|internship|internships|co-?op)\b/i;
 var SENIOR_RE = /\b(vice president|avp|vp|svp|evp|director|executive|chief|head of|head|principal|staff|sr\.?|senior|lead|manager|management|architect|fellow|partner|counsel|md|managing director|ii|iii|iv|v)\b/i;
 var SENIORITY_HARD_RE = /\b(vice president|avp|vp|svp|evp|director|chief|head of|head|senior|sr\.?|principal|staff|managing director|md)\b/i;
 var RECRUITER_RE = /\b(recruiter|recruiting|recruitment|talent acquisition|sourcer|talent partner|people partner|hrbp|program manager|coordinator)\b/i;
-var INTERNSHIP_TITLE_RE = /\b(intern|interns|internship|internships|co-?op|summer analyst|winter analyst|spring analyst|fall analyst|extern|externship|apprentice|apprenticeship|undergraduate intern|phd intern|mba intern)\b/i;
-var NEWGRAD_TITLE_RE = /\b(new grad|new graduate|recent grad|early career|entry[- ]level|university grad|graduate engineer|graduate analyst|graduate software|rotational program|leadership development program|ldp|analyst development program|junior|jr\.?|associate i|engineer i|analyst i|developer i)\b/i;
+var INTERNSHIP_TITLE_RE = /\b(intern|interns|internship|internships|co-?op|summer analyst|winter analyst|spring analyst|fall analyst|extern|externship|apprentice|apprenticeship|fellowship|undergraduate intern|phd intern|mba intern)\b/i;
+var NEWGRAD_TITLE_RE = /\b(new grad|new graduate|recent grad|early career|entry[- ]level|university grad|graduate engineer|graduate analyst|graduate software|rotational program|rotational|leadership development program|ldp|analyst development program)\b/i;
 function matchEarlyCareerType(title) {
   if (!title) return null;
   const t = title.trim();
@@ -14111,7 +14111,7 @@ function createGreenhouseClient(fetchImpl = fetch) {
     async fetchPostings(token, signal) {
       const url = `https://boards-api.greenhouse.io/v1/boards/${encodeURIComponent(
         token
-      )}/jobs?content=true`;
+      )}/jobs?content=false`;
       const res = await fetchImpl(url, { signal });
       if (!res.ok) throw new Error(`Greenhouse ${token}: HTTP ${res.status}`);
       const data = await res.json();
@@ -14414,7 +14414,7 @@ function clientFor(provider, token, fetchImpl) {
   }
 }
 async function syncCompany(company, sink, options = {}) {
-  const { now = /* @__PURE__ */ new Date(), timeoutMs = 1e4, fetchImpl } = options;
+  const { now = /* @__PURE__ */ new Date(), timeoutMs = 2e4, fetchImpl } = options;
   const result = {
     company: company.name,
     companyId: company.id,
