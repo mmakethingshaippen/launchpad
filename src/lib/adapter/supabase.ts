@@ -30,18 +30,46 @@ import { buildRolePlan, PAGE_SIZE } from './supabaseQuery';
 import { buildMapMarkers, type MapRoleInput } from './mapMarkers';
 import {
   mapRoleCard as originalMapRoleCard,
-  mapRoleDetail,
+  mapRoleDetail as originalMapRoleDetail,
   mapCompanyCard as originalMapCompanyCard,
-  mapCompanyDetail,
-  mapApplication,
+  mapCompanyDetail as originalMapCompanyDetail,
+  mapApplication as originalMapApplication,
 } from './supabaseMap';
 
 const COMPANY_SELECT =
   'id,slug,name,logo_url,website_url,careers_url,description,fields,company_type,startup_stage,employee_count_range,founding_year,degree_levels,last_verified_at,company_locations(*)';
 const ROLE_SELECT_WITH_COMPANY = `*, companies!inner(${COMPANY_SELECT})`;
 
+// Slimmer select for RoleCards (excludes heavy description text on Browse/Home lists)
+const ROLE_CARD_COLUMNS =
+  'id,slug,title,company_id,field,seasons,cohort_year,work_arrangement,opportunity_type,work_schedule,compensation_status,city,state,country,apply_url,source_url,application_deadline,last_verified_at,created_at,moderation_status';
+const ROLE_CARD_SELECT_WITH_COMPANY = `${ROLE_CARD_COLUMNS}, companies!inner(${COMPANY_SELECT})`;
+
 /**
- * Runtime safety sanitizer to guarantee no major tech/engineering company 
+ * Security helper: Enforce strictly http:// or https:// protocols on external URLs
+ * to prevent XSS (e.g., javascript: or data: URIs) from scraped feeds or community submissions.
+ */
+export function sanitizeExternalUrl(raw: string | null | undefined): string | null {
+  if (!raw || typeof raw !== 'string') return null;
+  const trimmed = raw.trim();
+  if (!trimmed) return null;
+
+  const withProtocol =
+    /^[a-zA-Z][a-zA-Z\d+\-.]*:/.test(trimmed) ? trimmed : `https://${trimmed}`;
+
+  try {
+    const parsed = new URL(withProtocol);
+    if (parsed.protocol === 'https:' || parsed.protocol === 'http:') {
+      return parsed.toString();
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Runtime safety sanitizer to guarantee no major tech/engineering company
  * falls back to "Other" or has an empty field array.
  */
 function sanitizeFields(fields: FieldType[] | undefined, companyName: string): FieldType[] {
@@ -49,10 +77,18 @@ function sanitizeFields(fields: FieldType[] | undefined, companyName: string): F
   if (valid.length > 0) return valid;
 
   const n = (companyName || '').toLowerCase();
-  if (/\b(software|tech|ai|data|cloud|salesforce|nvidia|palantir|intel|amd|google|meta|apple|microsoft|amazon|mercor)\b/.test(n)) {
+  if (
+    /\b(software|tech|ai|data|cloud|salesforce|nvidia|palantir|intel|amd|google|meta|apple|microsoft|amazon|mercor)\b/.test(
+      n,
+    )
+  ) {
     return ['Technology'];
   }
-  if (/\b(hardware|firmware|mechanical|electrical|energy|power|aerospace|manufacturing|epri|electric power research institute)\b/.test(n)) {
+  if (
+    /\b(hardware|firmware|mechanical|electrical|energy|power|aerospace|manufacturing|epri|electric power research institute)\b/.test(
+      n,
+    )
+  ) {
     return ['Engineering'];
   }
   if (/\b(health|medical|biotech|pharma|clinical)\b/.test(n)) {
@@ -69,21 +105,86 @@ function sanitizeSingleField(field: FieldType | undefined, companyName: string):
   return sanitizedArray[0] ?? 'Technology';
 }
 
-// Wrapped mappers that automatically sanitize company fields on every read
+// Wrapped mappers that automatically sanitize company fields and external URLs on every read
 function mapRoleCard(r: never): RoleCard {
   const card = originalMapRoleCard(r);
-  if (card && card.companyName) {
-    card.field = sanitizeSingleField(card.field, card.companyName);
+  if (card) {
+    if (card.companyName) {
+      card.field = sanitizeSingleField(card.field, card.companyName);
+    }
+    if ('companyLogoUrl' in card && card.companyLogoUrl) {
+      card.companyLogoUrl = sanitizeExternalUrl(card.companyLogoUrl);
+    }
+    if ('companyWebsiteUrl' in card && card.companyWebsiteUrl) {
+      card.companyWebsiteUrl = sanitizeExternalUrl(card.companyWebsiteUrl);
+    }
   }
   return card;
 }
 
+function mapRoleDetail(r: never): RoleDetailView {
+  const detail = originalMapRoleDetail(r);
+  if (detail) {
+    if (detail.companyName) {
+      detail.field = sanitizeSingleField(detail.field, detail.companyName);
+    }
+    if ('applyUrl' in detail) {
+      detail.applyUrl = sanitizeExternalUrl(detail.applyUrl) ?? '#';
+    }
+    if ('sourceUrl' in detail && detail.sourceUrl) {
+      detail.sourceUrl = sanitizeExternalUrl(detail.sourceUrl);
+    }
+    if ('companyLogoUrl' in detail && detail.companyLogoUrl) {
+      detail.companyLogoUrl = sanitizeExternalUrl(detail.companyLogoUrl);
+    }
+    if ('companyWebsiteUrl' in detail && detail.companyWebsiteUrl) {
+      detail.companyWebsiteUrl = sanitizeExternalUrl(detail.companyWebsiteUrl);
+    }
+  }
+  return detail;
+}
+
 function mapCompanyCard(c: never, activeRoleCount: number): CompanyCard {
   const card = originalMapCompanyCard(c, activeRoleCount);
-  if (card && card.name) {
-    card.fields = sanitizeFields(card.fields, card.name);
+  if (card) {
+    if (card.name) {
+      card.fields = sanitizeFields(card.fields, card.name);
+    }
+    if ('logoUrl' in card && card.logoUrl) {
+      card.logoUrl = sanitizeExternalUrl(card.logoUrl);
+    }
+    if ('websiteUrl' in card && card.websiteUrl) {
+      card.websiteUrl = sanitizeExternalUrl(card.websiteUrl);
+    }
   }
   return card;
+}
+
+function mapCompanyDetail(c: never, roles: RoleCard[]): CompanyDetailView {
+  const detail = originalMapCompanyDetail(c, roles);
+  if (detail) {
+    if (detail.name) {
+      detail.fields = sanitizeFields(detail.fields, detail.name);
+    }
+    if ('logoUrl' in detail && detail.logoUrl) {
+      detail.logoUrl = sanitizeExternalUrl(detail.logoUrl);
+    }
+    if ('websiteUrl' in detail && detail.websiteUrl) {
+      detail.websiteUrl = sanitizeExternalUrl(detail.websiteUrl);
+    }
+    if ('careersUrl' in detail && detail.careersUrl) {
+      detail.careersUrl = sanitizeExternalUrl(detail.careersUrl);
+    }
+  }
+  return detail;
+}
+
+function mapApplication(a: never): Application {
+  const app = originalMapApplication(a);
+  if (app && 'applicationUrl' in app && app.applicationUrl) {
+    app.applicationUrl = sanitizeExternalUrl(app.applicationUrl);
+  }
+  return app;
 }
 
 /**
@@ -108,7 +209,9 @@ export class SupabaseAdapter implements DataAdapter {
     const pageSize = plan.range.to - plan.range.from + 1;
 
     const build = () => {
-      let q = this.db.from('public_roles').select(ROLE_SELECT_WITH_COMPANY, { count: 'exact' });
+      let q = this.db
+        .from('public_roles')
+        .select(ROLE_CARD_SELECT_WITH_COMPANY, { count: 'exact' });
       for (const op of plan.filters) {
         if (op.type === 'eq') q = q.eq(op.column, op.value);
         else if (op.type === 'overlaps') q = q.overlaps(op.column, op.values);
@@ -215,7 +318,7 @@ export class SupabaseAdapter implements DataAdapter {
 
     const { data: roleRows } = await this.db
       .from('public_roles')
-      .select(ROLE_SELECT_WITH_COMPANY)
+      .select(ROLE_CARD_SELECT_WITH_COMPANY)
       .eq('company_id', (data as { id: string }).id);
     const roles = (roleRows ?? []).map((r) => mapRoleCard(r as never));
     return mapCompanyDetail(data as never, roles);
@@ -241,7 +344,7 @@ export class SupabaseAdapter implements DataAdapter {
   async getFeatured(): Promise<FeaturedBlocks> {
     const recent = await this.db
       .from('public_roles')
-      .select(ROLE_SELECT_WITH_COMPANY)
+      .select(ROLE_CARD_SELECT_WITH_COMPANY)
       .order('last_verified_at', { ascending: false })
       .limit(6);
     const recentlyVerified = (recent.data ?? []).map((r) => mapRoleCard(r as never));
@@ -252,7 +355,7 @@ export class SupabaseAdapter implements DataAdapter {
     );
     const deadlineQ = await this.db
       .from('public_roles')
-      .select(ROLE_SELECT_WITH_COMPANY)
+      .select(ROLE_CARD_SELECT_WITH_COMPANY)
       .not('application_deadline', 'is', null)
       .order('application_deadline', { ascending: true })
       .limit(6);
@@ -282,24 +385,33 @@ export class SupabaseAdapter implements DataAdapter {
   }
 
   async getMapMarkers(filters: RoleFilters): Promise<MapMarker[]> {
-    let q = this.db
-      .from('public_roles')
-      .select(
-        'id, slug, title, seasons, cohort_year, city, state, country, work_arrangement, company_id, ' +
-          'companies!inner(slug,name,company_type,website_url,logo_url,company_locations(city,state,latitude,longitude,location_type))',
-      );
+    const PAGE_BATCH = 1000;
+    const allRows: Array<Record<string, unknown>> = [];
 
-    if (filters.seasons.length) q = q.overlaps('seasons', filters.seasons);
-    if (filters.opportunityTypes.length) q = q.in('opportunity_type', filters.opportunityTypes);
-    if (filters.fields.length) q = q.in('field', filters.fields);
-    if (filters.companyType !== 'All') q = q.eq('companies.company_type', filters.companyType);
+    for (let from = 0; ; from += PAGE_BATCH) {
+      let q = this.db
+        .from('public_roles')
+        .select(
+          'id, slug, title, seasons, cohort_year, city, state, country, work_arrangement, company_id, ' +
+            'companies!inner(slug,name,company_type,website_url,logo_url,company_locations(city,state,latitude,longitude,location_type))',
+        )
+        .range(from, from + PAGE_BATCH - 1);
 
-    const { data, error } = await q;
-    if (error) throw error;
+      if (filters.seasons.length) q = q.overlaps('seasons', filters.seasons);
+      if (filters.opportunityTypes.length) q = q.in('opportunity_type', filters.opportunityTypes);
+      if (filters.fields.length) q = q.in('field', filters.fields);
+      if (filters.companyType !== 'All') q = q.eq('companies.company_type', filters.companyType);
+
+      const { data, error } = await q;
+      if (error) throw error;
+
+      const batch = (data ?? []) as unknown as Array<Record<string, unknown>>;
+      allRows.push(...batch);
+      if (batch.length < PAGE_BATCH) break;
+    }
 
     const inputs: MapRoleInput[] = [];
-    for (const row of (data ?? []) as unknown as Array<Record<string, unknown>>) {
-      const r = row;
+    for (const r of allRows) {
       const compRaw = r.companies as Record<string, unknown> | Record<string, unknown>[] | null;
       const comp = (Array.isArray(compRaw) ? compRaw[0] : compRaw) as Record<string, unknown> | null;
       if (!comp) continue;
@@ -323,8 +435,8 @@ export class SupabaseAdapter implements DataAdapter {
         companyId: r.company_id as string,
         companyName: comp.name as string,
         companySlug: comp.slug as string,
-        companyWebsiteUrl: (comp.website_url as string) ?? null,
-        companyLogoUrl: (comp.logo_url as string) ?? null,
+        companyWebsiteUrl: sanitizeExternalUrl(comp.website_url as string | null),
+        companyLogoUrl: sanitizeExternalUrl(comp.logo_url as string | null),
         hqLatitude: (hq?.latitude as number) ?? null,
         hqLongitude: (hq?.longitude as number) ?? null,
       });
@@ -337,7 +449,7 @@ export class SupabaseAdapter implements DataAdapter {
     if (!uid) return [];
     const { data, error } = await this.db
       .from('saved_opportunities')
-      .select('role_id, created_at, roles(*, companies!inner(' + COMPANY_SELECT + '))')
+      .select('role_id, created_at, roles(' + ROLE_CARD_SELECT_WITH_COMPANY + ')')
       .eq('user_id', uid);
     if (error) throw error;
     const rows = (data ?? []) as unknown as Array<{
@@ -385,11 +497,11 @@ export class SupabaseAdapter implements DataAdapter {
     const row = {
       user_id: uid,
       role_id: input.roleId ?? null,
-      company_name: input.companyName,
-      role_title: input.roleTitle,
+      company_name: input.companyName.trim(),
+      role_title: input.roleTitle.trim(),
       status: input.status ?? 'Applied',
       notes: input.notes ?? null,
-      application_url: input.applicationUrl ?? null,
+      application_url: sanitizeExternalUrl(input.applicationUrl),
       applied_at: input.appliedAt ?? null,
       follow_up_date: input.followUpDate ?? null,
     };
@@ -406,12 +518,21 @@ export class SupabaseAdapter implements DataAdapter {
   }
 
   async submitCompany(input: CompanyFormA): Promise<void> {
+    const safeWebsite = sanitizeExternalUrl(input.websiteUrl);
+    const safeCareers = sanitizeExternalUrl(input.careersUrl);
+    if (!safeWebsite) {
+      throw new Error('Please provide a valid HTTPS website URL.');
+    }
+
     const { error } = await this.db.from('companies').insert({
-      slug: input.name.toLowerCase().replace(/[^a-z0-9]+/g, '-'),
-      name: input.name,
-      website_url: input.websiteUrl,
-      careers_url: input.careersUrl,
-      description: input.description,
+      slug: input.name
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, '-')
+        .replace(/^-|-$/g, ''),
+      name: input.name.trim(),
+      website_url: safeWebsite,
+      careers_url: safeCareers,
+      description: input.description.trim(),
       fields: input.fields,
       company_type: input.companyType,
       degree_levels: input.degreeLevels,
@@ -424,10 +545,18 @@ export class SupabaseAdapter implements DataAdapter {
   }
 
   async submitRole(input: RoleFormB): Promise<void> {
+    const safeApplyUrl = sanitizeExternalUrl(input.applyUrl);
+    if (!safeApplyUrl) {
+      throw new Error('Please provide a valid HTTPS application URL.');
+    }
+
     const { error } = await this.db.from('roles').insert({
       company_id: input.companyId,
-      slug: `${input.title}-${Date.now()}`.toLowerCase().replace(/[^a-z0-9]+/g, '-'),
-      title: input.title,
+      slug: `${input.title}-${Date.now()}`
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, '-')
+        .replace(/^-|-$/g, ''),
+      title: input.title.trim(),
       field: input.field,
       seasons: input.seasons,
       work_arrangement: input.workArrangement,
@@ -435,10 +564,10 @@ export class SupabaseAdapter implements DataAdapter {
       opportunity_type: input.opportunityType,
       work_schedule: input.workSchedule,
       compensation_status: input.compensationStatus,
-      apply_url: input.applyUrl,
-      description: input.description,
+      apply_url: safeApplyUrl,
+      description: input.description.trim(),
       source: 'community',
-      source_url: input.sourceUrl ?? null,
+      source_url: sanitizeExternalUrl(input.sourceUrl),
       moderation_status: 'Pending',
     });
     if (error) throw error;
@@ -474,8 +603,8 @@ export class SupabaseAdapter implements DataAdapter {
       companies: (companies.data ?? []).map((c: Record<string, unknown>) => ({
         id: c.id as string,
         name: c.name as string,
-        websiteUrl: (c.website_url as string) ?? null,
-        careersUrl: (c.careers_url as string) ?? null,
+        websiteUrl: sanitizeExternalUrl(c.website_url as string | null),
+        careersUrl: sanitizeExternalUrl(c.careers_url as string | null),
         companyType: c.company_type as string,
         source: c.source as string,
         createdAt: c.created_at as string,
@@ -489,7 +618,7 @@ export class SupabaseAdapter implements DataAdapter {
           companyName: companyName ?? 'Unknown',
           field: r.field as string,
           seasons: (r.seasons as string[]) ?? [],
-          applyUrl: r.apply_url as string,
+          applyUrl: sanitizeExternalUrl(r.apply_url as string | null) ?? '#',
           source: r.source as string,
           createdAt: r.created_at as string,
         };
@@ -508,13 +637,19 @@ export class SupabaseAdapter implements DataAdapter {
   }
 
   async moderateCompany(id: string, action: 'Approved' | 'Rejected'): Promise<void> {
-    const { error } = await this.db.from('companies').update({ moderation_status: action }).eq('id', id);
+    const { error } = await this.db
+      .from('companies')
+      .update({ moderation_status: action })
+      .eq('id', id);
     if (error) throw error;
     await this.recordModeration('company', id, action);
   }
 
   async moderateRole(id: string, action: 'Approved' | 'Rejected'): Promise<void> {
-    const { error } = await this.db.from('roles').update({ moderation_status: action }).eq('id', id);
+    const { error } = await this.db
+      .from('roles')
+      .update({ moderation_status: action })
+      .eq('id', id);
     if (error) throw error;
     await this.recordModeration('role', id, action);
   }
@@ -536,7 +671,10 @@ export class SupabaseAdapter implements DataAdapter {
   }
 
   async resolveReport(id: string): Promise<void> {
-    const { error } = await this.db.from('listing_reports').update({ resolved: true }).eq('id', id);
+    const { error } = await this.db
+      .from('listing_reports')
+      .update({ resolved: true })
+      .eq('id', id);
     if (error) throw error;
   }
 
@@ -572,7 +710,8 @@ export class SupabaseAdapter implements DataAdapter {
 
     if (!res.ok) {
       let message = `Sync failed: HTTP ${res.status}`;
-      if (res.status === 401) message = 'Sync failed: your session is not authenticated. Please sign in again.';
+      if (res.status === 401)
+        message = 'Sync failed: your session is not authenticated. Please sign in again.';
       else if (res.status === 403) message = 'Sync failed: your account is not an admin.';
       else {
         try {
