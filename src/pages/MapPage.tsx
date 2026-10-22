@@ -35,7 +35,7 @@ function companyKey(name: string): string {
 
 /**
  * Isolate the roles for one selected company and recalculate marker counts.
- * Locations with no matching roles are removed[cite: 5].
+ * Locations with no matching roles are removed.
  */
 export function filterMarkersByCompany(markers: MapMarker[], companyName: string): MapMarker[] {
   const selected = companyKey(companyName);
@@ -45,7 +45,12 @@ export function filterMarkersByCompany(markers: MapMarker[], companyName: string
     .map((marker) => {
       const matchingRoles = marker.roles.filter((role) => {
         const roleCompKey = companyKey(role.companyName);
-        return roleCompKey === selected || roleCompKey.includes(selected) || selected.includes(roleCompKey);
+        if (!roleCompKey) return false;
+        if (roleCompKey === selected) return true;
+        return (
+          roleCompKey.startsWith(`${selected} `) ||
+          selected.startsWith(`${roleCompKey} `)
+        );
       });
 
       if (matchingRoles.length === 0) return null;
@@ -75,7 +80,7 @@ export interface CompanyMapOption {
   logoUrl?: string | null;
 }
 
-/** Build the selector from the SAME unfiltered markers used by the map[cite: 5]. */
+/** Build the selector from the SAME unfiltered markers used by the map. */
 export function companyOptionsFromMarkers(markers: MapMarker[]): CompanyMapOption[] {
   const stats = new Map<string, {
     name: string;
@@ -119,7 +124,7 @@ export function companyOptionsFromMarkers(markers: MapMarker[]): CompanyMapOptio
 }
 
 /**
- * Refit after BOTH the company selection and marker data change[cite: 5].
+ * Refit after BOTH the company selection and marker data change.
  */
 function FitToMarkers({
   markers,
