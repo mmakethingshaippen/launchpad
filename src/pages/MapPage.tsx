@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { Helmet } from 'react-helmet-async';
 import { useQuery } from '@tanstack/react-query';
-import { MapContainer, TileLayer, Marker, Popup, LayerGroup, useMap } from 'react-leaflet';
+import { MapContainer, TileLayer, Marker, Popup, ZoomControl, LayerGroup, useMap } from 'react-leaflet';
 import MarkerClusterGroup from 'react-leaflet-cluster';
 import L from 'leaflet';
 import { ArrowRight, Building2, Check, ChevronDown, Share2, Search, X } from 'lucide-react';
@@ -50,17 +50,16 @@ export function companyKey(name: string): string {
  * Isolate the roles for one selected company and recalculate marker counts.
  * Locations with no matching roles are removed.
  */
-export function filterMarkersByCompany(markers: MapMarker[], companyName: string, exact = true, companySlug = ''): MapMarker[] {
-  const selected = companyKey(companyName);
-  if (!selected) return markers;
+export function filterMarkersByCompany(markers: MapMarker[], companyName: string | string[], exact = true, companySlug = ''): MapMarker[] {
+  const selected = (Array.isArray(companyName) ? companyName : [companyName]).map(companyKey).filter(Boolean);
+  if (!selected.length) return markers;
 
   return markers
     .map((marker) => {
       const matchingRoles = marker.roles.filter((role) => {
         if (companySlug) return role.companySlug === companySlug;
         const roleCompKey = companyKey(role.companyName);
-        if (!roleCompKey || !selected) return false;
-        return exact ? roleCompKey === selected : roleCompKey.includes(selected);
+        return selected.some((key) => exact ? roleCompKey === key : roleCompKey.includes(key));
       });
 
       if (matchingRoles.length === 0) return null;
@@ -163,15 +162,15 @@ export function uniqueRoleCount(markers: MapMarker[], unmappedRoles: MapMarkerRo
  */
 function FitToMarkers({
   markers,
-  selectedCompany,
+  hasSelection,
 }: {
   markers: MapMarker[];
-  selectedCompany: string;
+  hasSelection: boolean;
 }) {
   const map = useMap();
 
   useEffect(() => {
-    if (!selectedCompany) {
+    if (!hasSelection) {
       map.setView([22, 0], 2.4, { animate: false });
       return;
     }
@@ -196,7 +195,7 @@ function FitToMarkers({
         maxZoom: 7,
       });
     }
-  }, [map, markers, selectedCompany]);
+  }, [map, markers, hasSelection]);
 
   return null;
 }
@@ -233,22 +232,18 @@ export function MapPage() {
   const { filters, toggleSeason } = useRoleFilters();
   const [searchParams, setSearchParams] = useSearchParams();
 
-  const initialCompany = searchParams.get('company') ?? '';
-  const selectedSlug = searchParams.get('companySlug') ?? '';
-  const [companyQuery, setCompanyQuery] = useState(initialCompany);
-  const [selectedCompany, setSelectedCompany] = useState(initialCompany);
+  const initialCompanies = searchParams.getAll('company').flatMap((value) => value.split(',')).map((value) => value.trim()).filter(Boolean);
+  const [companyQuery, setCompanyQuery] = useState('');
+  const [selectedCompanies, setSelectedCompanies] = useState<string[]>(initialCompanies);
   const [dropdownOpen, setDropdownOpen] = useState(false);
   const [showAllOptions, setShowAllOptions] = useState(false);
   const [copiedLink, setCopiedLink] = useState(false);
   const comboboxRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    const companyFromUrl = searchParams.get('company') ?? '';
-    if (companyFromUrl !== selectedCompany) {
-      setSelectedCompany(companyFromUrl);
-      setCompanyQuery(companyFromUrl);
-    }
-  }, [searchParams, selectedCompany]);
+    const companies = searchParams.getAll('company').flatMap((value) => value.split(',')).map((value) => value.trim()).filter(Boolean);
+    setSelectedCompanies((current) => current.join('|') === companies.join('|') ? current : companies);
+  }, [searchParams]);
 
   useEffect(() => {
     function handleClickOutside(event: MouseEvent) {
@@ -263,44 +258,19 @@ export function MapPage() {
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, []);
 
-  const setCompanyUrl = (nextCompany: string, slug = '') => {
+  const setCompanyUrl = (companies: string[]) => {
     const nextParams = new URLSearchParams(searchParams);
-    if (slug) nextParams.set('companySlug', slug);
-    else nextParams.delete('companySlug');
-    if (nextCompany.trim()) {
-      nextParams.set('company', nextCompany.trim());
-    } else {
-      nextParams.delete('company');
-    }
+    nextParams.delete('company'); nextParams.delete('companySlug');
+    companies.forEach((company) => nextParams.append('company', company));
     setSearchParams(nextParams, { replace: true });
   };
-
-  const handleCompanyTyping = (nextQuery: string) => {
-    setCompanyQuery(nextQuery);
-    setDropdownOpen(true);
-    setShowAllOptions(false);
-
-    if (selectedCompany) {
-      setSelectedCompany('');
-      setCompanyUrl('');
-    }
+  const handleCompanyTyping = (nextQuery: string) => { setCompanyQuery(nextQuery); setDropdownOpen(true); setShowAllOptions(false); };
+  const handleSelectCompany = (company: string) => {
+    const exists = selectedCompanies.some((item) => companyKey(item) === companyKey(company));
+    const next = exists ? selectedCompanies.filter((item) => companyKey(item) !== companyKey(company)) : [...selectedCompanies, company];
+    setSelectedCompanies(next); setCompanyQuery(''); setShowAllOptions(false); setCompanyUrl(next);
   };
-
-  const handleSelectCompany = (company: string, slug = '') => {
-    setCompanyQuery(company);
-    setSelectedCompany(company);
-    setDropdownOpen(false);
-    setShowAllOptions(false);
-    setCompanyUrl(company, slug);
-  };
-
-  const handleClearCompany = () => {
-    setCompanyQuery('');
-    setSelectedCompany('');
-    setDropdownOpen(false);
-    setShowAllOptions(false);
-    setCompanyUrl('');
-  };
+  const handleClearCompany = () => { setSelectedCompanies([]); setCompanyQuery(''); setDropdownOpen(false); setShowAllOptions(false); setCompanyUrl([]); };
 
   const handleCopyShareLink = async () => {
     try {
@@ -320,11 +290,7 @@ export function MapPage() {
   });
 
   const allMarkers = useMemo(() => data?.markers ?? [], [data]);
-  const allUnmapped = useMemo(() => data?.unmappedRoles ?? [], [data]);
-  const companyOptions = useMemo(
-    () => companyOptionsFromMarkers(allMarkers, allUnmapped),
-    [allMarkers, allUnmapped]
-  );
+  const companyOptions = useMemo(() => companyOptionsFromMarkers(allMarkers), [allMarkers]);
 
   const filteredCompanyOptions = useMemo(() => {
     if (showAllOptions) return companyOptions;
@@ -333,22 +299,16 @@ export function MapPage() {
     return companyOptions.filter((option) => companyKey(option.name).includes(q));
   }, [companyOptions, companyQuery, showAllOptions]);
 
-  const activeCompany = (selectedCompany || companyQuery).trim();
-  const markers = useMemo(
-    () => filterMarkersByCompany(allMarkers, activeCompany, Boolean(selectedCompany), selectedSlug),
-    [allMarkers, activeCompany, selectedCompany, selectedSlug]
-  );
-  const unmappedRoles = useMemo(() => allUnmapped.filter(role =>
-    !activeCompany || (selectedSlug ? role.companySlug === selectedSlug : selectedCompany
-      ? companyKey(role.companyName) === companyKey(activeCompany)
-      : companyKey(role.companyName).includes(companyKey(activeCompany)))
-  ), [allUnmapped, activeCompany, selectedCompany, selectedSlug]);
-  const visibleCompanyCount = useMemo(() => companyOptionsFromMarkers(markers, unmappedRoles).length,
-    [markers, unmappedRoles]);
+  const activeCompany = selectedCompanies.length ? selectedCompanies.join(', ') : companyQuery.trim();
+  const filterCompanies = useMemo(() => selectedCompanies.length ? selectedCompanies : (companyQuery.trim() ? [companyQuery.trim()] : []), [selectedCompanies, companyQuery]);
+  const markers = useMemo(() => filterMarkersByCompany(allMarkers, filterCompanies, Boolean(selectedCompanies.length)), [allMarkers, filterCompanies, selectedCompanies.length]);
+
+  const visibleCompanyCount = useMemo(() => companyOptionsFromMarkers(markers).length,
+    [markers]);
 
   const totalRoles = useMemo(
-    () => uniqueRoleCount(markers, unmappedRoles),
-    [markers, unmappedRoles]
+    () => uniqueRoleCount(markers),
+    [markers]
   );
   const cityCount = useMemo(
     () => new Set(markers.map((marker) => `${marker.latitude.toFixed(4)},${marker.longitude.toFixed(4)}`)).size,
@@ -360,7 +320,7 @@ export function MapPage() {
       `${companyKey(activeCompany)}:${markers
         .map((marker) => `${marker.id}#${marker.roleCount}`)
         .join('|')}`,
-    [activeCompany, markers]
+    [filterCompanies, markers]
   );
   // Selected companies render directly. This avoids the cluster layer's stale
   // animation/layer state when switching between a world view and a few pins.
@@ -428,7 +388,7 @@ export function MapPage() {
                 setDropdownOpen(false);
               } else if (event.key === 'Enter' && filteredCompanyOptions.length > 0) {
                 event.preventDefault();
-                handleSelectCompany(filteredCompanyOptions[0].name, filteredCompanyOptions[0].slug);
+                handleSelectCompany(filteredCompanyOptions[0].name);
               }
             }}
             placeholder="Filter by company (e.g. Bechtel, Waymo, Nvidia)…"
@@ -440,11 +400,11 @@ export function MapPage() {
           />
 
           <div className="absolute right-2 top-1/2 flex -translate-y-1/2 items-center gap-0.5">
-            {(companyQuery || activeCompany) && (
+            {(companyQuery || selectedCompanies.length > 0) && (
               <button
                 type="button"
                 onClick={handleClearCompany}
-                aria-label="Clear company search"
+                aria-label="Clear company search and selections"
                 className="rounded p-1 text-slate-400 hover:bg-slate-100 hover:text-navy"
               >
                 <X className="h-4 w-4" aria-hidden="true" />
@@ -484,12 +444,12 @@ export function MapPage() {
               )}
 
               {filteredCompanyOptions.map((option) => {
-                const isSelected = selectedSlug ? option.slug === selectedSlug : companyKey(option.name) === companyKey(activeCompany);
+                const isSelected = selectedCompanies.some((company) => companyKey(company) === companyKey(option.name));
                 return (
                   <button
                     key={option.slug || option.name}
                     type="button"
-                    onClick={() => handleSelectCompany(option.name, option.slug)}
+                    onClick={() => handleSelectCompany(option.name)}
                     className={`flex w-full items-center justify-between gap-2 rounded-lg px-2.5 py-2 text-left text-sm transition-colors ${
                       isSelected
                         ? 'bg-cyan/15 font-semibold text-navy'
@@ -515,7 +475,7 @@ export function MapPage() {
                       <span className="truncate">{option.name}</span>
                     </span>
                     <span className="flex-shrink-0 rounded-full bg-slate-100 px-2 py-0.5 text-xs font-medium text-slate-600">
-                      {option.roleCount} {option.roleCount === 1 ? 'role' : 'roles'}
+                      {isSelected ? 'Selected · ' : ''}{option.roleCount} {option.roleCount === 1 ? 'role' : 'roles'}
                     </span>
                   </button>
                 );
@@ -524,10 +484,11 @@ export function MapPage() {
           )}
         </div>
 
-        {activeCompany && totalRoles > 0 && (
+        {selectedCompanies.length > 0 && <div className="mb-2 flex flex-wrap items-center gap-1.5">{selectedCompanies.map((company) => <button key={company} type="button" onClick={() => handleSelectCompany(company)} aria-label={`Remove ${company}`} className="inline-flex items-center gap-1 rounded-full bg-cyan/10 px-2.5 py-1 text-xs font-medium text-navy ring-1 ring-cyan/30">{company} <X className="h-3 w-3" aria-hidden="true" /></button>)}{selectedCompanies.length >= 2 && <button type="button" onClick={handleClearCompany} className="text-xs underline">Clear all</button>}</div>}
+        {selectedCompanies.length > 0 && totalRoles > 0 && (
           <div className="flex flex-wrap items-center gap-2">
             <span className="inline-flex items-center gap-2 rounded-full bg-cyan/10 px-3 py-1.5 text-sm font-medium text-navy ring-1 ring-cyan/30">
-              <strong>{activeCompany}</strong>
+              <strong>{selectedCompanies.length} {selectedCompanies.length === 1 ? 'company' : 'companies'} selected</strong>
               <span className="text-slate-500">
                 {totalRoles} open {totalRoles === 1 ? 'role' : 'roles'} · {cityCount}{' '}
                 {cityCount === 1 ? 'location' : 'locations'}
@@ -537,7 +498,7 @@ export function MapPage() {
               type="button"
               onClick={handleCopyShareLink}
               className="inline-flex items-center gap-1.5 rounded-full bg-white px-3 py-1.5 text-xs font-medium text-slate-600 ring-1 ring-slate-200 transition-colors hover:border-cyan hover:text-navy"
-              title="Copy shareable link to this company's map"
+              title="Copy shareable link to the selected companies map"
             >
               {copiedLink ? (
                 <>
@@ -561,29 +522,15 @@ export function MapPage() {
           : isError
             ? 'Could not load the map. Please try again.'
             : activeCompany && markers.length === 0
-              ? unmappedRoles.length > 0
-                ? `${totalRoles} open roles for ${activeCompany}; no usable map location is available.`
-                : `No open roles found for "${activeCompany}" with your current filters.`
-              : `${totalRoles.toLocaleString()} open roles · ${visibleCompanyCount.toLocaleString()} ${visibleCompanyCount === 1 ? 'company' : 'companies'} · ${cityCount} mapped ${cityCount === 1 ? 'location' : 'locations'}${unmappedRoles.length ? ` · ${unmappedRoles.length} roles without coordinates` : ''}`}
+              ? `No open roles found for "${activeCompany}" with your current filters.`
+              : `${totalRoles.toLocaleString()} open roles · ${visibleCompanyCount.toLocaleString()} ${visibleCompanyCount === 1 ? 'company' : 'companies'} · ${cityCount} mapped ${cityCount === 1 ? 'location' : 'locations'}`}
       </p>
       <p className="mb-4 text-xs text-slate-400">
         Pins use available job locations; some coordinates are approximate. Headquarters fallbacks are labelled in the popup.
         Each role counts once in the total, even when offered in several locations.
       </p>
 
-      {unmappedRoles.length > 0 && (
-        <details className="mb-4 rounded-lg border border-slate-200 bg-white p-3">
-          <summary className="cursor-pointer text-sm font-medium text-navy">
-            {unmappedRoles.length} roles without usable coordinates
-          </summary>
-          <p className="my-2 text-xs text-slate-500">These listings remain available. Their job locations cannot currently be plotted.</p>
-          <ul className="max-h-64 space-y-2 overflow-auto">
-            {unmappedRoles.map(role => <li key={role.id} className="text-sm">
-              <Link to={`/roles/${role.slug}`} className="text-navy underline">{role.companyName} — {role.title}</Link>
-            </li>)}
-          </ul>
-        </details>
-      )}
+
 
       {isLoading ? (
         <LoadingBlock label="Loading map" />
@@ -598,18 +545,20 @@ export function MapPage() {
             minZoom={2.3}
             zoomSnap={0.1}
             zoomDelta={0.5}
-            maxBounds={SINGLE_WORLD_BOUNDS}
-            maxBoundsViscosity={1.0}
+            maxBounds={[[-85, -225], [85, 225]]}
+            maxBoundsViscosity={0.85}
+            zoomControl={false}
             scrollWheelZoom
             style={{ height: '100%', width: '100%', backgroundColor: '#aad3df' }}
           >
+            <ZoomControl position="bottomright" />
             <TileLayer
               attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
               url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
               noWrap={true}
               bounds={SINGLE_WORLD_BOUNDS}
             />
-            <FitToMarkers markers={markers} selectedCompany={activeCompany} />
+            <FitToMarkers markers={markers} hasSelection={filterCompanies.length > 0} />
             <CompanyMarkers
               key={markerSetKey}
               selected={Boolean(activeCompany)}
@@ -623,7 +572,7 @@ export function MapPage() {
                   alt={`${marker.label}: ${marker.roleCount} open roles`}
                   {...({ roleIds: marker.roles.map(role => role.id) } as object)}
                 >
-                  <Popup maxWidth={320}>
+                  <Popup autoPan autoPanPaddingBottomRight={[24, 24]} autoPanPaddingTopLeft={[60, 24]} keepInView maxWidth={320} minWidth={250}>
                     <MarkerPopup
                       marker={marker}
                       activeCompany={activeCompany}

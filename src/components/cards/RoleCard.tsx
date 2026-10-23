@@ -1,5 +1,7 @@
 import { Link } from 'react-router-dom';
-import { Bookmark, BookmarkCheck, MapPin, ExternalLink } from 'lucide-react';
+import { useState } from 'react';
+import { Check, Bookmark, BookmarkCheck, MapPin, ExternalLink } from 'lucide-react';
+import type { ApplicationStatus } from '../../lib/adapter/types';
 import type { RoleCard as RoleCardData } from '../../lib/adapter/types';
 import { Card } from '../ui/Card';
 import { Badge, SeasonBadge } from '../ui/Badge';
@@ -31,11 +33,14 @@ export function RoleCard({
   role,
   saved,
   onToggleSave,
+  tracked = false, trackingSaving = false, onTrack,
 }: {
   role: RoleCardData;
   saved?: boolean;
   onToggleSave?: (id: string) => void;
+  tracked?: boolean; trackingSaving?: boolean; onTrack?: (id: string, status: ApplicationStatus) => void;
 }) {
+  const [trackStatus, setTrackStatus] = useState<ApplicationStatus>('Applied');
   const pay = payLabel(role);
   return (
     <Card className="flex h-full flex-col">
@@ -76,6 +81,7 @@ export function RoleCard({
         ))}
         <Badge tone="cyan">{role.opportunityType}</Badge>
         {role.field && role.field !== 'Other' && <Badge tone="muted">{role.field}</Badge>}
+        {(role.degreeLevels ?? []).map((degree) => <Badge key={degree} tone="muted">{degree}</Badge>)}
       </div>
 
       <dl className="mt-3 space-y-1 text-sm text-slate-600">
@@ -84,15 +90,7 @@ export function RoleCard({
           <span>{locationLabel(role)}</span>
         </div>
         <div className="flex flex-wrap items-center gap-x-1.5">
-          <span>{role.field}</span>
-          <span aria-hidden="true" className="text-slate-300">·</span>
-          <span>{role.degreeLevels?.join(', ') || 'Undergraduate'}</span>
-          {pay && (
-            <>
-              <span aria-hidden="true" className="text-slate-300">·</span>
-              <span className="font-medium text-navy">{pay}</span>
-            </>
-          )}
+          {pay && <span className="font-medium text-navy">{pay}</span>}
         </div>
       </dl>
 
@@ -100,7 +98,8 @@ export function RoleCard({
         <span className="text-xs text-slate-400">
           Verified live {formatRelativeTime(role.lastVerifiedAt)}
         </span>
-        <div className="flex gap-2">
+        <div className="flex items-center gap-2">
+          {onTrack && (tracked ? <Link to="/applications" className="rounded-full bg-emerald-50 px-2.5 py-1 text-xs font-semibold text-emerald-700">Tracked ✓</Link> : <button type="button" onClick={() => onTrack(role.id, trackStatus)} disabled={trackingSaving} className="rounded-md bg-navy px-2 py-1.5 text-xs font-semibold text-white disabled:opacity-50">{trackingSaving ? 'Saving…' : '+ Track'}</button>)}
           <Link to={`/roles/${role.slug}`}>
             <Button variant="outline" size="sm">
               Details

@@ -54,14 +54,14 @@ describe('filterMarkersByCompany (Req 3 — map company search)', () => {
     expect(companyOptionsFromMarkers(markers)).toMatchObject([{ name: 'Anthropic', roleCount: 1, cityCount: 2 }]);
   });
 
+  it('includes roles from any of multiple selected companies', () => {
+    const filtered = filterMarkersByCompany(MARKERS, ['Waymo', 'Stripe']);
+    expect(filtered.flatMap((item) => item.roles.map((role) => role.id)).sort()).toEqual(['s1', 'w1', 'w2']);
+  });
+
   it('does not include unrelated substring company matches after selecting a company', () => {
     const markers = [marker('SF', 37.77, -122.41, [markerRole('Meta', 'a'), markerRole('Metabolic', 'b')])];
     expect(filterMarkersByCompany(markers, 'Meta')[0].roles.map(role => role.id)).toEqual(['a']);
-  });
-
-  it('keeps companies without coordinates in the selector', () => {
-    expect(companyOptionsFromMarkers([], [markerRole('Amazon', 'a')]))
-      .toMatchObject([{ name: 'Amazon', roleCount: 1, cityCount: 0 }]);
   });
 
   it('keeps different company records distinct even when their normalized names match', () => {

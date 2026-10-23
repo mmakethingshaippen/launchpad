@@ -5,6 +5,8 @@ import { SlidersHorizontal, LayoutGrid, Building2 } from 'lucide-react';
 import { useAdapter } from '../hooks/useAdapter';
 import { useRoleFilters } from '../hooks/useRoleFilters';
 import { useSaved } from '../hooks/useSaved';
+import { useApplications } from '../hooks/useApplications';
+import type { ApplicationStatus, RoleCard as RoleCardData } from '../lib/adapter/types';
 import { FilterPanel } from '../components/browse/FilterPanel';
 import { ActiveChips } from '../components/browse/ActiveChips';
 import { Pagination } from '../components/browse/Pagination';
@@ -29,6 +31,10 @@ export function Browse() {
   const adapter = useAdapter();
   const { filters, activeCount, setFilters, clearAll } = useRoleFilters();
   const { savedIds, toggleSave } = useSaved();
+  const { applications, upsertAsync } = useApplications();
+  const [trackingRoleId, setTrackingRoleId] = useState<string | null>(null);
+  const trackedIds = new Set(applications.map((application) => application.roleId).filter((id): id is string => Boolean(id)));
+  const trackRole = async (role: RoleCardData, status: ApplicationStatus) => { setTrackingRoleId(role.id); try { await upsertAsync({ roleId: role.id, companyName: role.companyName, roleTitle: role.title, status, applicationUrl: role.applyUrl ?? null }); } finally { setTrackingRoleId(null); } };
   const [drawerOpen, setDrawerOpen] = useState(false);
 
   const roleQuery = useQuery({
@@ -122,7 +128,7 @@ export function Browse() {
           </div>
 
           <p className="mb-4 text-sm text-slate-500" aria-live="polite">
-            {loading ? 'Searching…' : `${total} matching ${isCompanies ? 'companies' : 'active opportunities'}`}
+            {loading ? 'Searching…' : `${total.toLocaleString()} matching ${isCompanies ? 'companies' : 'active opportunities'}`}
           </p>
 
           {loading ? (
@@ -153,7 +159,7 @@ export function Browse() {
                     ? interleaveByCompany(roleQuery.data!.items)
                     : roleQuery.data!.items
                   ).map((r) => (
-                    <RoleCard key={r.id} role={r} saved={savedIds.has(r.id)} onToggleSave={toggleSave} />
+                    <RoleCard key={r.id} role={r} saved={savedIds.has(r.id)} onToggleSave={toggleSave} tracked={trackedIds.has(r.id)} trackingSaving={trackingRoleId === r.id} onTrack={(_id, status) => { void trackRole(r, status); }} />
                   ))}
                 </div>
               )}

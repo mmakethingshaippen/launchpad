@@ -29,11 +29,11 @@ describe('buildMapMarkers', () => {
     expect(markers.map(marker => marker.city).sort()).toEqual(['New York', 'Seattle']);
   });
 
-  it('keeps unlocated roles available without inventing a San Francisco pin', () => {
-    const data = buildMapData([role({ id: 'unknown', locationString: 'Atlantis',
-      hqLatitude: null, hqLongitude: null })]);
-    expect(data.markers).toHaveLength(0);
-    expect(data.unmappedRoles.map(role => role.id)).toEqual(['unknown']);
+  it('maps unresolvable roles using the clean US fallback when no HQ is available', () => {
+    const data = buildMapData([role({ id: 'unknown', locationString: 'Atlantis', hqLatitude: null, hqLongitude: null })]);
+    expect(data.unmappedRoles).toHaveLength(0);
+    expect(data.markers).toHaveLength(1);
+    expect(data.markers[0]).toMatchObject({ latitude: 39.0997, longitude: -94.5786, locationKind: 'hq' });
   });
 
   it('deduplicates repeated records and labels HQ fallbacks', () => {

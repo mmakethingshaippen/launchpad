@@ -2,9 +2,9 @@ import { useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
 import { Helmet } from 'react-helmet-async';
 import { useQuery } from '@tanstack/react-query';
-import { ExternalLink, Bookmark, BookmarkCheck, Flag, AlertTriangle, ArrowLeft } from 'lucide-react';
+import { ExternalLink, Flag, AlertTriangle, ArrowLeft } from 'lucide-react';
 import { useAdapter } from '../hooks/useAdapter';
-import { useSaved } from '../hooks/useSaved';
+import { useApplications } from '../hooks/useApplications';
 import { Button } from '../components/ui/Button';
 import { Badge, SeasonBadge } from '../components/ui/Badge';
 import { LoadingBlock } from '../components/ui/Spinner';
@@ -15,7 +15,7 @@ import { sanitizeHtml } from '../lib/sanitize';
 export function RoleDetail() {
   const { slug = '' } = useParams();
   const adapter = useAdapter();
-  const { savedIds, toggleSave } = useSaved();
+  const { applications, upsertAsync, isSaving } = useApplications();
   const [reported, setReported] = useState(false);
 
   const { data: role, isLoading } = useQuery({
@@ -38,7 +38,7 @@ export function RoleDetail() {
     );
 
   const isClosed = role.listingStatus !== 'Active';
-  const saved = savedIds.has(role.id);
+  const trackedApplication = applications.find((application) => application.roleId === role.id);
   const cleanDescription = sanitizeHtml(role.description);
 
   const report = async () => {
@@ -118,15 +118,12 @@ export function RoleDetail() {
 
         {!isClosed && (
           <div className="mt-6 flex flex-wrap gap-2">
-            <a href={role.applyUrl} target="_blank" rel="noopener noreferrer">
+            <a href={role.applyUrl} target="_blank" rel="noopener noreferrer" onClick={() => { if (!trackedApplication) void upsertAsync({ roleId: role.id, companyName: role.companyName, roleTitle: role.title, status: 'Applied', applicationUrl: role.applyUrl }); }}>
               <Button size="lg">
                 Apply on Company Website <ExternalLink className="h-4 w-4" aria-hidden="true" />
               </Button>
             </a>
-            <Button variant="outline" size="lg" onClick={() => toggleSave(role.id)} aria-pressed={saved}>
-              {saved ? <BookmarkCheck className="h-4 w-4 text-cyan" /> : <Bookmark className="h-4 w-4" />}
-              {saved ? 'Saved' : 'Save'}
-            </Button>
+            {trackedApplication ? <Link to="/applications" className="rounded-lg bg-emerald-50 px-4 py-2 text-sm font-semibold text-emerald-700">Tracked ✓</Link> : <Button variant="outline" size="lg" disabled={isSaving} onClick={() => { void upsertAsync({ roleId: role.id, companyName: role.companyName, roleTitle: role.title, status: 'Applied', applicationUrl: role.applyUrl }); }}>{isSaving ? 'Saving…' : 'Track Application'}</Button>}
             <Button variant="ghost" size="lg" onClick={report} disabled={reported}>
               <Flag className="h-4 w-4" aria-hidden="true" /> {reported ? 'Reported' : 'Report issue'}
             </Button>

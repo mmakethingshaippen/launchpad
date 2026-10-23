@@ -121,7 +121,7 @@ describe('Browse pagination (>1,000 roles)', () => {
     const cards = screen.getAllByText(/Software Engineering Intern #/);
     expect(cards).toHaveLength(PAGE_SIZE);
     expect(PAGE_SIZE).toBe(21);
-    expect(screen.getByText(/1592 matching active opportunities/i)).toBeInTheDocument();
+    expect(screen.getByText(/1,592 matching active opportunities/i)).toBeInTheDocument();
     expect(screen.getByTestId('pagination-summary')).toHaveTextContent(
       'Showing 1–21 of 1,592 opportunities',
     );

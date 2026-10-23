@@ -83,6 +83,13 @@ describe('Browse page', () => {
     expect(screen.getByText(/2 matching active opportunities/i)).toBeInTheDocument();
   });
 
+  it('tracks a role from its Browse card', async () => {
+    const user = userEvent.setup(); renderBrowse(adapter); await screen.findByText('Summer 2027 Software Intern');
+    await user.click(screen.getAllByRole('button', { name: '+ Track' })[0]);
+    expect(await screen.findByRole('link', { name: /Tracked/ })).toHaveAttribute('href', '/applications');
+    expect(await adapter.listApplications()).toHaveLength(1);
+  });
+
   it('filters startup-only via URL state', async () => {
     renderBrowse(adapter, '/browse?company=Startup');
     expect(await screen.findByText('Summer 2027 Software Intern')).toBeInTheDocument();

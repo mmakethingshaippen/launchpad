@@ -206,6 +206,7 @@ export interface RoleCard {
   applicationDeadline: string | null;
   lastVerifiedAt: string | null;
   listingStatus: ListingStatus;
+  applyUrl?: string | null;
 }
 
 export interface RoleDetailView extends RoleCard {

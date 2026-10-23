@@ -62,6 +62,17 @@ function markerRole(role: MapRoleInput): MapMarkerRole {
   };
 }
 
+const COMPANY_HQ_HUBS: Array<{ match: RegExp; place: ResolvedPlace }> = [
+  { match: /\bbechtel\b/i, place: { city: 'Reston', state: 'VA', label: 'Reston, VA (company HQ)', latitude: 38.9586, longitude: -77.357 } },
+  { match: /\bamazon\b/i, place: { city: 'Seattle', state: 'WA', label: 'Seattle, WA (company HQ)', latitude: 47.6062, longitude: -122.3321 } },
+  { match: /\b(google|waymo)\b/i, place: { city: 'Mountain View', state: 'CA', label: 'Mountain View, CA (company HQ)', latitude: 37.3861, longitude: -122.0839 } },
+  { match: /\b(nvidia|applied materials)\b/i, place: { city: 'Santa Clara', state: 'CA', label: 'Santa Clara, CA (company HQ)', latitude: 37.3541, longitude: -121.9552 } },
+];
+
+function companyHub(role: MapRoleInput): ResolvedPlace | null {
+  return COMPANY_HQ_HUBS.find(({ match }) => match.test(role.companyName))?.place ?? null;
+}
+
 function hqPlace(role: MapRoleInput): ResolvedPlace | null {
   const city = role.hqCity?.trim() || role.companyHqCity?.trim() || null;
   const state = role.hqState?.trim() || role.companyHqState?.trim() || null;
@@ -96,10 +107,9 @@ export function buildMapData(roles: MapRoleInput[]): MapData {
     }
     if (places.length === 0) {
       const hq = hqPlace(role);
-      if (hq) {
-        kind = 'hq';
-        places = [{ ...hq, label: `${hq.label}${remote ? ' (Remote)' : ''}` }];
-      }
+      const fallback = hq ?? companyHub(role) ?? { latitude: 39.0997, longitude: -94.5786, city: 'Kansas City', state: 'MO', label: 'Kansas City, MO (US fallback)' };
+      kind = 'hq';
+      places = [{ ...fallback, label: `${fallback.label}${remote ? ' (Remote)' : ''}` }];
     }
 
     const item = markerRole(role);

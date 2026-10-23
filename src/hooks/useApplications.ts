@@ -24,7 +24,9 @@ export function useApplications() {
   return {
     applications: query.data ?? [],
     isLoading: query.isLoading,
+    isSaving: upsert.isPending,
     upsert: (input: ApplicationInput) => upsert.mutate(input),
+    upsertAsync: (input: ApplicationInput) => upsert.mutateAsync(input),
     remove: (id: string) => remove.mutate(id),
   };
 }

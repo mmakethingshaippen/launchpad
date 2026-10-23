@@ -103,6 +103,7 @@ export function mapRoleCard(row: RoleRow): RoleCard {
     applicationDeadline: row.application_deadline,
     lastVerifiedAt: row.last_verified_at,
     listingStatus: row.listing_status as RoleCard['listingStatus'],
+    applyUrl: row.apply_url,
   };
 }
 

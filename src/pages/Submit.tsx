@@ -168,6 +168,7 @@ function CompanyForm() {
         <Field label="Eligibility (degree levels)" error={errors.degreeLevels}>
           <CheckboxRow options={DEGREE_LEVELS} selected={degreeLevels as never} onToggle={(v) => setDegreeLevels((p) => (p.includes(v) ? p.filter((x) => x !== v) : [...p, v]))} />
         </Field>
+        <details className="rounded-lg border border-slate-200 p-3"><summary className="cursor-pointer text-sm font-medium text-slate-700">Advanced ATS details (optional)</summary><div className="mt-4 space-y-4">
         <div className="grid gap-4 sm:grid-cols-2">
           <Field label="ATS provider (optional)">
             <select name="atsProvider" className={inputCls} defaultValue="none">
@@ -181,9 +182,8 @@ function CompanyForm() {
             <input name="atsBoardToken" className={inputCls} />
           </Field>
         </div>
-        <Field label="Source URL (optional)" error={errors.sourceUrl}>
-          <input name="sourceUrl" placeholder="https://" className={inputCls} />
-        </Field>
+        <Field label="Source URL (optional)" error={errors.sourceUrl}><input name="sourceUrl" placeholder="https://" className={inputCls} /></Field>
+        </div></details>
         <Button type="submit">Submit company for review</Button>
       </form>
     </Card>
@@ -310,9 +310,7 @@ function RoleForm() {
         <Field label="Description" error={errors.description}>
           <textarea name="description" rows={4} className={inputCls} />
         </Field>
-        <Field label="Source URL (optional)" error={errors.sourceUrl}>
-          <input name="sourceUrl" placeholder="https://" className={inputCls} />
-        </Field>
+        <details className="rounded-lg border border-slate-200 p-3"><summary className="cursor-pointer text-sm font-medium text-slate-700">Advanced ATS details (optional)</summary><div className="mt-4"><Field label="Source URL (optional)" error={errors.sourceUrl}><input name="sourceUrl" placeholder="https://" className={inputCls} /></Field></div></details>
         <Button type="submit">Submit role for review</Button>
       </form>
     </Card>
