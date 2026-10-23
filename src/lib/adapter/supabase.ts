@@ -7,6 +7,7 @@ import type {
   PendingQueue,
   ListingReport,
   MapMarker,
+  MapData,
 } from './adapter';
 import type {
   Paginated,
@@ -27,7 +28,7 @@ import { DEFAULT_FILTERS } from '../filters';
 import { getSupabaseClient } from '../supabaseClient';
 import { interleaveByCompany } from '../roleQuery';
 import { buildRolePlan, PAGE_SIZE } from './supabaseQuery';
-import { buildMapMarkers, type MapRoleInput } from './mapMarkers';
+import { buildMapData, type MapRoleInput } from './mapMarkers';
 import {
   mapRoleCard as originalMapRoleCard,
   mapRoleDetail as originalMapRoleDetail,
@@ -224,16 +225,18 @@ export class SupabaseAdapter implements DataAdapter {
         ascending: plan.order.ascending,
         nullsFirst: plan.order.nullsFirst,
       });
+      q = q.order('id', { ascending: true });
       return q;
     };
 
     if (filters.sort === 'verified') {
-      const WINDOW = 600;
-      const { data, count, error } = await build().range(0, WINDOW - 1);
+      const WINDOW = pageSize * 30;
+      const windowStart = Math.floor(plan.range.from / WINDOW) * WINDOW;
+      const { data, count, error } = await build().range(windowStart, windowStart + WINDOW - 1);
       if (error) throw error;
       const all = (data ?? []).map((r) => mapRoleCard(r as never));
       const diversified = interleaveByCompany(all);
-      const start = (filters.page - 1) * pageSize;
+      const start = plan.range.from - windowStart;
       return {
         items: diversified.slice(start, start + pageSize),
         total: count ?? 0,
@@ -385,29 +388,53 @@ export class SupabaseAdapter implements DataAdapter {
   }
 
   async getMapMarkers(filters: RoleFilters): Promise<MapMarker[]> {
+    return (await this.getMapData(filters)).markers;
+  }
+
+  async getMapData(filters: RoleFilters): Promise<MapData> {
     const PAGE_BATCH = 1000;
     const allRows: Array<Record<string, unknown>> = [];
+    const plan = buildRolePlan(filters);
+    let afterId: string | null = null;
+    let includeCoordinates = true;
 
-    for (let from = 0; ; from += PAGE_BATCH) {
+    for (;;) {
       let q = this.db
         .from('public_roles')
         .select(
-          'id, slug, title, seasons, cohort_year, city, state, country, work_arrangement, company_id, latitude, longitude, ' +
+          'id, slug, title, seasons, cohort_year, city, state, country, work_arrangement, company_id, ' +
+            (includeCoordinates ? 'latitude, longitude, ' : '') +
             'companies!inner(slug,name,company_type,website_url,logo_url,company_locations(city,state,latitude,longitude,location_type))',
         )
-        .range(from, from + PAGE_BATCH - 1);
+        .order('id', { ascending: true })
+        .limit(PAGE_BATCH);
 
-      if (filters.seasons.length) q = q.overlaps('seasons', filters.seasons);
-      if (filters.opportunityTypes.length) q = q.in('opportunity_type', filters.opportunityTypes);
-      if (filters.fields.length) q = q.in('field', filters.fields);
+      if (afterId) q = q.gt('id', afterId);
+      for (const op of plan.filters) {
+        if (op.type === 'eq') q = q.eq(op.column, op.value);
+        else if (op.type === 'overlaps') q = q.overlaps(op.column, op.values);
+        else if (op.type === 'in') q = q.in(op.column, op.values);
+        else if (op.type === 'ilike') q = q.ilike(op.column, op.value);
+      }
+      if (plan.textSearch) q = q.textSearch('search_tsv', plan.textSearch, { type: 'websearch' });
       if (filters.companyType !== 'All') q = q.eq('companies.company_type', filters.companyType);
 
       const { data, error } = await q;
+      // Older public_roles views don't expose columns added later to roles.
+      // Resolve their city text without requiring a production migration.
+      if (error && includeCoordinates && /latitude|longitude/i.test(error.message) &&
+          (error.code === '42703' || error.code === 'PGRST204')) {
+        includeCoordinates = false;
+        continue;
+      }
       if (error) throw error;
 
       const batch = (data ?? []) as unknown as Array<Record<string, unknown>>;
+      if (batch.length === 0) break;
       allRows.push(...batch);
-      if (batch.length < PAGE_BATCH) break;
+      const nextId = batch[batch.length - 1].id as string;
+      if (!nextId || nextId === afterId) throw new Error('Map pagination did not advance. Please retry.');
+      afterId = nextId;
     }
 
     const inputs: MapRoleInput[] = [];
@@ -445,7 +472,7 @@ export class SupabaseAdapter implements DataAdapter {
         hqLongitude: (hq?.longitude as number) ?? null,
       });
     }
-    return buildMapMarkers(inputs);
+    return buildMapData(inputs);
   }
 
   async listSaved(): Promise<SavedItem[]> {

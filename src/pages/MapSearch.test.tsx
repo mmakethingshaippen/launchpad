@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { filterMarkersByCompany, companyNamesFromMarkers } from './MapPage';
+import { filterMarkersByCompany, companyNamesFromMarkers, companyOptionsFromMarkers, uniqueRoleCount } from './MapPage';
 import type { MapMarker, MapMarkerRole } from '../lib/adapter';
 
 function markerRole(company: string, id: string): MapMarkerRole {
@@ -47,6 +47,37 @@ describe('companyNamesFromMarkers', () => {
 });
 
 describe('filterMarkersByCompany (Req 3 — map company search)', () => {
+  it('counts a multi-city role once in company options and totals', () => {
+    const role = markerRole('Anthropic', 'shared');
+    const markers = [marker('SF', 37.77, -122.41, [role]), marker('NY', 40.71, -74, [role])];
+    expect(uniqueRoleCount(markers)).toBe(1);
+    expect(companyOptionsFromMarkers(markers)).toMatchObject([{ name: 'Anthropic', roleCount: 1, cityCount: 2 }]);
+  });
+
+  it('does not include unrelated substring company matches after selecting a company', () => {
+    const markers = [marker('SF', 37.77, -122.41, [markerRole('Meta', 'a'), markerRole('Metabolic', 'b')])];
+    expect(filterMarkersByCompany(markers, 'Meta')[0].roles.map(role => role.id)).toEqual(['a']);
+  });
+
+  it('keeps companies without coordinates in the selector', () => {
+    expect(companyOptionsFromMarkers([], [markerRole('Amazon', 'a')]))
+      .toMatchObject([{ name: 'Amazon', roleCount: 1, cityCount: 0 }]);
+  });
+
+  it('keeps different company records distinct even when their normalized names match', () => {
+    const roles = [{ ...markerRole('Example', 'a'), companySlug: 'example-1' },
+      { ...markerRole('Example Inc', 'b'), companySlug: 'example-2' }];
+    const markers = [marker('SF', 37.77, -122.41, roles)];
+    expect(companyOptionsFromMarkers(markers)).toHaveLength(2);
+    expect(filterMarkersByCompany(markers, 'Example', true, 'example-1')[0].roles.map(role => role.id)).toEqual(['a']);
+  });
+
+  it('uses the selected company location when several cities share an approximate coordinate', () => {
+    const roles = [{ ...markerRole('Bechtel', 'a'), locationLabel: 'Gunnison, CO', locationCity: 'Gunnison', locationState: 'CO' },
+      { ...markerRole('Other', 'b'), locationLabel: 'Westminster, CO', locationCity: 'Westminster' }];
+    const markers = [marker('Westminster, CO', 39.05, -105.31, roles)];
+    expect(filterMarkersByCompany(markers, 'Bechtel')[0]).toMatchObject({ label: 'Gunnison, CO', city: 'Gunnison' });
+  });
   it('keeps only markers/roles for the selected company and recomputes counts', () => {
     const waymo = filterMarkersByCompany(MARKERS, 'Waymo');
     // Waymo appears in Mountain View + Austin → 2 markers, 1 role each.

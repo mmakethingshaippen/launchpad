@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { resolveAdapterMode } from '@/lib/adapter';
+import { resolveAdapterMode } from '../lib/adapter';
 
 describe('smoke', () => {
   it('defaults to local adapter mode when no Supabase env is set', () => {

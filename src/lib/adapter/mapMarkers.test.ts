@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { buildMapMarkers, type MapRoleInput } from './mapMarkers';
+import { buildMapData, buildMapMarkers, type MapRoleInput } from './mapMarkers';
 
 function role(partial: Partial<MapRoleInput>): MapRoleInput {
   return {
@@ -22,6 +22,37 @@ function role(partial: Partial<MapRoleInput>): MapRoleInput {
 }
 
 describe('buildMapMarkers', () => {
+  it('preserves multiple job cities even when one stored coordinate exists', () => {
+    const markers = buildMapMarkers([role({ id: 'multi', locationString: 'New York, Seattle, USA',
+      latitude: 40.7128, longitude: -74.006 })]);
+    expect(markers).toHaveLength(2);
+    expect(markers.map(marker => marker.city).sort()).toEqual(['New York', 'Seattle']);
+  });
+
+  it('keeps unlocated roles available without inventing a San Francisco pin', () => {
+    const data = buildMapData([role({ id: 'unknown', locationString: 'Atlantis',
+      hqLatitude: null, hqLongitude: null })]);
+    expect(data.markers).toHaveLength(0);
+    expect(data.unmappedRoles.map(role => role.id)).toEqual(['unknown']);
+  });
+
+  it('deduplicates repeated records and labels HQ fallbacks', () => {
+    const input = role({ id: 'remote', locationString: 'Remote', hqCity: 'San Francisco', hqState: 'CA' });
+    const data = buildMapData([input, input]);
+    expect(data.markers).toHaveLength(1);
+    expect(data.markers[0]).toMatchObject({ roleCount: 1, locationKind: 'hq' });
+  });
+
+  it('combines a job city and an HQ at the same coordinate into one accessible pin', () => {
+    const data = buildMapData([
+      role({ id: 'office', locationString: 'Seattle, WA' }),
+      role({ id: 'remote', locationString: 'Remote', hqCity: 'Seattle', hqState: 'WA',
+        hqLatitude: 47.6062, hqLongitude: -122.3321 }),
+    ]);
+    expect(data.markers).toHaveLength(1);
+    expect(data.markers[0].roleCount).toBe(2);
+    expect(data.markers[0].roles.find(role => role.id === 'remote')?.locationKind).toBe('hq');
+  });
   it('plots roles at their own city, grouping across companies with role counts', () => {
     const markers = buildMapMarkers([
       role({ id: 'a', locationString: 'Austin, Texas', companyId: 'c1', companyName: 'Acme' }),

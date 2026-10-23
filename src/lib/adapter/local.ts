@@ -6,6 +6,7 @@ import type {
   PendingQueue,
   ListingReport,
   MapMarker,
+  MapData,
 } from './adapter';
 import type {
   Paginated,
@@ -24,7 +25,7 @@ import type { RoleFilters } from '../filters';
 import { DEFAULT_FILTERS } from '../filters';
 import { LocalStore } from './localStore.data';
 import { filterRoles, sortRoles, filterCompanies } from '../roleQuery';
-import { buildMapMarkers, type MapRoleInput } from './mapMarkers';
+import { buildMapData, type MapRoleInput } from './mapMarkers';
 import * as store from '../localStore';
 import { syncAll } from '../ats/sync';
 import { PAGE_SIZE } from './supabaseQuery';
@@ -146,11 +147,17 @@ export class LocalAdapter implements DataAdapter {
   }
 
   async getMapMarkers(filters: RoleFilters): Promise<MapMarker[]> {
+    return (await this.getMapData(filters)).markers;
+  }
+
+  async getMapData(filters: RoleFilters): Promise<MapData> {
     await this.ensureSynced();
     // Markers built from each role's own location string, grouped by city
     // across companies. HQ is used only as the Remote/unresolvable fallback.
     const inputs: MapRoleInput[] = [];
+    const eligibleIds = new Set(filterRoles(this.allCards(), filters).map(role => role.id));
     for (const role of this.data.publicRoles()) {
+      if (!eligibleIds.has(role.id)) continue;
       if (filters.seasons.length && !role.seasons.some((s) => filters.seasons.includes(s))) continue;
       if (filters.opportunityTypes.length && !filters.opportunityTypes.includes(role.opportunityType)) continue;
       if (filters.fields.length && !filters.fields.includes(role.field)) continue;
@@ -184,7 +191,7 @@ export class LocalAdapter implements DataAdapter {
         hqLongitude: hq?.longitude ?? null,
       });
     }
-    return buildMapMarkers(inputs);
+    return buildMapData(inputs);
   }
 
   // ── Saving / tracking (localStorage) ──

@@ -80,6 +80,7 @@ export interface DataAdapter {
   getStats(): Promise<Stats>;
   getFeatured(): Promise<FeaturedBlocks>;
   getMapMarkers(filters: RoleFilters): Promise<MapMarker[]>;
+  getMapData?(filters: RoleFilters): Promise<MapData>;
 
   // ── Saving / tracking ──
   listSaved(): Promise<SavedItem[]>;
@@ -141,6 +142,10 @@ export interface ListingReport {
 
 /** A single open role located at a map marker's city. */
 export interface MapMarkerRole {
+  locationKind?: 'job' | 'hq';
+  locationLabel?: string;
+  locationCity?: string | null;
+  locationState?: string | null;
   id: string;
   slug: string;
   title: string;
@@ -171,4 +176,12 @@ export interface MapMarker {
   companyCount: number;
   /** The roles located here (for the popup/drawer list). */
   roles: MapMarkerRole[];
+  /** HQ is an explicitly labelled fallback, never a claimed job address. */
+  locationKind?: 'job' | 'hq';
+}
+
+export interface MapData {
+  markers: MapMarker[];
+  /** Kept searchable even when no trustworthy coordinate is available. */
+  unmappedRoles: MapMarkerRole[];
 }

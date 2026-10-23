@@ -1,7 +1,7 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { Helmet } from 'react-helmet-async';
 import { useQuery } from '@tanstack/react-query';
-import { MapContainer, TileLayer, Marker, Popup, useMap } from 'react-leaflet';
+import { MapContainer, TileLayer, Marker, Popup, LayerGroup, useMap } from 'react-leaflet';
 import MarkerClusterGroup from 'react-leaflet-cluster';
 import L from 'leaflet';
 import { ArrowRight, Building2, Check, ChevronDown, Share2, Search, X } from 'lucide-react';
@@ -12,7 +12,7 @@ import { LoadingBlock } from '../components/ui/Spinner';
 import { SeasonBadge } from '../components/ui/Badge';
 import { SPECIFIC_SEASONS, type Season } from '../lib/adapter/types';
 import { normalizeLongitude } from '../lib/ats/cityCoords';
-import type { MapMarker } from '../lib/adapter';
+import type { MapMarker, MapMarkerRole } from '../lib/adapter';
 
 const SINGLE_WORLD_BOUNDS: L.LatLngBoundsExpression = [
   [-85, -180],
@@ -21,7 +21,7 @@ const SINGLE_WORLD_BOUNDS: L.LatLngBoundsExpression = [
 
 /** Trailing legal-entity suffixes so "Bechtel" matches "Bechtel Corporation". */
 const TRAILING_LEGAL_SUFFIX =
-  /(?:\s+(?:incorporated|corporation|company|limited|holdings|partners|llc|llp|ltd|inc|corp|plc|gmbh|co|lp|pc))+$/;
+  /(?:\s+(?:incorporated|corporation|company|limited|holdings|partners|llc|llp|ltd|inc|corp|pbc|plc|gmbh|co|lp|pc))+$/;
 
 /**
  * Normalize company names before comparing.
@@ -50,31 +50,29 @@ export function companyKey(name: string): string {
  * Isolate the roles for one selected company and recalculate marker counts.
  * Locations with no matching roles are removed.
  */
-export function filterMarkersByCompany(markers: MapMarker[], companyName: string): MapMarker[] {
+export function filterMarkersByCompany(markers: MapMarker[], companyName: string, exact = true, companySlug = ''): MapMarker[] {
   const selected = companyKey(companyName);
   if (!selected) return markers;
 
   return markers
     .map((marker) => {
       const matchingRoles = marker.roles.filter((role) => {
+        if (companySlug) return role.companySlug === companySlug;
         const roleCompKey = companyKey(role.companyName);
         if (!roleCompKey || !selected) return false;
-        return (
-          roleCompKey === selected ||
-          roleCompKey.startsWith(`${selected} `) ||
-          selected.startsWith(`${roleCompKey} `) ||
-          roleCompKey.includes(selected) ||
-          selected.includes(roleCompKey)
-        );
+        return exact ? roleCompKey === selected : roleCompKey.includes(selected);
       });
 
       if (matchingRoles.length === 0) return null;
 
       return {
         ...marker,
+        label: matchingRoles[0].locationLabel ?? marker.label,
+        city: matchingRoles[0].locationCity === undefined ? marker.city : matchingRoles[0].locationCity,
+        state: matchingRoles[0].locationState === undefined ? marker.state : matchingRoles[0].locationState,
         roles: matchingRoles,
         roleCount: matchingRoles.length,
-        companyCount: new Set(matchingRoles.map((role) => companyKey(role.companyName))).size,
+        companyCount: new Set(matchingRoles.map((role) => role.companySlug || companyKey(role.companyName))).size,
       };
     })
     .filter((m): m is MapMarker => m !== null);
@@ -93,18 +91,20 @@ export function companyNamesFromMarkers(markers: MapMarker[]): string[] {
 
 export interface CompanyMapOption {
   name: string;
+  slug?: string;
   roleCount: number;
   cityCount: number;
   logoUrl?: string | null;
 }
 
 /** Build the selector from the SAME unfiltered markers used by the map. */
-export function companyOptionsFromMarkers(markers: MapMarker[]): CompanyMapOption[] {
+export function companyOptionsFromMarkers(markers: MapMarker[], unmappedRoles: MapMarkerRole[] = []): CompanyMapOption[] {
   const stats = new Map<
     string,
     {
       name: string;
-      roleCount: number;
+      slug?: string;
+      roleIds: Set<string>;
       cities: Set<string>;
       logoUrl?: string | null;
     }
@@ -113,35 +113,49 @@ export function companyOptionsFromMarkers(markers: MapMarker[]): CompanyMapOptio
   for (const marker of markers) {
     for (const role of marker.roles) {
       const name = role.companyName.trim();
-      const key = companyKey(name);
+      const key = role.companySlug || companyKey(name);
       if (!key) continue;
 
       const existing = stats.get(key);
       if (existing) {
-        existing.roleCount += 1;
-        existing.cities.add(marker.label);
+        existing.roleIds.add(role.id);
+        existing.cities.add(marker.id);
         if (!existing.logoUrl && role.companyLogoUrl) {
           existing.logoUrl = role.companyLogoUrl;
         }
       } else {
         stats.set(key, {
           name,
-          roleCount: 1,
-          cities: new Set([marker.label]),
+          slug: role.companySlug,
+          roleIds: new Set([role.id]),
+          cities: new Set([marker.id]),
           logoUrl: role.companyLogoUrl,
         });
       }
     }
   }
 
+  for (const role of unmappedRoles) {
+    const key = role.companySlug || companyKey(role.companyName);
+    if (!key) continue;
+    const entry = stats.get(key);
+    if (entry) entry.roleIds.add(role.id);
+    else stats.set(key, { name: role.companyName, slug: role.companySlug, roleIds: new Set([role.id]), cities: new Set(), logoUrl: role.companyLogoUrl });
+  }
+
   return [...stats.values()]
-    .map(({ name, roleCount, cities, logoUrl }) => ({
+    .map(({ name, slug, roleIds, cities, logoUrl }) => ({
       name,
-      roleCount: Math.max(roleCount, 1),
-      cityCount: Math.max(cities.size, 1),
+      slug,
+      roleCount: roleIds.size,
+      cityCount: cities.size,
       logoUrl,
     }))
     .sort((a, b) => a.name.localeCompare(b.name));
+}
+
+export function uniqueRoleCount(markers: MapMarker[], unmappedRoles: MapMarkerRole[] = []): number {
+  return new Set([...markers.flatMap(marker => marker.roles), ...unmappedRoles].map(role => role.id)).size;
 }
 
 /**
@@ -202,11 +216,9 @@ function roleCountIcon(count: number): L.DivIcon {
 
 // Cluster badge sums the role counts of its child markers.
 function clusterIcon(cluster: {
-  getAllChildMarkers: () => Array<{ options: { roleCount?: number } }>;
+  getAllChildMarkers: () => Array<{ options: { roleIds?: string[] } }>;
 }): L.DivIcon {
-  const total = cluster
-    .getAllChildMarkers()
-    .reduce((sum, m) => sum + (m.options.roleCount ?? 1), 0);
+  const total = new Set(cluster.getAllChildMarkers().flatMap(marker => marker.options.roleIds ?? [])).size;
   const label = total > 999 ? '999+' : String(total);
   const size = total >= 100 ? 52 : total >= 10 ? 46 : 40;
   return L.divIcon({
@@ -222,6 +234,7 @@ export function MapPage() {
   const [searchParams, setSearchParams] = useSearchParams();
 
   const initialCompany = searchParams.get('company') ?? '';
+  const selectedSlug = searchParams.get('companySlug') ?? '';
   const [companyQuery, setCompanyQuery] = useState(initialCompany);
   const [selectedCompany, setSelectedCompany] = useState(initialCompany);
   const [dropdownOpen, setDropdownOpen] = useState(false);
@@ -250,8 +263,10 @@ export function MapPage() {
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, []);
 
-  const setCompanyUrl = (nextCompany: string) => {
+  const setCompanyUrl = (nextCompany: string, slug = '') => {
     const nextParams = new URLSearchParams(searchParams);
+    if (slug) nextParams.set('companySlug', slug);
+    else nextParams.delete('companySlug');
     if (nextCompany.trim()) {
       nextParams.set('company', nextCompany.trim());
     } else {
@@ -271,12 +286,12 @@ export function MapPage() {
     }
   };
 
-  const handleSelectCompany = (company: string) => {
+  const handleSelectCompany = (company: string, slug = '') => {
     setCompanyQuery(company);
     setSelectedCompany(company);
     setDropdownOpen(false);
     setShowAllOptions(false);
-    setCompanyUrl(company);
+    setCompanyUrl(company, slug);
   };
 
   const handleClearCompany = () => {
@@ -299,13 +314,16 @@ export function MapPage() {
 
   const { data, isLoading, isError } = useQuery({
     queryKey: ['map', filters],
-    queryFn: () => adapter.getMapMarkers(filters),
+    queryFn: async () => adapter.getMapData
+      ? adapter.getMapData(filters)
+      : { markers: await adapter.getMapMarkers(filters), unmappedRoles: [] as MapMarkerRole[] },
   });
 
-  const allMarkers = useMemo(() => data ?? [], [data]);
+  const allMarkers = useMemo(() => data?.markers ?? [], [data]);
+  const allUnmapped = useMemo(() => data?.unmappedRoles ?? [], [data]);
   const companyOptions = useMemo(
-    () => companyOptionsFromMarkers(allMarkers),
-    [allMarkers]
+    () => companyOptionsFromMarkers(allMarkers, allUnmapped),
+    [allMarkers, allUnmapped]
   );
 
   const filteredCompanyOptions = useMemo(() => {
@@ -315,18 +333,25 @@ export function MapPage() {
     return companyOptions.filter((option) => companyKey(option.name).includes(q));
   }, [companyOptions, companyQuery, showAllOptions]);
 
+  const activeCompany = (selectedCompany || companyQuery).trim();
   const markers = useMemo(
-    () => filterMarkersByCompany(allMarkers, selectedCompany),
-    [allMarkers, selectedCompany]
+    () => filterMarkersByCompany(allMarkers, activeCompany, Boolean(selectedCompany), selectedSlug),
+    [allMarkers, activeCompany, selectedCompany, selectedSlug]
   );
-  const activeCompany = selectedCompany.trim();
+  const unmappedRoles = useMemo(() => allUnmapped.filter(role =>
+    !activeCompany || (selectedSlug ? role.companySlug === selectedSlug : selectedCompany
+      ? companyKey(role.companyName) === companyKey(activeCompany)
+      : companyKey(role.companyName).includes(companyKey(activeCompany)))
+  ), [allUnmapped, activeCompany, selectedCompany, selectedSlug]);
+  const visibleCompanyCount = useMemo(() => companyOptionsFromMarkers(markers, unmappedRoles).length,
+    [markers, unmappedRoles]);
 
   const totalRoles = useMemo(
-    () => markers.reduce((total, marker) => total + marker.roleCount, 0),
-    [markers]
+    () => uniqueRoleCount(markers, unmappedRoles),
+    [markers, unmappedRoles]
   );
   const cityCount = useMemo(
-    () => new Set(markers.map((marker) => marker.label)).size,
+    () => new Set(markers.map((marker) => `${marker.latitude.toFixed(4)},${marker.longitude.toFixed(4)}`)).size,
     [markers]
   );
 
@@ -337,6 +362,8 @@ export function MapPage() {
         .join('|')}`,
     [activeCompany, markers]
   );
+  // Selected companies render directly. This avoids the cluster layer's stale
+  // animation/layer state when switching between a world view and a few pins.
 
   return (
     <div>
@@ -399,16 +426,12 @@ export function MapPage() {
             onKeyDown={(event) => {
               if (event.key === 'Escape') {
                 setDropdownOpen(false);
-              } else if (
-                event.key === 'Enter' &&
-                dropdownOpen &&
-                filteredCompanyOptions.length === 1
-              ) {
+              } else if (event.key === 'Enter' && filteredCompanyOptions.length > 0) {
                 event.preventDefault();
-                handleSelectCompany(filteredCompanyOptions[0].name);
+                handleSelectCompany(filteredCompanyOptions[0].name, filteredCompanyOptions[0].slug);
               }
             }}
-            placeholder="Filter by company (e.g. Waymo, Stripe, Nvidia)…"
+            placeholder="Filter by company (e.g. Bechtel, Waymo, Nvidia)…"
             aria-label="Search the map by company"
             aria-expanded={dropdownOpen}
             aria-controls="map-company-options"
@@ -461,12 +484,12 @@ export function MapPage() {
               )}
 
               {filteredCompanyOptions.map((option) => {
-                const isSelected = companyKey(option.name) === companyKey(activeCompany);
+                const isSelected = selectedSlug ? option.slug === selectedSlug : companyKey(option.name) === companyKey(activeCompany);
                 return (
                   <button
-                    key={option.name}
+                    key={option.slug || option.name}
                     type="button"
-                    onClick={() => handleSelectCompany(option.name)}
+                    onClick={() => handleSelectCompany(option.name, option.slug)}
                     className={`flex w-full items-center justify-between gap-2 rounded-lg px-2.5 py-2 text-left text-sm transition-colors ${
                       isSelected
                         ? 'bg-cyan/15 font-semibold text-navy'
@@ -501,13 +524,13 @@ export function MapPage() {
           )}
         </div>
 
-        {activeCompany && markers.length > 0 && (
+        {activeCompany && totalRoles > 0 && (
           <div className="flex flex-wrap items-center gap-2">
             <span className="inline-flex items-center gap-2 rounded-full bg-cyan/10 px-3 py-1.5 text-sm font-medium text-navy ring-1 ring-cyan/30">
               <strong>{activeCompany}</strong>
               <span className="text-slate-500">
                 {totalRoles} open {totalRoles === 1 ? 'role' : 'roles'} · {cityCount}{' '}
-                {cityCount === 1 ? 'city' : 'cities'}
+                {cityCount === 1 ? 'location' : 'locations'}
               </span>
             </span>
             <button
@@ -538,12 +561,29 @@ export function MapPage() {
           : isError
             ? 'Could not load the map. Please try again.'
             : activeCompany && markers.length === 0
-              ? `No open roles found for "${activeCompany}" with your current season filters.`
-              : `${totalRoles} open roles across ${markers.length} locations`}
+              ? unmappedRoles.length > 0
+                ? `${totalRoles} open roles for ${activeCompany}; no usable map location is available.`
+                : `No open roles found for "${activeCompany}" with your current filters.`
+              : `${totalRoles.toLocaleString()} open roles · ${visibleCompanyCount.toLocaleString()} ${visibleCompanyCount === 1 ? 'company' : 'companies'} · ${cityCount} mapped ${cityCount === 1 ? 'location' : 'locations'}${unmappedRoles.length ? ` · ${unmappedRoles.length} roles without coordinates` : ''}`}
       </p>
       <p className="mb-4 text-xs text-slate-400">
-        Pins show each role's actual job city. Search and select a company to show only its job locations.
+        Pins use available job locations; some coordinates are approximate. Headquarters fallbacks are labelled in the popup.
+        Each role counts once in the total, even when offered in several locations.
       </p>
+
+      {unmappedRoles.length > 0 && (
+        <details className="mb-4 rounded-lg border border-slate-200 bg-white p-3">
+          <summary className="cursor-pointer text-sm font-medium text-navy">
+            {unmappedRoles.length} roles without usable coordinates
+          </summary>
+          <p className="my-2 text-xs text-slate-500">These listings remain available. Their job locations cannot currently be plotted.</p>
+          <ul className="max-h-64 space-y-2 overflow-auto">
+            {unmappedRoles.map(role => <li key={role.id} className="text-sm">
+              <Link to={`/roles/${role.slug}`} className="text-navy underline">{role.companyName} — {role.title}</Link>
+            </li>)}
+          </ul>
+        </details>
+      )}
 
       {isLoading ? (
         <LoadingBlock label="Loading map" />
@@ -570,19 +610,18 @@ export function MapPage() {
               bounds={SINGLE_WORLD_BOUNDS}
             />
             <FitToMarkers markers={markers} selectedCompany={activeCompany} />
-            <MarkerClusterGroup
+            <CompanyMarkers
               key={markerSetKey}
-              iconCreateFunction={clusterIcon as never}
-              removeOutsideVisibleBounds={false}
-              maxClusterRadius={60}
-              showCoverageOnHover={false}
+              selected={Boolean(activeCompany)}
             >
               {markers.map((marker) => (
                 <Marker
                   key={marker.id}
                   position={[marker.latitude, normalizeLongitude(marker.longitude)]}
                   icon={roleCountIcon(marker.roleCount)}
-                  {...({ roleCount: marker.roleCount } as object)}
+                  title={`${marker.label}: ${marker.roleCount} open roles`}
+                  alt={`${marker.label}: ${marker.roleCount} open roles`}
+                  {...({ roleIds: marker.roles.map(role => role.id) } as object)}
                 >
                   <Popup maxWidth={320}>
                     <MarkerPopup
@@ -593,7 +632,7 @@ export function MapPage() {
                   </Popup>
                 </Marker>
               ))}
-            </MarkerClusterGroup>
+            </CompanyMarkers>
           </MapContainer>
         </div>
       )}
@@ -603,6 +642,13 @@ export function MapPage() {
 
 const POPUP_INITIAL = 25;
 const POPUP_STEP = 50;
+
+function CompanyMarkers({ selected, children }: { selected: boolean; children: ReactNode }) {
+  if (selected) return <LayerGroup>{children}</LayerGroup>;
+  return <MarkerClusterGroup iconCreateFunction={clusterIcon as never}
+    removeOutsideVisibleBounds={false} maxClusterRadius={60}
+    showCoverageOnHover={false} animate={false}>{children}</MarkerClusterGroup>;
+}
 
 export function MarkerPopup({
   marker,
@@ -618,8 +664,12 @@ export function MarkerPopup({
   const remaining = marker.roles.length - visible;
 
   const browseParams = new URLSearchParams();
-  if (marker.city) browseParams.set('city', marker.city);
-  else if (marker.state) browseParams.set('state', marker.state);
+  const fallbackOrSharedLocation = marker.roles.some(role => role.locationKind === 'hq') ||
+    new Set(marker.roles.map(role => role.locationCity ?? marker.city)).size > 1;
+  if (!fallbackOrSharedLocation) {
+    if (marker.city) browseParams.set('city', marker.city);
+    else if (marker.state) browseParams.set('state', marker.state);
+  }
   if (activeCompany) browseParams.set('q', activeCompany);
   seasons.forEach((s) => browseParams.append('season', s));
 
@@ -627,6 +677,7 @@ export function MarkerPopup({
   return (
     <div className="min-w-[240px]">
       <p className="text-base font-semibold text-navy">{marker.label}</p>
+      {marker.roles.some(role => role.locationKind === 'hq') && <p className="text-xs text-amber-700">Roles labelled HQ fallback are shown at company headquarters because their precise job location was unavailable.</p>}
       <p className="mt-0.5 text-sm text-slate-500">
         {marker.roleCount} open {marker.roleCount === 1 ? 'role' : 'roles'} across {marker.companyCount}{' '}
         {marker.companyCount === 1 ? 'company' : 'companies'}
@@ -650,6 +701,8 @@ export function MarkerPopup({
               </Link>
               <div className="flex flex-wrap items-center gap-1">
                 <span className="truncate text-xs text-slate-500">{r.companyName}</span>
+                {r.locationKind === 'hq' && <span className="text-xs text-amber-700">HQ fallback</span>}
+                {r.locationLabel && <span className="text-xs text-slate-500">{r.locationLabel}</span>}
                 {r.seasons.slice(0, 1).map((s) => (
                   <SeasonBadge key={s} season={s as Season} year={r.cohortYear} />
                 ))}
@@ -671,7 +724,7 @@ export function MarkerPopup({
         to={browseHref}
         className="mt-2 flex items-center justify-center gap-1 rounded-md border border-cyan px-2 py-1 text-xs font-semibold text-navy transition-colors hover:bg-cyan/10"
       >
-        View all {marker.roleCount} {marker.roleCount === 1 ? 'role' : 'roles'} in Browse
+        {fallbackOrSharedLocation ? 'Browse matching opportunities' : `View all ${marker.roleCount} ${marker.roleCount === 1 ? 'role' : 'roles'} in Browse`}
         <ArrowRight className="h-3 w-3" aria-hidden="true" />
       </Link>
     </div>

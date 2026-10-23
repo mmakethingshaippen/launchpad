@@ -53,4 +53,5 @@ export type {
   ListingReport,
   MapMarker,
   MapMarkerRole,
+  MapData,
 } from './adapter';

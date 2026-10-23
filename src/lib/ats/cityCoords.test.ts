@@ -2,6 +2,9 @@ import { describe, it, expect } from 'vitest';
 import { lookupCity, resolveRoleCoords, isRemoteLocation, normalizeLongitude } from './cityCoords';
 
 describe('lookupCity', () => {
+  it('recognizes Airbnb locations formatted with a country after a dash', () => {
+    expect(lookupCity('Sao Paulo - Brazil')).toMatchObject({ latitude: -23.5505, longitude: -46.6333 });
+  });
   it('resolves major hubs and tolerates trailing state/country', () => {
     expect(lookupCity('Seattle')).toMatchObject({ latitude: 47.6062, longitude: -122.3321 });
     expect(lookupCity('Seattle, WA')).toMatchObject({ latitude: 47.6062 });

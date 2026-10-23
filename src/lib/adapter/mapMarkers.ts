@@ -1,12 +1,14 @@
-import type { MapMarker, MapMarkerRole } from './adapter';
+import type { MapData, MapMarker, MapMarkerRole } from './adapter';
 import type { Season } from './types';
+import { logoForCompany } from '../logo';
 import {
+  isRemoteLocation,
   normalizeLongitude,
   resolveAllRoleCoords,
   type ResolvedPlace,
 } from '../ats/cityCoords';
 
-export type { MapMarker, MapMarkerRole };
+export type { MapData, MapMarker, MapMarkerRole };
 
 export interface MapRoleInput {
   id: string;
@@ -36,234 +38,110 @@ export interface MapRoleInput {
   companyLongitude?: number | null;
 }
 
-const COMPANY_HUB_FALLBACKS: Record<string, ResolvedPlace> = {
-  amazon: { city: 'Seattle', state: 'WA', latitude: 47.6062, longitude: -122.3321, label: 'Seattle, WA' },
-  bechtel: { city: 'Reston', state: 'VA', latitude: 38.9586, longitude: -77.357, label: 'Reston, VA' },
-  anthropic: { city: 'San Francisco', state: 'CA', latitude: 37.7749, longitude: -122.4194, label: 'San Francisco, CA' },
-  airbnb: { city: 'San Francisco', state: 'CA', latitude: 37.7749, longitude: -122.4194, label: 'San Francisco, CA' },
-  google: { city: 'Mountain View', state: 'CA', latitude: 37.3861, longitude: -122.0839, label: 'Mountain View, CA' },
-  waymo: { city: 'Mountain View', state: 'CA', latitude: 37.3861, longitude: -122.0839, label: 'Mountain View, CA' },
-  apple: { city: 'Cupertino', state: 'CA', latitude: 37.323, longitude: -122.0322, label: 'Cupertino, CA' },
-  meta: { city: 'Menlo Park', state: 'CA', latitude: 37.453, longitude: -122.1817, label: 'Menlo Park, CA' },
-  microsoft: { city: 'Redmond', state: 'WA', latitude: 47.674, longitude: -122.1215, label: 'Redmond, WA' },
-  nvidia: { city: 'Santa Clara', state: 'CA', latitude: 37.3541, longitude: -121.9552, label: 'Santa Clara, CA' },
-  stripe: { city: 'South San Francisco', state: 'CA', latitude: 37.6547, longitude: -122.4077, label: 'South San Francisco, CA' },
-  paypal: { city: 'San Jose', state: 'CA', latitude: 37.3382, longitude: -121.8863, label: 'San Jose, CA' },
-  'applied materials': { city: 'Santa Clara', state: 'CA', latitude: 37.3541, longitude: -121.9552, label: 'Santa Clara, CA' },
-};
-
-function getRoleLocationString(role: MapRoleInput): string {
-  if (role.locationString && role.locationString.trim()) {
-    return role.locationString.trim();
-  }
-  if (role.location && role.location.trim()) {
-    return role.location.trim();
-  }
-  return [role.locationCity?.trim(), role.locationState?.trim()]
-    .filter(Boolean)
-    .join(', ');
+function validCoordinates(latitude: unknown, longitude: unknown): boolean {
+  return typeof latitude === 'number' && Number.isFinite(latitude) &&
+    Math.abs(latitude) <= 85 && typeof longitude === 'number' && Number.isFinite(longitude);
 }
 
-function getHqCity(role: MapRoleInput): string {
-  return role.hqCity?.trim() || role.companyHqCity?.trim() || '';
+function locationString(role: MapRoleInput): string {
+  return role.locationString?.trim() || role.location?.trim() ||
+    [role.locationCity, role.locationState].filter(Boolean).join(', ');
 }
 
-function getHqState(role: MapRoleInput): string {
-  return role.hqState?.trim() || role.companyHqState?.trim() || '';
-}
-
-function getHqLocationString(role: MapRoleInput): string {
-  return [getHqCity(role), getHqState(role)].filter(Boolean).join(', ');
-}
-
-function fallbackPlaceForRole(role: MapRoleInput): ResolvedPlace {
-  const hqCity = getHqCity(role);
-  const hqState = getHqState(role);
-  const hqLat = role.hqLatitude ?? role.companyLatitude;
-  const hqLng = role.hqLongitude ?? role.companyLongitude;
-
-  // 1. Explicit role coordinates
-  if (
-    typeof role.latitude === 'number' &&
-    Number.isFinite(role.latitude) &&
-    typeof role.longitude === 'number' &&
-    Number.isFinite(role.longitude)
-  ) {
-    const city = role.locationCity?.trim() || hqCity || 'Job Location';
-    const state = role.locationState?.trim() || hqState || '';
-    const label = [city, state].filter(Boolean).join(', ') || role.companyName || 'Location';
-    return {
-      city,
-      state,
-      latitude: role.latitude,
-      longitude: normalizeLongitude(role.longitude),
-      label,
-    };
-  }
-
-  // 2. Explicit company HQ coordinates
-  if (
-    typeof hqLat === 'number' &&
-    Number.isFinite(hqLat) &&
-    typeof hqLng === 'number' &&
-    Number.isFinite(hqLng)
-  ) {
-    const city = hqCity || role.locationCity?.trim() || 'Headquarters';
-    const state = hqState || role.locationState?.trim() || '';
-    const label = [city, state].filter(Boolean).join(', ') || `${role.companyName} HQ`;
-    return {
-      city,
-      state,
-      latitude: hqLat,
-      longitude: normalizeLongitude(hqLng),
-      label,
-    };
-  }
-
-  // 3. Try resolving Company HQ string through cityCoords
-  const hqString = getHqLocationString(role);
-  if (hqString) {
-    const hqPlaces = resolveAllRoleCoords(hqString);
-    if (hqPlaces.length > 0) {
-      return hqPlaces[0];
-    }
-  }
-
-  // 4. Known major company HQ hubs — lenient matching
-  const normCompany = (role.companyName || '')
-    .toLowerCase()
-    .replace(/[^a-z0-9\s]/g, ' ')
-    .replace(/\b(corporation|corp|inc|incorporated|llc|ltd|limited|company|co|pbc|plc)\b/g, ' ')
-    .replace(/\s+/g, ' ')
-    .trim();
-
-  for (const [key, hub] of Object.entries(COMPANY_HUB_FALLBACKS)) {
-    if (
-      normCompany === key ||
-      normCompany.includes(key) ||
-      key.includes(normCompany) ||
-      normCompany.startsWith(key) ||
-      key.startsWith(normCompany)
-    ) {
-      return hub;
-    }
-  }
-
-  // 5. Ultimate fallback so no role is ever silently discarded from the map
-  const fallbackCity = role.locationCity?.trim() || hqCity || 'San Francisco';
-  const fallbackState = role.locationState?.trim() || hqState || 'CA';
-  const fallbackLabel =
-    getRoleLocationString(role) ||
-    [fallbackCity, fallbackState].filter(Boolean).join(', ') ||
-    'United States';
-
+function markerRole(role: MapRoleInput): MapMarkerRole {
   return {
-    city: fallbackCity,
-    state: fallbackState,
-    latitude: 37.7749,
-    longitude: -122.4194,
-    label: fallbackLabel,
+    id: role.id,
+    slug: role.slug,
+    title: role.title,
+    companyName: role.companyName,
+    companySlug: role.companySlug ?? '',
+    companyLogoUrl: logoForCompany({ logoUrl: role.companyLogoUrl, websiteUrl: role.companyWebsiteUrl }),
+    companyWebsiteUrl: role.companyWebsiteUrl ?? null,
+    seasons: role.seasons ?? [],
+    cohortYear: role.cohortYear ?? null,
   };
 }
 
-/**
- * Group roles into geographic map markers by resolved place.
- * Prefers stored role lat/lng when available.
- */
-export function buildMapMarkers(roles: MapRoleInput[]): MapMarker[] {
-  const groups = new Map<
-    string,
-    {
-      place: ResolvedPlace;
-      roles: Map<string, MapMarkerRole>;
-      companies: Set<string>;
-    }
-  >();
+function hqPlace(role: MapRoleInput): ResolvedPlace | null {
+  const city = role.hqCity?.trim() || role.companyHqCity?.trim() || null;
+  const state = role.hqState?.trim() || role.companyHqState?.trim() || null;
+  const latitude = role.hqLatitude ?? role.companyLatitude;
+  const longitude = role.hqLongitude ?? role.companyLongitude;
+  const label = [city, state].filter(Boolean).join(', ') || `${role.companyName} headquarters`;
+  if (validCoordinates(latitude, longitude)) {
+    return { city, state, label, latitude: latitude!, longitude: normalizeLongitude(longitude!) };
+  }
+  return city ? resolveAllRoleCoords([city, state].filter(Boolean).join(', '))[0] ?? null : null;
+}
+
+/** Keep every public role in either a real marker or the explicit unlocated list. */
+export function buildMapData(roles: MapRoleInput[]): MapData {
+  const groups = new Map<string, { marker: MapMarker; roles: Map<string, MapMarkerRole>; companies: Set<string> }>();
+  const unmapped = new Map<string, MapMarkerRole>();
+  const mappedIds = new Set<string>();
 
   for (const role of roles) {
-    let places: ResolvedPlace[] = [];
-
-    // Prefer explicit stored coordinates on the role
-    if (
-      typeof role.latitude === 'number' &&
-      Number.isFinite(role.latitude) &&
-      typeof role.longitude === 'number' &&
-      Number.isFinite(role.longitude)
-    ) {
-      const city = role.locationCity?.trim() || role.hqCity?.trim() || 'Job Location';
-      const state = role.locationState?.trim() || role.hqState?.trim() || '';
-      const label = [city, state].filter(Boolean).join(', ') || role.companyName || 'Location';
+    const text = locationString(role);
+    const remote = role.workArrangement === 'Remote' || isRemoteLocation(text);
+    // A stored coordinate represents only ONE office. Preserve all named offices.
+    let places = resolveAllRoleCoords(text);
+    let kind: 'job' | 'hq' = 'job';
+    if (places.length === 0 && !remote && validCoordinates(role.latitude, role.longitude)) {
       places = [{
-        city,
-        state,
-        latitude: role.latitude,
-        longitude: normalizeLongitude(role.longitude),
-        label,
+        latitude: role.latitude!, longitude: normalizeLongitude(role.longitude!),
+        city: role.locationCity?.trim() || null,
+        state: role.locationState?.trim() || null,
+        label: text || 'Job location',
       }];
-    } else {
-      const locString = getRoleLocationString(role);
-      places = locString ? resolveAllRoleCoords(locString) : [];
-      if (places.length === 0) {
-        places = [fallbackPlaceForRole(role)];
+    }
+    if (places.length === 0) {
+      const hq = hqPlace(role);
+      if (hq) {
+        kind = 'hq';
+        places = [{ ...hq, label: `${hq.label}${remote ? ' (Remote)' : ''}` }];
       }
     }
 
+    const item = markerRole(role);
+    let plotted = false;
     for (const place of places) {
-      const latitude = place.latitude;
+      if (!validCoordinates(place.latitude, place.longitude)) continue;
       const longitude = normalizeLongitude(place.longitude);
-      if (!Number.isFinite(latitude) || !Number.isFinite(longitude)) continue;
-
-      const key = `${place.label.toLowerCase()}|${latitude.toFixed(3)}|${longitude.toFixed(3)}`;
+      const key = `${place.latitude.toFixed(4)}|${longitude.toFixed(4)}`;
       let group = groups.get(key);
-
       if (!group) {
-        const newGroup = {
-          place: { ...place, latitude, longitude },
-          roles: new Map<string, MapMarkerRole>(),
-          companies: new Set<string>(),
+        group = {
+          marker: {
+            id: key, label: place.label, city: place.city, state: place.state,
+            latitude: place.latitude, longitude, roleCount: 0, companyCount: 0,
+            roles: [], locationKind: kind,
+          },
+          roles: new Map(), companies: new Set(),
         };
-        groups.set(key, newGroup);
-        group = newGroup;
+        groups.set(key, group);
       }
-
-      if (!group.roles.has(role.id)) {
-        group.roles.set(role.id, {
-          id: role.id,
-          slug: role.slug,
-          title: role.title,
-          companyName: role.companyName,
-          companySlug: role.companySlug ?? '',
-          companyLogoUrl: role.companyLogoUrl ?? null,
-          companyWebsiteUrl: role.companyWebsiteUrl ?? null,
-          seasons: (role.seasons ?? []) as Season[],
-          cohortYear: role.cohortYear ?? null,
-        });
+      // One clickable pin per coordinate, including co-located HQ fallbacks.
+      if (kind === 'job') {
+        group.marker.locationKind = 'job';
+        group.marker.label = place.label;
+        group.marker.city = place.city;
+        group.marker.state = place.state;
       }
-
-      const companyKey = (role.companyId || role.companyName || '').trim().toLowerCase();
-      if (companyKey) {
-        group.companies.add(companyKey);
-      }
+      group.roles.set(role.id, { ...item, locationKind: kind,
+        locationLabel: place.label, locationCity: place.city, locationState: place.state });
+      group.companies.add(role.companyId || role.companySlug || role.companyName.trim().toLowerCase());
+      mappedIds.add(role.id);
+      plotted = true;
     }
+    if (!plotted) unmapped.set(role.id, item);
   }
 
-  const markers: MapMarker[] = [];
-  for (const [key, group] of groups.entries()) {
-    const roleList = Array.from(group.roles.values());
-    if (roleList.length === 0) continue;
+  const markers = [...groups.values()].map(({ marker, roles: items, companies }) => ({
+    ...marker, roles: [...items.values()], roleCount: items.size, companyCount: companies.size,
+  })).sort((a, b) => b.roleCount - a.roleCount || a.id.localeCompare(b.id));
+  return { markers, unmappedRoles: [...unmapped.values()].filter(role => !mappedIds.has(role.id)) };
+}
 
-    markers.push({
-      id: key,
-      label: group.place.label,
-      city: group.place.city || null,
-      state: group.place.state || null,
-      latitude: group.place.latitude,
-      longitude: group.place.longitude,
-      roleCount: roleList.length,
-      companyCount: Math.max(group.companies.size, 1),
-      roles: roleList,
-    });
-  }
-
-  return markers.sort((a, b) => b.roleCount - a.roleCount);
+export function buildMapMarkers(roles: MapRoleInput[]): MapMarker[] {
+  return buildMapData(roles).markers;
 }
