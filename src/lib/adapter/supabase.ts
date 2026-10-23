@@ -43,7 +43,7 @@ const ROLE_SELECT_WITH_COMPANY = `*, companies!inner(${COMPANY_SELECT})`;
 
 // Slimmer select for RoleCards (excludes heavy description text on Browse/Home lists)
 const ROLE_CARD_COLUMNS =
-  'id,slug,title,company_id,field,seasons,cohort_year,work_arrangement,opportunity_type,work_schedule,compensation_status,city,state,country,apply_url,source_url,application_deadline,last_verified_at,created_at,moderation_status';
+  'id,slug,title,company_id,field,seasons,cohort_year,work_arrangement,opportunity_type,work_schedule,compensation_status,city,state,country,apply_url,source_url,application_deadline,last_verified_at,created_at,moderation_status,listing_status,degree_levels,pay_min,pay_max,pay_currency,pay_period';
 const ROLE_CARD_SELECT_WITH_COMPANY = `${ROLE_CARD_COLUMNS}, companies!inner(${COMPANY_SELECT})`;
 
 /**
@@ -396,7 +396,7 @@ export class SupabaseAdapter implements DataAdapter {
     const allRows: Array<Record<string, unknown>> = [];
     const plan = buildRolePlan(filters);
     let afterId: string | null = null;
-    let includeCoordinates = true;
+    let includeCoordinates = false;
 
     for (;;) {
       let q = this.db

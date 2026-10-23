@@ -71,7 +71,7 @@ export function RoleCard({
       </div>
 
       <div className="mt-3 flex flex-wrap gap-1.5">
-        {role.seasons.map((s) => (
+        {(role.seasons ?? []).map((s) => (
           <SeasonBadge key={s} season={s} year={role.cohortYear} />
         ))}
         <Badge tone="cyan">{role.opportunityType}</Badge>
@@ -86,7 +86,7 @@ export function RoleCard({
         <div className="flex flex-wrap items-center gap-x-1.5">
           <span>{role.field}</span>
           <span aria-hidden="true" className="text-slate-300">·</span>
-          <span>{role.degreeLevels.join(', ') || 'Undergraduate'}</span>
+          <span>{role.degreeLevels?.join(', ') || 'Undergraduate'}</span>
           {pay && (
             <>
               <span aria-hidden="true" className="text-slate-300">·</span>

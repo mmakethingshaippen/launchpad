@@ -16,12 +16,12 @@ export function CompanyCard({ company }: { company: CompanyCardData }) {
           <Link to={`/companies/${company.slug}`} className="font-semibold text-navy hover:text-cyan">
             {company.name}
           </Link>
-          <p className="truncate text-sm text-slate-500">{company.fields.join(' · ')}</p>
+          <p className="truncate text-sm text-slate-500">{company.fields?.join(' · ') || ''}</p>
         </div>
       </div>
 
       <div className="mt-3 flex flex-wrap gap-1.5">
-        {company.fields
+        {(company.fields ?? [])
           .filter((f) => f && f !== 'Other')
           .map((f) => (
             <Badge key={f} tone="cyan">
