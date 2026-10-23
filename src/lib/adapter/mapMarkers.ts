@@ -39,6 +39,8 @@ export interface MapRoleInput {
 const COMPANY_HUB_FALLBACKS: Record<string, ResolvedPlace> = {
   amazon: { city: 'Seattle', state: 'WA', latitude: 47.6062, longitude: -122.3321, label: 'Seattle, WA' },
   bechtel: { city: 'Reston', state: 'VA', latitude: 38.9586, longitude: -77.357, label: 'Reston, VA' },
+  anthropic: { city: 'San Francisco', state: 'CA', latitude: 37.7749, longitude: -122.4194, label: 'San Francisco, CA' },
+  airbnb: { city: 'San Francisco', state: 'CA', latitude: 37.7749, longitude: -122.4194, label: 'San Francisco, CA' },
   google: { city: 'Mountain View', state: 'CA', latitude: 37.3861, longitude: -122.0839, label: 'Mountain View, CA' },
   waymo: { city: 'Mountain View', state: 'CA', latitude: 37.3861, longitude: -122.0839, label: 'Mountain View, CA' },
   apple: { city: 'Cupertino', state: 'CA', latitude: 37.323, longitude: -122.0322, label: 'Cupertino, CA' },
@@ -80,7 +82,7 @@ function fallbackPlaceForRole(role: MapRoleInput): ResolvedPlace {
   const hqLat = role.hqLatitude ?? role.companyLatitude;
   const hqLng = role.hqLongitude ?? role.companyLongitude;
 
-  // 1. Explicit role coordinates (preferred)
+  // 1. Explicit role coordinates
   if (
     typeof role.latitude === 'number' &&
     Number.isFinite(role.latitude) &&
@@ -127,16 +129,22 @@ function fallbackPlaceForRole(role: MapRoleInput): ResolvedPlace {
     }
   }
 
-  // 4. Known major company HQ hubs
+  // 4. Known major company HQ hubs — lenient matching
   const normCompany = (role.companyName || '')
     .toLowerCase()
     .replace(/[^a-z0-9\s]/g, ' ')
-    .replace(/\b(corporation|corp|inc|incorporated|llc|ltd|limited|company|co)\b/g, ' ')
+    .replace(/\b(corporation|corp|inc|incorporated|llc|ltd|limited|company|co|pbc|plc)\b/g, ' ')
     .replace(/\s+/g, ' ')
     .trim();
 
   for (const [key, hub] of Object.entries(COMPANY_HUB_FALLBACKS)) {
-    if (normCompany === key || normCompany.startsWith(key) || key.startsWith(normCompany)) {
+    if (
+      normCompany === key ||
+      normCompany.includes(key) ||
+      key.includes(normCompany) ||
+      normCompany.startsWith(key) ||
+      key.startsWith(normCompany)
+    ) {
       return hub;
     }
   }
