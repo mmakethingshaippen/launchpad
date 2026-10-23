@@ -2,7 +2,7 @@
 
 **Your career starts somewhere. Find your Launchpad.**
 
-Launchpad helps undergraduate students, graduate students, and recent graduates discover **legitimate, currently open** internships, co-ops, and early-career roles at startups and established companies. Every listing is verified against live employer ATS feeds, so students never waste time on expired postings.
+Launchpad helps undergraduate students, graduate students, and recent graduates discover **legitimate, currently open** internships, co-ops, and early career roles at startups and established companies. Every listing is verified against live employer ATS feeds, so students never waste time on expired postings.
 
 - **Zero expired listings** — eligibility is enforced in the database via a Postgres view + RLS.
 - **No account required** to browse or apply. Accounts are optional and only add saving + application tracking.
