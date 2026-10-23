@@ -106,7 +106,7 @@ function sanitizeSingleField(field: FieldType | undefined, companyName: string):
 }
 
 // Wrapped mappers that automatically sanitize company fields and external URLs on every read
-function mapRoleCard(r: never): RoleCard {
+function mapRoleCard(r: any): RoleCard {
   const card = originalMapRoleCard(r);
   if (card) {
     if (card.companyName) {
@@ -122,7 +122,7 @@ function mapRoleCard(r: never): RoleCard {
   return card;
 }
 
-function mapRoleDetail(r: never): RoleDetailView {
+function mapRoleDetail(r: any): RoleDetailView {
   const detail = originalMapRoleDetail(r);
   if (detail) {
     if (detail.companyName) {
@@ -144,7 +144,7 @@ function mapRoleDetail(r: never): RoleDetailView {
   return detail;
 }
 
-function mapCompanyCard(c: never, activeRoleCount: number): CompanyCard {
+function mapCompanyCard(c: any, activeRoleCount: number): CompanyCard {
   const card = originalMapCompanyCard(c, activeRoleCount);
   if (card) {
     if (card.name) {
@@ -160,7 +160,7 @@ function mapCompanyCard(c: never, activeRoleCount: number): CompanyCard {
   return card;
 }
 
-function mapCompanyDetail(c: never, roles: RoleCard[]): CompanyDetailView {
+function mapCompanyDetail(c: any, roles: RoleCard[]): CompanyDetailView {
   const detail = originalMapCompanyDetail(c, roles);
   if (detail) {
     if (detail.name) {
@@ -179,7 +179,7 @@ function mapCompanyDetail(c: never, roles: RoleCard[]): CompanyDetailView {
   return detail;
 }
 
-function mapApplication(a: never): Application {
+function mapApplication(a: any): Application {
   const app = originalMapApplication(a);
   if (app && 'applicationUrl' in app && app.applicationUrl) {
     app.applicationUrl = sanitizeExternalUrl(app.applicationUrl);
@@ -392,7 +392,7 @@ export class SupabaseAdapter implements DataAdapter {
       let q = this.db
         .from('public_roles')
         .select(
-          'id, slug, title, seasons, cohort_year, city, state, country, work_arrangement, company_id, ' +
+          'id, slug, title, seasons, cohort_year, city, state, country, work_arrangement, company_id, latitude, longitude, ' +
             'companies!inner(slug,name,company_type,website_url,logo_url,company_locations(city,state,latitude,longitude,location_type))',
         )
         .range(from, from + PAGE_BATCH - 1);
@@ -431,12 +431,16 @@ export class SupabaseAdapter implements DataAdapter {
         seasons: (r.seasons as string[]) ?? [],
         cohortYear: (r.cohort_year as number) ?? null,
         locationString,
+        locationCity: (r.city as string) ?? null,
+        locationState: (r.state as string) ?? null,
         workArrangement: (r.work_arrangement as string) ?? null,
         companyId: r.company_id as string,
         companyName: comp.name as string,
         companySlug: comp.slug as string,
         companyWebsiteUrl: sanitizeExternalUrl(comp.website_url as string | null),
         companyLogoUrl: sanitizeExternalUrl(comp.logo_url as string | null),
+        latitude: (r.latitude as number) ?? null,
+        longitude: (r.longitude as number) ?? null,
         hqLatitude: (hq?.latitude as number) ?? null,
         hqLongitude: (hq?.longitude as number) ?? null,
       });

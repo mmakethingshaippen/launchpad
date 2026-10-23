@@ -80,7 +80,7 @@ function fallbackPlaceForRole(role: MapRoleInput): ResolvedPlace {
   const hqLat = role.hqLatitude ?? role.companyLatitude;
   const hqLng = role.hqLongitude ?? role.companyLongitude;
 
-  // 1. Explicit role coordinates
+  // 1. Explicit role coordinates (preferred)
   if (
     typeof role.latitude === 'number' &&
     Number.isFinite(role.latitude) &&
@@ -127,7 +127,7 @@ function fallbackPlaceForRole(role: MapRoleInput): ResolvedPlace {
     }
   }
 
-  // 4. Known major company HQ hubs (e.g., Bechtel -> Reston, VA)
+  // 4. Known major company HQ hubs
   const normCompany = (role.companyName || '')
     .toLowerCase()
     .replace(/[^a-z0-9\s]/g, ' ')
@@ -160,7 +160,7 @@ function fallbackPlaceForRole(role: MapRoleInput): ResolvedPlace {
 
 /**
  * Group roles into geographic map markers by resolved place.
- * Ensures every role resolves to at least one valid location pin.
+ * Prefers stored role lat/lng when available.
  */
 export function buildMapMarkers(roles: MapRoleInput[]): MapMarker[] {
   const groups = new Map<
@@ -173,11 +173,31 @@ export function buildMapMarkers(roles: MapRoleInput[]): MapMarker[] {
   >();
 
   for (const role of roles) {
-    const locString = getRoleLocationString(role);
-    let places = locString ? resolveAllRoleCoords(locString) : [];
+    let places: ResolvedPlace[] = [];
 
-    if (places.length === 0) {
-      places = [fallbackPlaceForRole(role)];
+    // Prefer explicit stored coordinates on the role
+    if (
+      typeof role.latitude === 'number' &&
+      Number.isFinite(role.latitude) &&
+      typeof role.longitude === 'number' &&
+      Number.isFinite(role.longitude)
+    ) {
+      const city = role.locationCity?.trim() || role.hqCity?.trim() || 'Job Location';
+      const state = role.locationState?.trim() || role.hqState?.trim() || '';
+      const label = [city, state].filter(Boolean).join(', ') || role.companyName || 'Location';
+      places = [{
+        city,
+        state,
+        latitude: role.latitude,
+        longitude: normalizeLongitude(role.longitude),
+        label,
+      }];
+    } else {
+      const locString = getRoleLocationString(role);
+      places = locString ? resolveAllRoleCoords(locString) : [];
+      if (places.length === 0) {
+        places = [fallbackPlaceForRole(role)];
+      }
     }
 
     for (const place of places) {
