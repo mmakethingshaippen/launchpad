@@ -58,6 +58,21 @@ export interface RoleFormB {
   honeypot?: string;
 }
 
+export interface SyncBatchOptions {
+  companyId?: string;
+  offset?: number;
+  limit?: number;
+  timeBudgetMs?: number;
+}
+
+export interface SyncBatchResult {
+  results: SyncResult[];
+  syncedCount: number;
+  nextOffset: number | null;
+  totalCompanies: number;
+  done: boolean;
+}
+
 export interface SyncResult {
   company: string;
   companyId: string;
@@ -97,6 +112,7 @@ export interface DataAdapter {
 
   // ── Admin ──
   sync?(companyId?: string): Promise<SyncResult[]>;
+  syncBatch?(options?: SyncBatchOptions): Promise<SyncBatchResult>;
   geocode?(locationId: string): Promise<void>;
   listPending?(): Promise<PendingQueue>;
   moderateCompany?(id: string, action: 'Approved' | 'Rejected'): Promise<void>;

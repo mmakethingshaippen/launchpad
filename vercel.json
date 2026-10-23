@@ -3,12 +3,20 @@
   "buildCommand": "npm run build",
   "outputDirectory": "dist",
   "rewrites": [
-    { "source": "/((?!api/).*)", "destination": "/index.html" }
+    {
+      "source": "/((?!api/).*)",
+      "destination": "/index.html"
+    }
   ],
   "functions": {
-    "api/sync.js": { "maxDuration": 60 }
+    "api/sync.js": {
+      "maxDuration": 60
+    }
   },
   "crons": [
-    { "path": "/api/sync", "schedule": "0 7 * * *" }
+    {
+      "path": "/api/sync",
+      "schedule": "* 8 * * *"
+    }
   ]
 }

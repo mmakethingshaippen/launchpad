@@ -1,28 +1,41 @@
 /**
- * Vercel Serverless Function: POST /api/sync[?id=<companyId>]
+ * Vercel Serverless Function: POST /api/sync[?id=<companyId>&offset=<offset>&limit=<limit>&timeBudgetMs=<ms>]
  *
  * Runs the shared ATS sync engine server-side using the Supabase SERVICE ROLE
  * (bypasses RLS for upserts). Never exposed to the browser bundle. Applies the
- * bounded-concurrency + per-request timeout policy (refinement #4) via syncAll.
+ * bounded-concurrency + per-request timeout policy via syncAll.
  *
  * Auth: requires the caller to be an admin. We verify the bearer token against
  * Supabase and check user_profiles.account_role = 'admin'.
  *
+ * Supports paginated batching and time budgeting to prevent Vercel 504 Gateway
+ * Timeouts on large company rosters.
+ *
  * NOTE: This file is pre-bundled into a self-contained api/sync.js by
- * scripts/build-api.ts during `npm run build`, so the ../src/lib/ats/* imports
- * are inlined and Vercel's runtime never has to resolve relative TS paths.
+ * scripts/build-api.ts / scripts/build-api.mjs during `npm run build`, so the
+ * ../src/lib/ats/* imports are inlined and Vercel's runtime never has to
+ * resolve relative TS paths.
  */
-import { syncAll, type SyncableCompany } from '../../src/lib/ats/sync';
+import { syncAll, type SyncableCompany, type SyncResult } from '../../src/lib/ats/sync';
 import { createServiceClient, loadSyncableCompanies, SupabaseSink } from '../../src/lib/ats/supabaseSink';
 
 interface VercelRequest {
   method?: string;
   url?: string;
   headers: Record<string, string | string[] | undefined>;
+  body?: unknown;
 }
 interface VercelResponse {
   status: (code: number) => VercelResponse;
   json: (body: unknown) => void;
+}
+
+export interface SyncBatchResponse {
+  results: SyncResult[];
+  syncedCount: number;
+  nextOffset: number | null;
+  totalCompanies: number;
+  done: boolean;
 }
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
@@ -65,7 +78,25 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       }
     }
 
-    const id = new URLSearchParams((req.url ?? '').split('?')[1] ?? '').get('id');
+    const searchParams = new URLSearchParams((req.url ?? '').split('?')[1] ?? '');
+    const id = searchParams.get('id');
+
+    let bodyParams: Record<string, unknown> = {};
+    if (typeof req.body === 'object' && req.body !== null) {
+      bodyParams = req.body as Record<string, unknown>;
+    } else if (typeof req.body === 'string') {
+      try {
+        bodyParams = JSON.parse(req.body);
+      } catch {
+        // non-JSON string body, ignore
+      }
+    }
+
+    const offsetRaw = searchParams.get('offset') ?? bodyParams.offset;
+    const limitRaw = searchParams.get('limit') ?? bodyParams.limit;
+    const timeBudgetRaw = searchParams.get('timeBudgetMs') ?? bodyParams.timeBudgetMs;
+    const isBatchRequest = offsetRaw != null || limitRaw != null;
+
     let companies: SyncableCompany[];
     if (id) {
       // Load a single company by id.
@@ -84,8 +115,58 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       companies = await loadSyncableCompanies(db);
     }
 
-    const results = await syncAll(companies, new SupabaseSink(db), {});
-    res.status(200).json(results);
+    const totalCompanies = companies.length;
+
+    // Single-company requests retain the legacy array response unless the caller
+    // explicitly requests batch metadata.
+    if (id) {
+      const results = await syncAll(companies, new SupabaseSink(db), {});
+      if (isBatchRequest) {
+        const payload: SyncBatchResponse = {
+          results,
+          syncedCount: results.length,
+          nextOffset: null,
+          totalCompanies,
+          done: true,
+        };
+        res.status(200).json(payload);
+        return;
+      }
+      res.status(200).json(results);
+      return;
+    }
+
+    const limit = Math.max(1, parseInt(String(limitRaw ?? 40), 10) || 40);
+    // Vercel cron invokes this endpoint once per minute during the 08:00 UTC
+    // hour. Use the minute as a deterministic batch cursor so the daily cron
+    // covers the full company roster without a long-running function or DB cursor.
+    const cronOffset = isCron && offsetRaw == null ? new Date().getUTCMinutes() * limit : 0;
+    const offset = Math.max(0, parseInt(String(offsetRaw ?? cronOffset), 10) || 0);
+    const requestedBudget = Math.max(5000, parseInt(String(timeBudgetRaw ?? 45000), 10) || 45000);
+    // Leave headroom for auth, database operations, and response serialization.
+    const timeBudgetMs = Math.min(45000, requestedBudget);
+    const batch = companies.slice(offset, offset + Math.min(40, limit));
+
+    // Bound per-provider fetch time and run a modest pool to avoid one large
+    // invocation overwhelming the serverless runtime or ATS providers.
+    const results = await syncAll(batch, new SupabaseSink(db), {
+      timeoutMs: Math.min(10000, timeBudgetMs),
+      concurrency: 12,
+    });
+
+    const nextOffsetIndex = offset + batch.length;
+    const done = nextOffsetIndex >= totalCompanies;
+    const nextOffset = done ? null : nextOffsetIndex;
+
+    const payload: SyncBatchResponse = {
+      results,
+      syncedCount: results.length,
+      nextOffset,
+      totalCompanies,
+      done,
+    };
+
+    res.status(200).json(payload);
   } catch (err) {
     res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
   }

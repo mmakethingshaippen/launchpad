@@ -23347,13 +23347,20 @@ var SupabaseSink = class {
   }
 };
 async function loadSyncableCompanies(db, slug) {
-  let q = db.from("companies").select(
-    "id,slug,name,ats_provider,ats_board_token,fields,company_locations(city,state,country,latitude,longitude,location_type)"
-  ).neq("ats_provider", "none");
-  if (slug) q = q.eq("slug", slug);
-  const { data, error } = await q;
-  if (error) throw new Error(`load companies: ${error.message}`);
-  return (data ?? []).map((c) => {
+  const pageSize = 1e3;
+  const allRows = [];
+  for (let offset = 0; ; offset += pageSize) {
+    let q = db.from("companies").select(
+      "id,slug,name,ats_provider,ats_board_token,fields,company_locations(city,state,country,latitude,longitude,location_type)"
+    ).neq("ats_provider", "none").range(offset, offset + pageSize - 1);
+    if (slug) q = q.eq("slug", slug);
+    const { data, error } = await q;
+    if (error) throw new Error(`load companies: ${error.message}`);
+    const rows = data ?? [];
+    allRows.push(...rows);
+    if (rows.length < pageSize) break;
+  }
+  return allRows.map((c) => {
     const fields = c.fields ?? [];
     const locs = c.company_locations ?? [];
     const hq = locs.find((l) => l.location_type === "HQ" && l.latitude != null) ?? locs.find((l) => l.latitude != null) ?? locs.find((l) => l.location_type === "HQ") ?? locs[0];
@@ -23401,7 +23408,21 @@ async function handler(req, res) {
         return;
       }
     }
-    const id = new URLSearchParams((req.url ?? "").split("?")[1] ?? "").get("id");
+    const searchParams = new URLSearchParams((req.url ?? "").split("?")[1] ?? "");
+    const id = searchParams.get("id");
+    let bodyParams = {};
+    if (typeof req.body === "object" && req.body !== null) {
+      bodyParams = req.body;
+    } else if (typeof req.body === "string") {
+      try {
+        bodyParams = JSON.parse(req.body);
+      } catch {
+      }
+    }
+    const offsetRaw = searchParams.get("offset") ?? bodyParams.offset;
+    const limitRaw = searchParams.get("limit") ?? bodyParams.limit;
+    const timeBudgetRaw = searchParams.get("timeBudgetMs") ?? bodyParams.timeBudgetMs;
+    const isBatchRequest = offsetRaw != null || limitRaw != null;
     let companies;
     if (id) {
       const { data } = await db.from("companies").select("id,name,ats_provider,ats_board_token").eq("id", id).neq("ats_provider", "none");
@@ -23414,8 +23435,44 @@ async function handler(req, res) {
     } else {
       companies = await loadSyncableCompanies(db);
     }
-    const results = await syncAll(companies, new SupabaseSink(db), {});
-    res.status(200).json(results);
+    const totalCompanies = companies.length;
+    if (id) {
+      const results2 = await syncAll(companies, new SupabaseSink(db), {});
+      if (isBatchRequest) {
+        const payload2 = {
+          results: results2,
+          syncedCount: results2.length,
+          nextOffset: null,
+          totalCompanies,
+          done: true
+        };
+        res.status(200).json(payload2);
+        return;
+      }
+      res.status(200).json(results2);
+      return;
+    }
+    const limit = Math.max(1, parseInt(String(limitRaw ?? 40), 10) || 40);
+    const cronOffset = isCron && offsetRaw == null ? (/* @__PURE__ */ new Date()).getUTCMinutes() * limit : 0;
+    const offset = Math.max(0, parseInt(String(offsetRaw ?? cronOffset), 10) || 0);
+    const requestedBudget = Math.max(5e3, parseInt(String(timeBudgetRaw ?? 45e3), 10) || 45e3);
+    const timeBudgetMs = Math.min(45e3, requestedBudget);
+    const batch = companies.slice(offset, offset + Math.min(40, limit));
+    const results = await syncAll(batch, new SupabaseSink(db), {
+      timeoutMs: Math.min(1e4, timeBudgetMs),
+      concurrency: 12
+    });
+    const nextOffsetIndex = offset + batch.length;
+    const done = nextOffsetIndex >= totalCompanies;
+    const nextOffset = done ? null : nextOffsetIndex;
+    const payload = {
+      results,
+      syncedCount: results.length,
+      nextOffset,
+      totalCompanies,
+      done
+    };
+    res.status(200).json(payload);
   } catch (err) {
     res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
   }

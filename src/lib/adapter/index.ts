@@ -47,6 +47,8 @@ export type {
   CompanyFormA,
   RoleFormB,
   SyncResult,
+  SyncBatchOptions,
+  SyncBatchResult,
   PendingQueue,
   PendingCompany,
   PendingRole,

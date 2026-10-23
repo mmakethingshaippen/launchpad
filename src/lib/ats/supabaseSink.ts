@@ -161,16 +161,28 @@ export async function loadSyncableCompanies(
   db: SupabaseClient,
   slug?: string,
 ): Promise<SyncableCompany[]> {
-  let q = db
-    .from('companies')
-    .select(
-      'id,slug,name,ats_provider,ats_board_token,fields,company_locations(city,state,country,latitude,longitude,location_type)',
-    )
-    .neq('ats_provider', 'none');
-  if (slug) q = q.eq('slug', slug);
-  const { data, error } = await q;
-  if (error) throw new Error(`load companies: ${error.message}`);
-  return (data ?? []).map((c: Record<string, unknown>) => {
+  const pageSize = 1000;
+  const allRows: Record<string, unknown>[] = [];
+
+  // Supabase/PostgREST applies a default maximum row count to select queries.
+  // Page explicitly so large company rosters are not silently truncated.
+  for (let offset = 0; ; offset += pageSize) {
+    let q = db
+      .from('companies')
+      .select(
+        'id,slug,name,ats_provider,ats_board_token,fields,company_locations(city,state,country,latitude,longitude,location_type)',
+      )
+      .neq('ats_provider', 'none')
+      .range(offset, offset + pageSize - 1);
+    if (slug) q = q.eq('slug', slug);
+    const { data, error } = await q;
+    if (error) throw new Error(`load companies: ${error.message}`);
+    const rows = (data ?? []) as Record<string, unknown>[];
+    allRows.push(...rows);
+    if (rows.length < pageSize) break;
+  }
+
+  return allRows.map((c) => {
     const fields = (c.fields as FieldType[]) ?? [];
     const locs = (c.company_locations as Array<Record<string, unknown>>) ?? [];
     // Prefer the HQ location; fall back to the first with coordinates.

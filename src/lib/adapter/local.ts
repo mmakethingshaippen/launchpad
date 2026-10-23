@@ -1,5 +1,7 @@
 import type {
   DataAdapter,
+  SyncBatchOptions,
+  SyncBatchResult,
   CompanyFormA,
   RoleFormB,
   SyncResult,
@@ -230,6 +232,25 @@ export class LocalAdapter implements DataAdapter {
   }
 
   // ── Admin ──
+  async syncBatch(options: SyncBatchOptions = {}): Promise<SyncBatchResult> {
+    const { companyId, offset = 0, limit = 40 } = options;
+    const all = companyId
+      ? this.data.syncableCompanies().filter((c) => c.id === companyId)
+      : this.data.syncableCompanies();
+    const batch = all.slice(offset, offset + limit);
+    this.synced = true;
+    const results = await syncAll(batch, this.data, {});
+    const nextOffsetIndex = offset + batch.length;
+    const done = nextOffsetIndex >= all.length;
+    return {
+      results,
+      syncedCount: results.length,
+      nextOffset: done ? null : nextOffsetIndex,
+      totalCompanies: all.length,
+      done,
+    };
+  }
+
   async sync(companyId?: string): Promise<SyncResult[]> {
     const targets = companyId
       ? this.data.syncableCompanies().filter((c) => c.id === companyId)

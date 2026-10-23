@@ -1,6 +1,8 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
 import type {
   DataAdapter,
+  SyncBatchOptions,
+  SyncBatchResult,
   CompanyFormA,
   RoleFormB,
   SyncResult,
@@ -727,6 +729,53 @@ export class SupabaseAdapter implements DataAdapter {
     }
   }
 
+  async syncBatch(options: SyncBatchOptions = {}): Promise<SyncBatchResult> {
+    const { data: sessionData } = await this.db.auth.getSession();
+    const accessToken = sessionData.session?.access_token;
+    if (!accessToken) {
+      throw new Error('You must be signed in as an admin to run a sync.');
+    }
+
+    const params = new URLSearchParams();
+    if (options.companyId) params.set('id', options.companyId);
+    if (options.offset != null) params.set('offset', String(options.offset));
+    if (options.limit != null) params.set('limit', String(options.limit));
+    if (options.timeBudgetMs != null) params.set('timeBudgetMs', String(options.timeBudgetMs));
+
+    const qs = params.toString();
+    const res = await fetch(`/api/sync${qs ? `?${qs}` : ''}`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${accessToken}` },
+    });
+
+    if (!res.ok) {
+      let message = `Sync failed: HTTP ${res.status}`;
+      if (res.status === 401)
+        message = 'Sync failed: your session is not authenticated. Please sign in again.';
+      else if (res.status === 403) message = 'Sync failed: your account is not an admin.';
+      else {
+        try {
+          const body = (await res.json()) as { error?: string };
+          if (body?.error) message = `Sync failed: ${body.error}`;
+        } catch {
+          /* non-JSON error body */
+        }
+      }
+      throw new Error(message);
+    }
+    const data = await res.json();
+    if (Array.isArray(data)) {
+      return {
+        results: data as SyncResult[],
+        syncedCount: data.length,
+        nextOffset: null,
+        totalCompanies: data.length,
+        done: true,
+      };
+    }
+    return data as SyncBatchResult;
+  }
+
   async sync(companyId?: string): Promise<SyncResult[]> {
     const { data: sessionData } = await this.db.auth.getSession();
     const accessToken = sessionData.session?.access_token;
@@ -754,6 +803,11 @@ export class SupabaseAdapter implements DataAdapter {
       }
       throw new Error(message);
     }
-    return (await res.json()) as SyncResult[];
+    const data = await res.json();
+    if (Array.isArray(data)) return data as SyncResult[];
+    if (data && Array.isArray((data as { results?: unknown[] }).results)) {
+      return (data as { results: SyncResult[] }).results;
+    }
+    return [];
   }
 }
