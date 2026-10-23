@@ -12,6 +12,7 @@ import { RoleCard } from '../components/cards/RoleCard';
 import { EmptyState } from '../components/ui/EmptyState';
 import { LoadingBlock } from '../components/ui/Spinner';
 import { SPECIFIC_SEASONS, type Season } from '../lib/adapter/types';
+import { uniqueCompanyFields, visibleCompanyDescription } from '../lib/companyDisplay';
 
 export function CompanyProfile() {
   const { slug = '' } = useParams();
@@ -38,13 +39,15 @@ export function CompanyProfile() {
     );
 
   const roles = season === 'all' ? company.roles : company.roles.filter((r) => r.seasons.includes(season));
+  const description = visibleCompanyDescription(company.description);
+  const fields = uniqueCompanyFields(company.fields);
   const mapHref = `/map?company=${encodeURIComponent(company.name)}`;
 
   return (
     <div className="mx-auto max-w-4xl">
       <Helmet>
         <title>{`${company.name} — Launchpad`}</title>
-        <meta name="description" content={company.description ?? `${company.name} opportunities on Launchpad`} />
+        <meta name="description" content={description ?? `${company.name} opportunities on Launchpad`} />
         <meta property="og:title" content={`${company.name} on Launchpad`} />
       </Helmet>
 
@@ -65,7 +68,7 @@ export function CompanyProfile() {
             <h1 className="text-2xl font-bold text-navy">{company.name}</h1>
             <div className="mt-2 flex flex-wrap gap-1.5">
               <Badge tone={company.companyType === 'Startup' ? 'cyan' : 'muted'}>{company.companyType}</Badge>
-              {company.fields.map((f) => (
+              {fields.map((f) => (
                 <Badge key={f} tone="muted">
                   {f}
                 </Badge>
@@ -79,7 +82,7 @@ export function CompanyProfile() {
           </div>
         </div>
 
-        {company.description && <p className="mt-4 text-slate-600">{company.description}</p>}
+        {description && <p className="mt-4 text-slate-600">{description}</p>}
 
         <div className="mt-4 flex flex-wrap items-center gap-4 text-sm">
           {company.websiteUrl && (

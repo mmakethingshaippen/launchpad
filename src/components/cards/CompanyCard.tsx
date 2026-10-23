@@ -4,9 +4,12 @@ import type { CompanyCard as CompanyCardData } from '../../lib/adapter/types';
 import { Card } from '../ui/Card';
 import { Badge } from '../ui/Badge';
 import { CompanyLogo } from '../ui/CompanyLogo';
+import { uniqueCompanyFields, visibleCompanyDescription } from '../../lib/companyDisplay';
 
 export function CompanyCard({ company }: { company: CompanyCardData }) {
   const loc = company.locations[0];
+  const fields = uniqueCompanyFields(company.fields);
+  const description = visibleCompanyDescription(company.description);
   const locLabel = loc ? [loc.city, loc.state, loc.country].filter(Boolean).join(', ') : null;
   return (
     <Card className="flex h-full flex-col">
@@ -16,14 +19,11 @@ export function CompanyCard({ company }: { company: CompanyCardData }) {
           <Link to={`/companies/${company.slug}`} className="font-semibold text-navy hover:text-cyan">
             {company.name}
           </Link>
-          <p className="truncate text-sm text-slate-500">{company.fields?.join(' · ') || ''}</p>
         </div>
       </div>
 
       <div className="mt-3 flex flex-wrap gap-1.5">
-        {(company.fields ?? [])
-          .filter((f) => f && f !== 'Other')
-          .map((f) => (
+        {fields.map((f) => (
             <Badge key={f} tone="cyan">
               {f}
             </Badge>
@@ -31,8 +31,8 @@ export function CompanyCard({ company }: { company: CompanyCardData }) {
         {company.employeeCountRange && <Badge tone="muted">{company.employeeCountRange} employees</Badge>}
       </div>
 
-      {company.description && (
-        <p className="mt-3 line-clamp-2 text-sm text-slate-600">{company.description}</p>
+      {description && (
+        <p className="mt-3 line-clamp-2 text-sm text-slate-600">{description}</p>
       )}
 
       {locLabel && (
