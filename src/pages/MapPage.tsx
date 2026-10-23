@@ -19,18 +19,31 @@ const SINGLE_WORLD_BOUNDS: L.LatLngBoundsExpression = [
   [85, 180],
 ];
 
+/** Trailing legal-entity suffixes so "Bechtel" matches "Bechtel Corporation". */
+const TRAILING_LEGAL_SUFFIX =
+  /(?:\s+(?:incorporated|corporation|company|limited|holdings|partners|llc|llp|ltd|inc|corp|plc|gmbh|co|lp|pc))+$/;
+
 /**
  * Normalize company names before comparing.
- * Tolerates capitalization, whitespace, and punctuation variations.
+ * Tolerates capitalization, whitespace, punctuation, a leading "the",
+ * and legal suffixes (Inc, LLC, Corporation, …).
  */
-function companyKey(name: string): string {
+export function companyKey(name: string): string {
   if (!name) return '';
-  return name
+  let key = name
     .toLowerCase()
     .normalize('NFKC')
-    .replace(/[^a-z0-9\s]/g, '')
+    .replace(/&/g, ' and ')
+    .replace(/[^a-z0-9\s]/g, ' ')
     .replace(/\s+/g, ' ')
-    .trim();
+    .trim()
+    .replace(/^the\s+/, '');
+  for (let i = 0; i < 4; i += 1) {
+    const next = key.replace(TRAILING_LEGAL_SUFFIX, '').trim();
+    if (next === key) break;
+    key = next;
+  }
+  return key;
 }
 
 /**
@@ -45,11 +58,13 @@ export function filterMarkersByCompany(markers: MapMarker[], companyName: string
     .map((marker) => {
       const matchingRoles = marker.roles.filter((role) => {
         const roleCompKey = companyKey(role.companyName);
-        if (!roleCompKey) return false;
-        if (roleCompKey === selected) return true;
+        if (!roleCompKey || !selected) return false;
         return (
+          roleCompKey === selected ||
           roleCompKey.startsWith(`${selected} `) ||
-          selected.startsWith(`${roleCompKey} `)
+          selected.startsWith(`${roleCompKey} `) ||
+          roleCompKey.includes(selected) ||
+          selected.includes(roleCompKey)
         );
       });
 
@@ -67,10 +82,13 @@ export function filterMarkersByCompany(markers: MapMarker[], companyName: string
 
 /** Distinct company names across the marker set, for tests and autocomplete. */
 export function companyNamesFromMarkers(markers: MapMarker[]): string[] {
-  return [...new Set(
-    markers.flatMap((marker) => marker.roles.map((role) => role.companyName.trim()))
-      .filter(Boolean)
-  )].sort((a, b) => a.localeCompare(b));
+  return [
+    ...new Set(
+      markers
+        .flatMap((marker) => marker.roles.map((role) => role.companyName.trim()))
+        .filter(Boolean)
+    ),
+  ].sort((a, b) => a.localeCompare(b));
 }
 
 export interface CompanyMapOption {
@@ -82,12 +100,15 @@ export interface CompanyMapOption {
 
 /** Build the selector from the SAME unfiltered markers used by the map. */
 export function companyOptionsFromMarkers(markers: MapMarker[]): CompanyMapOption[] {
-  const stats = new Map<string, {
-    name: string;
-    roleCount: number;
-    cities: Set<string>;
-    logoUrl?: string | null;
-  }>();
+  const stats = new Map<
+    string,
+    {
+      name: string;
+      roleCount: number;
+      cities: Set<string>;
+      logoUrl?: string | null;
+    }
+  >();
 
   for (const marker of markers) {
     for (const role of marker.roles) {
@@ -142,9 +163,9 @@ function FitToMarkers({
     }
 
     const coordinates = markers
-      .filter((marker) =>
-        Number.isFinite(marker.latitude) &&
-        Number.isFinite(marker.longitude)
+      .filter(
+        (marker) =>
+          Number.isFinite(marker.latitude) && Number.isFinite(marker.longitude)
       )
       .map((marker) =>
         L.latLng(marker.latitude, normalizeLongitude(marker.longitude))
@@ -180,7 +201,9 @@ function roleCountIcon(count: number): L.DivIcon {
 }
 
 // Cluster badge sums the role counts of its child markers.
-function clusterIcon(cluster: { getAllChildMarkers: () => Array<{ options: { roleCount?: number } }> }): L.DivIcon {
+function clusterIcon(cluster: {
+  getAllChildMarkers: () => Array<{ options: { roleCount?: number } }>;
+}): L.DivIcon {
   const total = cluster
     .getAllChildMarkers()
     .reduce((sum, m) => sum + (m.options.roleCount ?? 1), 0);
@@ -308,9 +331,10 @@ export function MapPage() {
   );
 
   const markerSetKey = useMemo(
-    () => `${companyKey(activeCompany)}:${markers.map(
-      (marker) => `${marker.id}#${marker.roleCount}`
-    ).join('|')}`,
+    () =>
+      `${companyKey(activeCompany)}:${markers
+        .map((marker) => `${marker.id}#${marker.roleCount}`)
+        .join('|')}`,
     [activeCompany, markers]
   );
 
@@ -561,7 +585,11 @@ export function MapPage() {
                   {...({ roleCount: marker.roleCount } as object)}
                 >
                   <Popup maxWidth={320}>
-                    <MarkerPopup marker={marker} />
+                    <MarkerPopup
+                      marker={marker}
+                      activeCompany={activeCompany}
+                      seasons={filters.seasons}
+                    />
                   </Popup>
                 </Marker>
               ))}
@@ -576,13 +604,25 @@ export function MapPage() {
 const POPUP_INITIAL = 25;
 const POPUP_STEP = 50;
 
-export function MarkerPopup({ marker }: { marker: MapMarker }) {
+export function MarkerPopup({
+  marker,
+  activeCompany,
+  seasons = [],
+}: {
+  marker: MapMarker;
+  activeCompany?: string;
+  seasons?: Season[];
+}) {
   const [visible, setVisible] = useState(POPUP_INITIAL);
   const shown = marker.roles.slice(0, visible);
   const remaining = marker.roles.length - visible;
+
   const browseParams = new URLSearchParams();
   if (marker.city) browseParams.set('city', marker.city);
   else if (marker.state) browseParams.set('state', marker.state);
+  if (activeCompany) browseParams.set('q', activeCompany);
+  seasons.forEach((s) => browseParams.append('season', s));
+
   const browseHref = `/browse?${browseParams.toString()}`;
   return (
     <div className="min-w-[240px]">
