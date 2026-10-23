@@ -16,6 +16,7 @@ import { Drawer } from '../components/ui/Drawer';
 import { Button } from '../components/ui/Button';
 import { EmptyState } from '../components/ui/EmptyState';
 import { LoadingBlock } from '../components/ui/Spinner';
+import { RoleCardSkeleton } from '../components/ui/Skeleton';
 import { interleaveByCompany } from '../lib/roleQuery';
 import type { SortKey } from '../lib/filters';
 
@@ -144,7 +145,11 @@ export function Browse() {
           </p>
 
           {loading ? (
-            <LoadingBlock />
+            <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-3">
+              {Array.from({ length: 6 }).map((_, i) => (
+                <RoleCardSkeleton key={i} />
+              ))}
+            </div>
           ) : total === 0 ? (
             <EmptyState
               title="No results match your filters"

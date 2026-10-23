@@ -1,5 +1,5 @@
 import { Link } from 'react-router-dom';
-import { Check, Bookmark, BookmarkCheck, MapPin, ExternalLink } from 'lucide-react';
+import { Check, Bookmark, BookmarkCheck, MapPin, ExternalLink, Loader2 } from 'lucide-react';
 import type { ApplicationStatus } from '../../lib/adapter/types';
 import type { RoleCard as RoleCardData } from '../../lib/adapter/types';
 import { Card } from '../ui/Card';
@@ -59,19 +59,22 @@ export function RoleCard({
   return (
     <Card className="flex h-full flex-col">
       <div className="flex items-start justify-between gap-3">
-        <div className="flex items-center gap-3">
+        <div className="flex items-center gap-3 min-w-0">
           <CompanyLogo
             name={role.companyName}
             logoUrl={role.companyLogoUrl}
             websiteUrl={role.companyWebsiteUrl}
             size={40}
           />
-          <div>
-            <Link to={`/roles/${role.slug}`} className="font-semibold text-navy hover:text-cyan">
+          <div className="min-w-0">
+            <Link
+              to={`/roles/${role.slug}`}
+              className="block truncate font-semibold text-slate-900 hover:text-cyan transition-colors"
+            >
               {role.title}
             </Link>
-            <p className="text-sm text-slate-500">
-              <Link to={`/companies/${role.companySlug}`} className="hover:text-navy">
+            <p className="truncate text-sm text-slate-500">
+              <Link to={`/companies/${role.companySlug}`} className="hover:text-slate-900 transition-colors">
                 {role.companyName}
               </Link>
             </p>
@@ -82,7 +85,7 @@ export function RoleCard({
             onClick={() => onToggleSave(role.id)}
             aria-label={saved ? 'Remove from saved' : 'Save opportunity'}
             aria-pressed={saved}
-            className="text-slate-400 hover:text-cyan"
+            className="flex-shrink-0 text-slate-400 hover:text-cyan transition-colors"
           >
             {saved ? <BookmarkCheck className="h-5 w-5 text-cyan" /> : <Bookmark className="h-5 w-5" />}
           </button>
@@ -104,11 +107,11 @@ export function RoleCard({
 
       <dl className="mt-3 space-y-1 text-sm text-slate-600">
         <div className="flex items-center gap-1.5">
-          <MapPin className="h-4 w-4 text-slate-400" aria-hidden="true" />
-          <span>{locationLabel(role)}</span>
+          <MapPin className="h-4 w-4 text-slate-400 flex-shrink-0" aria-hidden="true" />
+          <span className="truncate">{locationLabel(role)}</span>
         </div>
         <div className="flex flex-wrap items-center gap-x-1.5">
-          {pay && <span className="font-medium text-navy">{pay}</span>}
+          {pay && <span className="font-medium text-slate-900">{pay}</span>}
         </div>
       </dl>
 
@@ -127,7 +130,11 @@ export function RoleCard({
                 aria-label={`✓ Tracked ${role.title}. Click to untrack`}
                 title="Click to remove from tracked applications"
               >
-                <Check className="h-3.5 w-3.5" aria-hidden="true" />
+                {trackingSaving ? (
+                  <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden="true" />
+                ) : (
+                  <Check className="h-3.5 w-3.5" aria-hidden="true" />
+                )}
                 <span>{trackingSaving ? 'Updating…' : '✓ Tracked'}</span>
               </button>
             ) : (
@@ -135,10 +142,13 @@ export function RoleCard({
                 type="button"
                 onClick={handleTrackClick}
                 disabled={trackingSaving}
-                className="inline-flex items-center gap-1 rounded-md border border-slate-300 bg-white px-2.5 py-1.5 text-xs font-semibold text-slate-700 shadow-sm hover:border-navy hover:text-navy hover:bg-slate-50 transition-colors disabled:opacity-50"
+                className="inline-flex items-center gap-1 rounded-md border border-slate-300 bg-white px-2.5 py-1.5 text-xs font-semibold text-slate-700 shadow-sm hover:border-slate-400 hover:text-slate-900 hover:bg-slate-50 transition-colors disabled:opacity-50"
                 aria-label={`+ Track ${role.title}`}
                 title="Track this opportunity"
               >
+                {trackingSaving ? (
+                  <Loader2 className="h-3.5 w-3.5 animate-spin text-slate-400" aria-hidden="true" />
+                ) : null}
                 <span>{trackingSaving ? 'Saving…' : '+ Track'}</span>
               </button>
             ))}
@@ -151,7 +161,7 @@ export function RoleCard({
       </div>
       {role.applicationDeadline && (
         <p className="mt-2 flex items-center gap-1 text-xs text-slate-500">
-          <ExternalLink className="h-3 w-3" aria-hidden="true" /> Apply by{' '}
+          <ExternalLink className="h-3 w-3 flex-shrink-0" aria-hidden="true" /> Apply by{' '}
           {new Date(role.applicationDeadline).toLocaleDateString()}
         </p>
       )}

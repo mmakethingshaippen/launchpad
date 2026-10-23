@@ -123,8 +123,13 @@ export function MyApplications() {
             <LoadingBlock />
           ) : applications.length === 0 ? (
             <EmptyState
-              title="No tracked applications"
-              description="Track an application from a role page, or add one manually."
+              title="No tracked applications yet"
+              description="Track an application directly from any opportunity card, or add one manually above."
+              action={
+                <Link to="/browse">
+                  <Button variant="outline">Browse opportunities</Button>
+                </Link>
+              }
             />
           ) : (
             <StatusBoard applications={applications} onStatusChange={upsert} onRemove={remove} />
