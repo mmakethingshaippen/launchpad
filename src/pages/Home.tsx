@@ -43,7 +43,7 @@ export function Home() {
         <title>Launchpad — Your career starts somewhere</title>
         <meta
           name="description"
-          content="Discover live internships, co-ops, and early-career opportunities at top companies, fast-growing teams, and public institutions, all in one place."
+          content="Discover live internships, co-ops, and early career opportunities at top companies, fast growing teams, and public institutions, all in one place."
         />
         <meta property="og:title" content="Launchpad — Find your Launchpad" />
       </Helmet>
@@ -55,8 +55,8 @@ export function Home() {
             Your career starts somewhere. Find your <span className="text-cyan">Launchpad</span>.
           </h1>
           <p className="mt-4 text-base text-slate-300 md:text-lg">
-            Discover live internships, co-ops, and early-career opportunities at top companies,
-            fast-growing teams, and public institutions, all in one place.
+            Discover live internships, co-ops, and early career opportunities at top companies,
+            fast growing teams, and public institutions, all in one place.
           </p>
 
           <form onSubmit={submit} className="mt-8 space-y-3 text-left">
@@ -159,11 +159,21 @@ export function Home() {
         {featured.isLoading ? (
           <LoadingBlock label="Loading featured opportunities" />
         ) : (
-          <div className="space-y-10">
-            <FeaturedRoles title="Recently verified internships" roles={featured.data?.recentlyVerified ?? []} />
-            <FeaturedRoles title="Upcoming term opportunities" roles={featured.data?.byUpcomingTerm ?? []} />
-            <FeaturedCompanies companies={featured.data?.featuredCompanies ?? []} />
-          </div>
+          (() => {
+            const recentRoles = (featured.data?.recentlyVerified ?? []).slice(0, 3);
+            const seenIds = new Set(recentRoles.map((r) => r.id));
+            const upcomingRoles = (featured.data?.byUpcomingTerm ?? [])
+              .filter((r) => !seenIds.has(r.id))
+              .slice(0, 3);
+
+            return (
+              <div className="space-y-10">
+                <FeaturedRoles title="Recently verified internships" roles={recentRoles} />
+                <FeaturedRoles title="Upcoming term opportunities" roles={upcomingRoles} />
+                <FeaturedCompanies companies={featured.data?.featuredCompanies ?? []} />
+              </div>
+            );
+          })()
         )}
       </section>
     </div>

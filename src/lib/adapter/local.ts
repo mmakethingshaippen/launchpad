@@ -128,12 +128,23 @@ export class LocalAdapter implements DataAdapter {
 
   async getFeatured(): Promise<FeaturedBlocks> {
     await this.ensureSynced();
-    const roles = sortRoles(this.allCards(), 'verified');
+    const allRoles = this.allCards();
+    const verifiedRoles = sortRoles(allRoles, 'verified');
+    const recentSelection = verifiedRoles.slice(0, 6);
+    const recentIds = new Set(recentSelection.map((r) => r.id));
+
+    // Distinct selection logic for upcoming term opportunities:
+    // Sort by cohort year descending, filtering out recently verified roles
+    const upcoming = allRoles
+      .filter(
+        (r) =>
+          !recentIds.has(r.id) &&
+          r.seasons.some((s) => s === 'Summer' || s === 'Fall' || s === 'Spring' || s === 'Winter'),
+      )
+      .sort((a, b) => (b.cohortYear ?? 0) - (a.cohortYear ?? 0) || b.title.localeCompare(a.title));
+
     const companies = this.data.companyCards();
-    const upcoming = roles.filter((r) =>
-      r.seasons.some((s) => s === 'Summer' || s === 'Fall' || s === 'Spring'),
-    );
-    const withDeadline = roles
+    const withDeadline = allRoles
       .filter((r) => r.applicationDeadline)
       .sort(
         (a, b) =>
@@ -141,8 +152,8 @@ export class LocalAdapter implements DataAdapter {
       );
     return {
       featuredCompanies: companies.filter((c) => c.activeRoleCount > 0).slice(0, 6),
-      startupOpportunities: roles.filter((r) => r.companyType === 'Startup').slice(0, 6),
-      recentlyVerified: roles.slice(0, 6),
+      startupOpportunities: allRoles.filter((r) => r.companyType === 'Startup').slice(0, 6),
+      recentlyVerified: recentSelection,
       byUpcomingTerm: upcoming.slice(0, 6),
       approachingDeadline: withDeadline.slice(0, 6),
     };

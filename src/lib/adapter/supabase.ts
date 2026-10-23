@@ -352,13 +352,24 @@ export class SupabaseAdapter implements DataAdapter {
       .from('public_roles')
       .select(ROLE_CARD_SELECT_WITH_COMPANY)
       .order('last_verified_at', { ascending: false })
-      .limit(6);
+      .limit(12);
     const recentlyVerified = (recent.data ?? []).map((r) => mapRoleCard(r as never));
+    const recentIds = new Set(recentlyVerified.map((r) => r.id));
+
+    // Upcoming term opportunities pull from distinct query logic:
+    // Filter for upcoming terms, ordered by cohort_year DESC, created_at DESC, excluding recentIds
+    const upcomingQuery = await this.db
+      .from('public_roles')
+      .select(ROLE_CARD_SELECT_WITH_COMPANY)
+      .overlaps('seasons', ['Summer', 'Fall', 'Spring', 'Winter'])
+      .order('cohort_year', { ascending: false, nullsFirst: false })
+      .order('created_at', { ascending: false })
+      .limit(12);
+    const byUpcoming = (upcomingQuery.data ?? [])
+      .map((r) => mapRoleCard(r as never))
+      .filter((r) => !recentIds.has(r.id));
 
     const startupRoles = recentlyVerified.filter((r) => r.companyType === 'Startup');
-    const byUpcoming = recentlyVerified.filter((r) =>
-      r.seasons.some((s) => s === 'Summer' || s === 'Fall' || s === 'Spring'),
-    );
     const deadlineQ = await this.db
       .from('public_roles')
       .select(ROLE_CARD_SELECT_WITH_COMPANY)
