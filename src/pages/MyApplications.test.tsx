@@ -54,6 +54,8 @@ const anonAuth: AuthState = {
   signIn: vi.fn(),
   signUp: vi.fn(),
   signOut: vi.fn(),
+  resetPasswordForEmail: vi.fn(),
+  updatePassword: vi.fn(),
 };
 
 function renderPage(adapter: LocalAdapter) {

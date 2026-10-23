@@ -31,10 +31,22 @@ export function Browse() {
   const adapter = useAdapter();
   const { filters, activeCount, setFilters, clearAll } = useRoleFilters();
   const { savedIds, toggleSave } = useSaved();
-  const { applications, upsertAsync } = useApplications();
+  const { applications, toggleTrack } = useApplications();
   const [trackingRoleId, setTrackingRoleId] = useState<string | null>(null);
   const trackedIds = new Set(applications.map((application) => application.roleId).filter((id): id is string => Boolean(id)));
-  const trackRole = async (role: RoleCardData, status: ApplicationStatus) => { setTrackingRoleId(role.id); try { await upsertAsync({ roleId: role.id, companyName: role.companyName, roleTitle: role.title, status, applicationUrl: role.applyUrl ?? null }); } finally { setTrackingRoleId(null); } };
+  const handleToggleTrack = async (role: RoleCardData) => {
+    setTrackingRoleId(role.id);
+    try {
+      await toggleTrack({
+        id: role.id,
+        companyName: role.companyName,
+        title: role.title,
+        applyUrl: role.applyUrl ?? null,
+      });
+    } finally {
+      setTrackingRoleId(null);
+    }
+  };
   const [drawerOpen, setDrawerOpen] = useState(false);
 
   const roleQuery = useQuery({
@@ -159,7 +171,7 @@ export function Browse() {
                     ? interleaveByCompany(roleQuery.data!.items)
                     : roleQuery.data!.items
                   ).map((r) => (
-                    <RoleCard key={r.id} role={r} saved={savedIds.has(r.id)} onToggleSave={toggleSave} tracked={trackedIds.has(r.id)} trackingSaving={trackingRoleId === r.id} onTrack={(_id, status) => { void trackRole(r, status); }} />
+                    <RoleCard key={r.id} role={r} saved={savedIds.has(r.id)} onToggleSave={toggleSave} tracked={trackedIds.has(r.id)} trackingSaving={trackingRoleId === r.id} onToggleTrack={handleToggleTrack} onTrack={(_id) => { void handleToggleTrack(r); }} />
                   ))}
                 </div>
               )}

@@ -115,7 +115,7 @@ export function upsertApplication(input: ApplicationInput): Application {
 export function deleteApplication(id: string): void {
   write(
     APPS_KEY,
-    getApplications().filter((a) => a.id !== id),
+    getApplications().filter((a) => a.id !== id && a.roleId !== id),
   );
 }
 

@@ -30,6 +30,7 @@ import { DEFAULT_FILTERS } from '../filters';
 import { getSupabaseClient } from '../supabaseClient';
 import { interleaveByCompany } from '../roleQuery';
 import { buildRolePlan, PAGE_SIZE } from './supabaseQuery';
+import * as store from '../localStore';
 import { buildMapData, type MapRoleInput } from './mapMarkers';
 import {
   mapRoleCard as originalMapRoleCard,
@@ -479,7 +480,21 @@ export class SupabaseAdapter implements DataAdapter {
 
   async listSaved(): Promise<SavedItem[]> {
     const uid = await this.userId();
-    if (!uid) return [];
+    if (!uid) {
+      const items = store.getSaved();
+      if (items.length === 0) return [];
+      try {
+        const roleIds = items.map((i) => i.roleId);
+        const { data } = await this.db
+          .from('roles')
+          .select(ROLE_CARD_SELECT_WITH_COMPANY)
+          .in('id', roleIds);
+        const map = new Map((data ?? []).map((r) => [r.id, mapRoleCard(r as never)]));
+        return items.map((i) => ({ ...i, role: map.get(i.roleId) }));
+      } catch {
+        return items;
+      }
+    }
     const { data, error } = await this.db
       .from('saved_opportunities')
       .select('role_id, created_at, roles(' + ROLE_CARD_SELECT_WITH_COMPANY + ')')
@@ -499,7 +514,10 @@ export class SupabaseAdapter implements DataAdapter {
 
   async save(roleId: string): Promise<void> {
     const uid = await this.userId();
-    if (!uid) throw new Error('Not authenticated');
+    if (!uid) {
+      store.addSaved(roleId);
+      return;
+    }
     const { error } = await this.db
       .from('saved_opportunities')
       .upsert({ user_id: uid, role_id: roleId }, { onConflict: 'user_id,role_id' });
@@ -508,13 +526,19 @@ export class SupabaseAdapter implements DataAdapter {
 
   async unsave(roleId: string): Promise<void> {
     const uid = await this.userId();
-    if (!uid) return;
+    if (!uid) {
+      store.removeSaved(roleId);
+      return;
+    }
     await this.db.from('saved_opportunities').delete().eq('user_id', uid).eq('role_id', roleId);
+    store.removeSaved(roleId);
   }
 
   async listApplications(): Promise<Application[]> {
     const uid = await this.userId();
-    if (!uid) return [];
+    if (!uid) {
+      return store.getApplications();
+    }
     const { data, error } = await this.db
       .from('applications')
       .select('*')
@@ -526,7 +550,10 @@ export class SupabaseAdapter implements DataAdapter {
 
   async upsertApplication(input: ApplicationInput): Promise<void> {
     const uid = await this.userId();
-    if (!uid) throw new Error('Not authenticated');
+    if (!uid) {
+      store.upsertApplication(input);
+      return;
+    }
     const row = {
       user_id: uid,
       role_id: input.roleId ?? null,
@@ -546,8 +573,12 @@ export class SupabaseAdapter implements DataAdapter {
 
   async deleteApplication(id: string): Promise<void> {
     const uid = await this.userId();
-    if (!uid) return;
+    if (!uid) {
+      store.deleteApplication(id);
+      return;
+    }
     await this.db.from('applications').delete().eq('id', id).eq('user_id', uid);
+    store.deleteApplication(id);
   }
 
   async submitCompany(input: CompanyFormA): Promise<void> {

@@ -13,6 +13,8 @@ function auth(overrides: Partial<AuthState> = {}): AuthState {
     signIn: vi.fn(),
     signUp: vi.fn(),
     signOut: vi.fn(),
+    resetPasswordForEmail: vi.fn(),
+    updatePassword: vi.fn(),
     ...overrides,
   };
 }

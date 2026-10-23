@@ -1,5 +1,5 @@
 import { useState, type FormEvent } from 'react';
-import { LogIn } from 'lucide-react';
+import { LogIn, KeyRound, CheckCircle2 } from 'lucide-react';
 import { useAuth } from '../../hooks/useAuth';
 import { Card } from '../ui/Card';
 import { Button } from '../ui/Button';
@@ -12,18 +12,18 @@ export interface SignInFormProps {
 }
 
 /**
- * Reusable email/password sign-in + sign-up form. Used by the /signin page and
- * embedded inline on protected views (e.g. /admin) so users can authenticate in
- * place. Browsing never requires this — it only unlocks synced/admin features.
+ * Reusable email/password sign-in + sign-up + password reset form.
+ * Browsing never requires this — it only unlocks synced/admin features.
  */
 export function SignInForm({ onAuthenticated, compact = false }: SignInFormProps) {
-  const { signIn, signUp, isCloud } = useAuth();
-  const [mode, setMode] = useState<'signin' | 'signup'>('signin');
+  const { signIn, signUp, resetPasswordForEmail, isCloud } = useAuth();
+  const [mode, setMode] = useState<'signin' | 'signup' | 'forgot'>('signin');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [sentConfirm, setSentConfirm] = useState(false);
+  const [resetSent, setResetSent] = useState(false);
 
   const onSubmit = async (e: FormEvent) => {
     e.preventDefault();
@@ -45,6 +45,24 @@ export function SignInForm({ onAuthenticated, compact = false }: SignInFormProps
     }
   };
 
+  const onResetSubmit = async (e: FormEvent) => {
+    e.preventDefault();
+    if (!email.trim()) {
+      setError('Please enter your account email address.');
+      return;
+    }
+    setError(null);
+    setBusy(true);
+    try {
+      await resetPasswordForEmail(email.trim());
+      setResetSent(true);
+    } catch (err) {
+      setError(friendlyAuthError(err));
+    } finally {
+      setBusy(false);
+    }
+  };
+
   if (sentConfirm) {
     return (
       <Card className={compact ? 'text-center shadow-none' : 'text-center'}>
@@ -52,7 +70,14 @@ export function SignInForm({ onAuthenticated, compact = false }: SignInFormProps
         <p className="mt-1 text-sm text-slate-500">
           We sent a confirmation link to {email}. Confirm it, then sign in.
         </p>
-        <Button variant="outline" className="mt-4" onClick={() => { setMode('signin'); setSentConfirm(false); }}>
+        <Button
+          variant="outline"
+          className="mt-4"
+          onClick={() => {
+            setMode('signin');
+            setSentConfirm(false);
+          }}
+        >
           Back to sign in
         </Button>
       </Card>
@@ -66,60 +91,158 @@ export function SignInForm({ onAuthenticated, compact = false }: SignInFormProps
           Accounts require a connected Supabase backend. This instance is running in local mode.
         </p>
       )}
-      <form onSubmit={onSubmit} className="space-y-4" noValidate>
-        <label className="block">
-          <span className="mb-1 block text-sm font-medium text-navy">Email</span>
-          <input
-            type="email"
-            required
-            value={email}
-            onChange={(e) => setEmail(e.target.value)}
-            autoComplete="email"
-            className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm outline-none focus:border-cyan"
-          />
-        </label>
-        <label className="block">
-          <span className="mb-1 block text-sm font-medium text-navy">Password</span>
-          <input
-            type="password"
-            required
-            minLength={6}
-            value={password}
-            onChange={(e) => setPassword(e.target.value)}
-            autoComplete={mode === 'signin' ? 'current-password' : 'new-password'}
-            className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm outline-none focus:border-cyan"
-          />
-        </label>
 
-        {error && (
-          <p className="rounded-lg bg-red-50 px-3 py-2 text-sm text-red-700" role="alert">
-            {error}
+      {mode === 'forgot' ? (
+        <form onSubmit={onResetSubmit} className="space-y-4" noValidate>
+          <div>
+            <h2 className="text-base font-semibold text-navy">Reset your password</h2>
+            <p className="mt-1 text-xs text-slate-500">
+              Enter your account email and we&apos;ll send you a link to reset your password.
+            </p>
+          </div>
+
+          {resetSent && (
+            <div
+              className="flex items-start gap-2.5 rounded-lg border border-emerald-200 bg-emerald-50 p-3 text-sm text-emerald-800"
+              role="status"
+            >
+              <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0 text-emerald-600" aria-hidden="true" />
+              <div>
+                <p className="font-medium text-emerald-900">Reset link sent!</p>
+                <p className="mt-0.5 text-xs text-emerald-700">
+                  A password reset link has been sent to <strong>{email}</strong>. Check your inbox to choose a new password.
+                </p>
+              </div>
+            </div>
+          )}
+
+          <label className="block">
+            <span className="mb-1 block text-sm font-medium text-navy">Email</span>
+            <input
+              type="email"
+              required
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+              autoComplete="email"
+              placeholder="you@example.com"
+              className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm outline-none focus:border-cyan"
+            />
+          </label>
+
+          {error && (
+            <p className="rounded-lg bg-red-50 px-3 py-2 text-sm text-red-700" role="alert">
+              {error}
+            </p>
+          )}
+
+          <Button type="submit" className="w-full" disabled={busy || !isCloud}>
+            <KeyRound className="h-4 w-4" aria-hidden="true" />
+            {busy ? 'Sending reset link…' : 'Send reset link'}
+          </Button>
+
+          <p className="mt-4 text-center text-sm text-slate-500">
+            <button
+              type="button"
+              onClick={() => {
+                setMode('signin');
+                setError(null);
+                setResetSent(false);
+              }}
+              className="text-cyan underline hover:text-navy"
+            >
+              Back to sign in
+            </button>
           </p>
-        )}
+        </form>
+      ) : (
+        <>
+          <form onSubmit={onSubmit} className="space-y-4" noValidate>
+            <label className="block">
+              <span className="mb-1 block text-sm font-medium text-navy">Email</span>
+              <input
+                type="email"
+                required
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+                autoComplete="email"
+                className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm outline-none focus:border-cyan"
+              />
+            </label>
+            <div>
+              <label className="block">
+                <span className="mb-1 block text-sm font-medium text-navy">Password</span>
+                <input
+                  type="password"
+                  required
+                  minLength={6}
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                  autoComplete={mode === 'signin' ? 'current-password' : 'new-password'}
+                  className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm outline-none focus:border-cyan"
+                />
+              </label>
+              {mode === 'signin' && (
+                <div className="mt-1.5 flex justify-end">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setMode('forgot');
+                      setError(null);
+                      setResetSent(false);
+                    }}
+                    className="text-xs text-slate-500 hover:text-cyan hover:underline"
+                  >
+                    Forgot password?
+                  </button>
+                </div>
+              )}
+            </div>
 
-        <Button type="submit" className="w-full" disabled={busy || !isCloud}>
-          <LogIn className="h-4 w-4" aria-hidden="true" />
-          {busy ? 'Please wait…' : mode === 'signin' ? 'Sign in' : 'Create account'}
-        </Button>
-      </form>
+            {error && (
+              <p className="rounded-lg bg-red-50 px-3 py-2 text-sm text-red-700" role="alert">
+                {error}
+              </p>
+            )}
 
-      <p className="mt-4 text-center text-sm text-slate-500">
-        {mode === 'signin' ? (
-          <>
-            No account?{' '}
-            <button type="button" onClick={() => { setMode('signup'); setError(null); }} className="text-cyan underline">
-              Create one
-            </button>
-          </>
-        ) : (
-          <>
-            Already have an account?{' '}
-            <button type="button" onClick={() => { setMode('signin'); setError(null); }} className="text-cyan underline">
-              Sign in
-            </button>
-          </>
-        )}
-      </p>
+            <Button type="submit" className="w-full" disabled={busy || !isCloud}>
+              <LogIn className="h-4 w-4" aria-hidden="true" />
+              {busy ? 'Please wait…' : mode === 'signin' ? 'Sign in' : 'Create account'}
+            </Button>
+          </form>
+
+          <p className="mt-4 text-center text-sm text-slate-500">
+            {mode === 'signin' ? (
+              <>
+                No account?{' '}
+                <button
+                  type="button"
+                  onClick={() => {
+                    setMode('signup');
+                    setError(null);
+                  }}
+                  className="text-cyan underline hover:text-navy"
+                >
+                  Create one
+                </button>
+              </>
+            ) : (
+              <>
+                Already have an account?{' '}
+                <button
+                  type="button"
+                  onClick={() => {
+                    setMode('signin');
+                    setError(null);
+                  }}
+                  className="text-cyan underline hover:text-navy"
+                >
+                  Sign in
+                </button>
+              </>
+            )}
+          </p>
+        </>
+      )}
     </Card>
   );
 }
@@ -132,7 +255,8 @@ export function friendlyAuthError(err: unknown): string {
   if (lower.includes('email not confirmed')) return 'Please confirm your email address first, then sign in.';
   if (lower.includes('user already registered')) return 'An account with this email already exists. Try signing in.';
   if (lower.includes('password should be at least')) return 'Password must be at least 6 characters.';
-  if (lower.includes('rate limit') || lower.includes('too many')) return 'Too many attempts. Please wait a moment and try again.';
+  if (lower.includes('rate limit') || lower.includes('too many') || lower.includes('for security purposes'))
+    return 'Too many attempts. Please wait a moment and try again.';
   if (lower.includes('without vite_supabase')) return 'Accounts are unavailable: the backend is not configured.';
   return raw || 'Something went wrong. Please try again.';
 }

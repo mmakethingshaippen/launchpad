@@ -11,6 +11,7 @@ import { MyApplications } from './pages/MyApplications';
 import { Submit } from './pages/Submit';
 import { Admin } from './pages/Admin';
 import { SignIn } from './pages/SignIn';
+import { ResetPassword } from './pages/ResetPassword';
 
 export default function App() {
   return (
@@ -25,6 +26,7 @@ export default function App() {
         <Route path="/resources/:slug" element={<ResourceGuide />} />
         <Route path="/applications" element={<MyApplications />} />
         <Route path="/signin" element={<SignIn />} />
+        <Route path="/reset-password" element={<ResetPassword />} />
         <Route path="/submit" element={<Submit />} />
         <Route path="/admin" element={<Admin />} />
         <Route path="*" element={<NotFound />} />

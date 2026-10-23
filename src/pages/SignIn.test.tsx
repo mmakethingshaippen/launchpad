@@ -15,6 +15,8 @@ function baseAuth(overrides: Partial<AuthState> = {}): AuthState {
     signIn: vi.fn(async () => {}),
     signUp: vi.fn(async () => ({ needsConfirmation: true })),
     signOut: vi.fn(async () => {}),
+    resetPasswordForEmail: vi.fn(async () => {}),
+    updatePassword: vi.fn(async () => {}),
     ...overrides,
   };
 }
@@ -83,6 +85,22 @@ describe('SignIn page', () => {
     await user.click(screen.getByRole('button', { name: /Create account/i }));
 
     expect(await screen.findByText('Applications page')).toBeInTheDocument();
+  });
+
+
+  it('allows requesting a password reset link', async () => {
+    const resetPasswordForEmail = vi.fn(async () => {});
+    const user = userEvent.setup({ delay: null });
+    renderSignIn(baseAuth({ resetPasswordForEmail }));
+
+    await user.click(screen.getByRole('button', { name: /Forgot password?/i }));
+    expect(screen.getByRole('heading', { name: /Reset your password/i })).toBeInTheDocument();
+
+    await user.type(screen.getByLabelText(/Email/i), 'reset@example.com');
+    await user.click(screen.getByRole('button', { name: /Send reset link/i }));
+
+    expect(resetPasswordForEmail).toHaveBeenCalledWith('reset@example.com');
+    expect(await screen.findByText(/Reset link sent!/i)).toBeInTheDocument();
   });
 
   it('disables the submit button in local mode', () => {

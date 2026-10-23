@@ -735,7 +735,7 @@ export const SEED_COMPANIES: SeedCompany[] = [
     degreeLevels: ['Undergraduate', 'Graduate', 'New Grad'],
     atsProvider: 'lever',
     atsBoardToken: 'palantir',
-    locations: [{ city: 'Denver', state: 'CO', country: 'USA', latitude: 39.7392, longitude: -104.9903 }],
+    locations: [{ city: 'Denver', state: 'CO', country: 'USA', latitude: 39.7392, longitude: -104.9903 }, { city: 'Honolulu', state: 'HI', country: 'USA', latitude: 21.3069, longitude: -157.8583 }],
   },
   {
     slug: 'zoox',

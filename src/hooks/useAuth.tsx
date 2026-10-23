@@ -15,6 +15,8 @@ export interface AuthState {
   /** Returns true if a session was created (email confirmation disabled), false if a confirmation email was sent. */
   signUp: (email: string, password: string) => Promise<{ needsConfirmation: boolean }>;
   signOut: () => Promise<void>;
+  resetPasswordForEmail: (email: string) => Promise<void>;
+  updatePassword: (newPassword: string) => Promise<void>;
 }
 
 const AuthContext = createContext<AuthState | null>(null);
@@ -101,8 +103,21 @@ function SupabaseAuthProvider({ children }: { children: ReactNode }) {
     setUser(null);
   }, []);
 
+  const resetPasswordForEmail = useCallback(async (email: string) => {
+    const { getSupabaseClient } = await import('../lib/supabaseClient');
+    const redirectTo = typeof window !== 'undefined' ? `${window.location.origin}/reset-password` : undefined;
+    const { error } = await getSupabaseClient().auth.resetPasswordForEmail(email, { redirectTo });
+    if (error) throw error;
+  }, []);
+
+  const updatePassword = useCallback(async (newPassword: string) => {
+    const { getSupabaseClient } = await import('../lib/supabaseClient');
+    const { error } = await getSupabaseClient().auth.updateUser({ password: newPassword });
+    if (error) throw error;
+  }, []);
+
   return (
-    <AuthContext.Provider value={{ user, loading, isCloud, signIn, signUp, signOut }}>
+    <AuthContext.Provider value={{ user, loading, isCloud, signIn, signUp, signOut, resetPasswordForEmail, updatePassword }}>
       {children}
     </AuthContext.Provider>
   );

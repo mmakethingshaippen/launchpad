@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
 import { Helmet } from 'react-helmet-async';
 import { useQuery } from '@tanstack/react-query';
-import { ExternalLink, Flag, AlertTriangle, ArrowLeft } from 'lucide-react';
+import { Check, ExternalLink, Flag, AlertTriangle, ArrowLeft } from 'lucide-react';
 import { useAdapter } from '../hooks/useAdapter';
 import { useApplications } from '../hooks/useApplications';
 import { Button } from '../components/ui/Button';
@@ -15,7 +15,7 @@ import { sanitizeHtml } from '../lib/sanitize';
 export function RoleDetail() {
   const { slug = '' } = useParams();
   const adapter = useAdapter();
-  const { applications, upsertAsync, isSaving } = useApplications();
+  const { applications, upsertAsync, removeAsync, isSaving } = useApplications();
   const [reported, setReported] = useState(false);
 
   const { data: role, isLoading } = useQuery({
@@ -123,7 +123,36 @@ export function RoleDetail() {
                 Apply on Company Website <ExternalLink className="h-4 w-4" aria-hidden="true" />
               </Button>
             </a>
-            {trackedApplication ? <Link to="/applications" className="rounded-lg bg-emerald-50 px-4 py-2 text-sm font-semibold text-emerald-700">Tracked ✓</Link> : <Button variant="outline" size="lg" disabled={isSaving} onClick={() => { void upsertAsync({ roleId: role.id, companyName: role.companyName, roleTitle: role.title, status: 'Applied', applicationUrl: role.applyUrl }); }}>{isSaving ? 'Saving…' : 'Track Application'}</Button>}
+            {trackedApplication ? (
+              <button
+                type="button"
+                disabled={isSaving}
+                onClick={() => { void removeAsync(trackedApplication.id); }}
+                className="inline-flex items-center gap-1.5 rounded-lg bg-emerald-600 px-4 py-2 text-sm font-semibold text-white shadow-sm hover:bg-emerald-700 transition-colors disabled:opacity-50"
+                title="Click to remove from tracked applications"
+                aria-label="Tracked ✓. Click to untrack"
+              >
+                <Check className="h-4 w-4" aria-hidden="true" />
+                <span>{isSaving ? 'Updating…' : '✓ Tracked'}</span>
+              </button>
+            ) : (
+              <Button
+                variant="outline"
+                size="lg"
+                disabled={isSaving}
+                onClick={() => {
+                  void upsertAsync({
+                    roleId: role.id,
+                    companyName: role.companyName,
+                    roleTitle: role.title,
+                    status: 'Applied',
+                    applicationUrl: role.applyUrl,
+                  });
+                }}
+              >
+                {isSaving ? 'Saving…' : '+ Track Application'}
+              </Button>
+            )}
             <Button variant="ghost" size="lg" onClick={report} disabled={reported}>
               <Flag className="h-4 w-4" aria-hidden="true" /> {reported ? 'Reported' : 'Report issue'}
             </Button>

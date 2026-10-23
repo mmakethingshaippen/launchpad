@@ -1,5 +1,4 @@
 import { Link } from 'react-router-dom';
-import { useState } from 'react';
 import { Check, Bookmark, BookmarkCheck, MapPin, ExternalLink } from 'lucide-react';
 import type { ApplicationStatus } from '../../lib/adapter/types';
 import type { RoleCard as RoleCardData } from '../../lib/adapter/types';
@@ -33,15 +32,30 @@ export function RoleCard({
   role,
   saved,
   onToggleSave,
-  tracked = false, trackingSaving = false, onTrack,
+  tracked = false,
+  trackingSaving = false,
+  onTrack,
+  onToggleTrack,
 }: {
   role: RoleCardData;
   saved?: boolean;
   onToggleSave?: (id: string) => void;
-  tracked?: boolean; trackingSaving?: boolean; onTrack?: (id: string, status: ApplicationStatus) => void;
+  tracked?: boolean;
+  trackingSaving?: boolean;
+  onTrack?: (id: string, status: ApplicationStatus) => void;
+  onToggleTrack?: (role: RoleCardData) => void;
 }) {
-  const [trackStatus, setTrackStatus] = useState<ApplicationStatus>('Applied');
   const pay = payLabel(role);
+  const handleTrackClick = () => {
+    if (onToggleTrack) {
+      onToggleTrack(role);
+    } else if (onTrack) {
+      onTrack(role.id, 'Applied');
+    }
+  };
+
+  const hasTrackingAction = Boolean(onToggleTrack || onTrack);
+
   return (
     <Card className="flex h-full flex-col">
       <div className="flex items-start justify-between gap-3">
@@ -81,7 +95,11 @@ export function RoleCard({
         ))}
         <Badge tone="cyan">{role.opportunityType}</Badge>
         {role.field && role.field !== 'Other' && <Badge tone="muted">{role.field}</Badge>}
-        {(role.degreeLevels ?? []).map((degree) => <Badge key={degree} tone="muted">{degree}</Badge>)}
+        {(role.degreeLevels ?? []).map((degree) => (
+          <Badge key={degree} tone="muted">
+            {degree}
+          </Badge>
+        ))}
       </div>
 
       <dl className="mt-3 space-y-1 text-sm text-slate-600">
@@ -99,7 +117,31 @@ export function RoleCard({
           Verified live {formatRelativeTime(role.lastVerifiedAt)}
         </span>
         <div className="flex items-center gap-2">
-          {onTrack && (tracked ? <Link to="/applications" className="rounded-full bg-emerald-50 px-2.5 py-1 text-xs font-semibold text-emerald-700">Tracked ✓</Link> : <button type="button" onClick={() => onTrack(role.id, trackStatus)} disabled={trackingSaving} className="rounded-md bg-navy px-2 py-1.5 text-xs font-semibold text-white disabled:opacity-50">{trackingSaving ? 'Saving…' : '+ Track'}</button>)}
+          {hasTrackingAction &&
+            (tracked ? (
+              <button
+                type="button"
+                onClick={handleTrackClick}
+                disabled={trackingSaving}
+                className="inline-flex items-center gap-1 rounded-md bg-emerald-600 px-2.5 py-1.5 text-xs font-semibold text-white shadow-sm hover:bg-emerald-700 transition-colors disabled:opacity-50"
+                aria-label={`✓ Tracked ${role.title}. Click to untrack`}
+                title="Click to remove from tracked applications"
+              >
+                <Check className="h-3.5 w-3.5" aria-hidden="true" />
+                <span>{trackingSaving ? 'Updating…' : '✓ Tracked'}</span>
+              </button>
+            ) : (
+              <button
+                type="button"
+                onClick={handleTrackClick}
+                disabled={trackingSaving}
+                className="inline-flex items-center gap-1 rounded-md border border-slate-300 bg-white px-2.5 py-1.5 text-xs font-semibold text-slate-700 shadow-sm hover:border-navy hover:text-navy hover:bg-slate-50 transition-colors disabled:opacity-50"
+                aria-label={`+ Track ${role.title}`}
+                title="Track this opportunity"
+              >
+                <span>{trackingSaving ? 'Saving…' : '+ Track'}</span>
+              </button>
+            ))}
           <Link to={`/roles/${role.slug}`}>
             <Button variant="outline" size="sm">
               Details

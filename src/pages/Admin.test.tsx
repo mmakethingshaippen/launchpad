@@ -18,6 +18,8 @@ function adminAuth(role: 'student' | 'admin' | null): AuthState {
     signIn: vi.fn(),
     signUp: vi.fn(),
     signOut: vi.fn(),
+    resetPasswordForEmail: vi.fn(),
+    updatePassword: vi.fn(),
   };
 }
 

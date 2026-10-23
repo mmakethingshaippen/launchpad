@@ -22,6 +22,17 @@ function role(partial: Partial<MapRoleInput>): MapRoleInput {
 }
 
 describe('buildMapMarkers', () => {
+  it('correctly geocodes and plots Hawaii roles including Honolulu and outlier coordinates', () => {
+    const markers = buildMapMarkers([
+      role({ id: 'hi-1', companyName: 'Palantir Technologies', locationString: 'Honolulu, HI' }),
+      role({ id: 'hi-2', companyName: 'Palantir Technologies', locationString: 'Honolulu' }),
+      role({ id: 'hi-3', companyName: 'Pacific Co', locationString: 'Hawaii' }),
+    ]);
+    const honolulu = markers.find((m) => m.city === 'Honolulu');
+    expect(honolulu).toBeDefined();
+    expect(honolulu!.latitude).toBeCloseTo(21.3, 0.5);
+    expect(honolulu!.longitude).toBeCloseTo(-157.86, 1);
+  });
   it('preserves multiple job cities even when one stored coordinate exists', () => {
     const markers = buildMapMarkers([role({ id: 'multi', locationString: 'New York, Seattle, USA',
       latitude: 40.7128, longitude: -74.006 })]);

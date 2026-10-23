@@ -170,11 +170,6 @@ function FitToMarkers({
   const map = useMap();
 
   useEffect(() => {
-    if (!hasSelection) {
-      map.setView([22, 0], 2.4, { animate: false });
-      return;
-    }
-
     const coordinates = markers
       .filter(
         (marker) =>
@@ -184,17 +179,34 @@ function FitToMarkers({
         L.latLng(marker.latitude, normalizeLongitude(marker.longitude))
       );
 
-    if (coordinates.length === 0) return;
+    if (coordinates.length === 0) {
+      map.setView([28, -98], 3, { animate: false });
+      return;
+    }
 
     map.stop();
-    if (coordinates.length === 1) {
-      map.setView(coordinates[0], 7, { animate: false });
-    } else {
-      map.fitBounds(L.latLngBounds(coordinates).pad(0.25), {
-        animate: false,
-        maxZoom: 7,
-      });
+    if (hasSelection) {
+      if (coordinates.length === 1) {
+        map.setView(coordinates[0], 7, { animate: false });
+      } else {
+        map.fitBounds(L.latLngBounds(coordinates).pad(0.25), {
+          animate: false,
+          maxZoom: 7,
+        });
+      }
+      return;
     }
+
+    // Default overview when no company is filtered:
+    // Frame all markers while ensuring outlier regions like Hawaii (lat ~19-21, lon ~-158)
+    // and Alaska are encompassed so Pacific opportunities are immediately visible.
+    const bounds = L.latLngBounds(coordinates);
+    bounds.extend([19.8968, -155.5828]);
+    bounds.extend([21.3069, -157.8583]);
+    map.fitBounds(bounds.pad(0.08), {
+      animate: false,
+      maxZoom: 5,
+    });
   }, [map, markers, hasSelection]);
 
   return null;
@@ -540,9 +552,9 @@ export function MapPage() {
           style={{ backgroundColor: '#aad3df' }}
         >
           <MapContainer
-            center={[22, 0]}
-            zoom={2.4}
-            minZoom={2.3}
+            center={[28, -98]}
+            zoom={3}
+            minZoom={1.5}
             zoomSnap={0.1}
             zoomDelta={0.5}
             maxBounds={[[-85, -225], [85, 225]]}
@@ -594,9 +606,18 @@ const POPUP_STEP = 50;
 
 function CompanyMarkers({ selected, children }: { selected: boolean; children: ReactNode }) {
   if (selected) return <LayerGroup>{children}</LayerGroup>;
-  return <MarkerClusterGroup iconCreateFunction={clusterIcon as never}
-    removeOutsideVisibleBounds={false} maxClusterRadius={60}
-    showCoverageOnHover={false} animate={false}>{children}</MarkerClusterGroup>;
+  return (
+    <MarkerClusterGroup
+      iconCreateFunction={clusterIcon as never}
+      removeOutsideVisibleBounds={false}
+      maxClusterRadius={50}
+      showCoverageOnHover={false}
+      animate={false}
+      chunkedLoading={true}
+    >
+      {children}
+    </MarkerClusterGroup>
+  );
 }
 
 export function MarkerPopup({
