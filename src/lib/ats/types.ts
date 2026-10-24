@@ -36,6 +36,8 @@ export interface ProviderClient<Raw = unknown> {
   readonly provider: ProviderName;
   fetchPostings(token: string, signal?: AbortSignal): Promise<Raw[]>;
   toNormalized(raw: Raw): NormalizedPosting | null;
+  /** Whether the last fetch included the entire board, allowing absent jobs to close. */
+  isCompleteSnapshot?(): boolean;
 }
 
 /**

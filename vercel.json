@@ -11,12 +11,9 @@
   "functions": {
     "api/sync.js": {
       "maxDuration": 60
+    },
+    "api/reverify-jobs.js": {
+      "maxDuration": 60
     }
-  },
-  "crons": [
-    {
-      "path": "/api/sync",
-      "schedule": "0 0 * * *"
-    }
-  ]
+  }
 }

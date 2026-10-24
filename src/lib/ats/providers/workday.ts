@@ -44,6 +44,8 @@ const MAX_PAGES = 5; // up to 100 intern-matching postings per tenant
 export function createWorkdayClient(fetchImpl: FetchLike = fetch): ProviderClient<WorkdayPosting & { __coords: WorkdayCoords }> {
   return {
     provider: 'workday',
+    // This search is capped and only matches "intern"; absence is not proof of closure.
+    isCompleteSnapshot: () => false,
     async fetchPostings(token, signal) {
       const coords = parseWorkdayToken(token);
       if (!coords) throw new Error(`Workday ${token}: malformed token (expected host|tenant|site)`);
@@ -63,10 +65,7 @@ export function createWorkdayClient(fetchImpl: FetchLike = fetch): ProviderClien
             searchText: 'intern',
           }),
         });
-        if (!res.ok) {
-          if (page === 0) throw new Error(`Workday ${tenant}: HTTP ${res.status}`);
-          break;
-        }
+        if (!res.ok) throw new Error(`Workday ${tenant}: HTTP ${res.status} on page ${page + 1}`);
         const data = (await res.json()) as WorkdayResponse;
         const batch = data.jobPostings ?? [];
         for (const p of batch) collected.push({ ...p, __coords: coords });

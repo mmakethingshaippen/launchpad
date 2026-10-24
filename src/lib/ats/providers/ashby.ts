@@ -56,7 +56,8 @@ export function createAshbyClient(fetchImpl: FetchLike = fetch): ProviderClient<
       const res = await fetchImpl(url, { signal });
       if (!res.ok) throw new Error(`Ashby ${token}: HTTP ${res.status}`);
       const data = (await res.json()) as AshbyResponse;
-      return data.jobs ?? [];
+      if (!Array.isArray(data.jobs)) throw new Error(`Ashby ${token}: invalid jobs response`);
+      return data.jobs;
     },
     toNormalized(raw) {
       // Strictly require isListed === true (Req 17.3).

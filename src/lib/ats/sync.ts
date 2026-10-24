@@ -51,6 +51,8 @@ export interface SyncResult {
   updated: number;
   closed: number;
   errors: string[];
+  /** A partial feed may refresh found jobs without proving that absent jobs closed. */
+  warnings?: string[];
 }
 
 /**
@@ -60,6 +62,8 @@ export interface SyncResult {
 export interface SyncSink {
   /** Upsert by (companyId, externalJobId). Returns 'imported' | 'updated'. */
   upsertRole(data: UpsertRoleData): Promise<'imported' | 'updated'>;
+  /** Optional bulk path for one company's postings, avoiding per-role database round trips. */
+  upsertRoles?(data: UpsertRoleData[]): Promise<{ imported: number; updated: number }>;
   /** Mark all ats roles for a company whose externalJobId is not in liveIds as Closed. Returns count closed. */
   closeMissing(companyId: string, liveIds: string[]): Promise<number>;
 }
@@ -69,6 +73,8 @@ export interface SyncOptions {
   timeoutMs?: number;
   concurrency?: number;
   fetchImpl?: typeof fetch;
+  /** Overall worker deadline, including persistence and close-missing work. */
+  signal?: AbortSignal;
 }
 
 function clientFor(
@@ -103,7 +109,7 @@ export async function syncCompany(
 ): Promise<SyncResult> {
   // 20s default: large Greenhouse boards (e.g. SpaceX's ~2,700 jobs) need more
   // than 10s to fetch + parse reliably under concurrency.
-  const { now = new Date(), timeoutMs = 20_000, fetchImpl } = options;
+  const { now = new Date(), timeoutMs = 20_000, fetchImpl, signal } = options;
   const result: SyncResult = {
     company: company.name,
     companyId: company.id,
@@ -113,6 +119,13 @@ export async function syncCompany(
     errors: [],
   };
 
+  const stopped = () => {
+    if (!signal?.aborted) return false;
+    result.errors.push('Sync stopped before completion: worker deadline or cancellation.');
+    return true;
+  };
+  if (stopped()) return result;
+
   const client = clientFor(company.atsProvider, company.atsBoardToken ?? '', fetchImpl);
   if (!client || !company.atsBoardToken) {
     result.errors.push(`No ATS client/token for ${company.name}`);
@@ -120,12 +133,18 @@ export async function syncCompany(
   }
 
   let candidates: EnrichedPosting[];
+  let liveIds: string[];
+  const fetchController = new AbortController();
+  const abortFetch = () => fetchController.abort(signal?.reason);
+  signal?.addEventListener('abort', abortFetch, { once: true });
+  const fetchTimer = setTimeout(() => fetchController.abort(new Error('ATS fetch timed out')), timeoutMs);
   try {
-    const signal = AbortSignal.timeout(timeoutMs); // refinement #4
-    const raw = await client.fetchPostings(company.atsBoardToken, signal);
+    const raw = await client.fetchPostings(company.atsBoardToken, fetchController.signal);
     const normalized = raw
       .map((r) => client.toNormalized(r))
       .filter((p): p is NonNullable<typeof p> => p !== null);
+    // Presence in a feed is independent of whether our classification or write succeeds.
+    liveIds = [...new Set(normalized.map((posting) => posting.externalJobId))];
     candidates = selectCandidates(normalized, now);
     // Req 6 — internship-only employers (Google/Amazon/Tesla/SpaceX): drop any
     // Entry-level / New-grad (or otherwise non-intern/co-op) candidates.
@@ -137,12 +156,13 @@ export async function syncCompany(
   } catch (err) {
     result.errors.push(err instanceof Error ? err.message : String(err));
     return result; // do not close-missing on a failed fetch (avoids wiping data)
+  } finally {
+    clearTimeout(fetchTimer);
+    signal?.removeEventListener('abort', abortFetch);
   }
 
-  const liveIds: string[] = [];
-  for (const posting of candidates) {
-    try {
-      const outcome = await sink.upsertRole({
+  if (stopped()) return result;
+  const rows = candidates.map((posting): UpsertRoleData => ({
         ...posting,
         companyId: company.id,
         companyFallbackField: company.fallbackField,
@@ -151,17 +171,38 @@ export async function syncCompany(
         companyHqCity: company.hqCity ?? null,
         companyHqState: company.hqState ?? null,
         companyHqCountry: company.hqCountry ?? null,
-      });
-      liveIds.push(posting.externalJobId);
-      if (outcome === 'imported') result.imported++;
-      else result.updated++;
-    } catch (err) {
-      result.errors.push(
-        `upsert ${posting.externalJobId}: ${err instanceof Error ? err.message : String(err)}`,
-      );
+      }));
+  if (sink.upsertRoles) {
+    for (let offset = 0; offset < rows.length; offset += 100) {
+      if (stopped()) return result;
+      try {
+        const counts = await sink.upsertRoles(rows.slice(offset, offset + 100));
+        result.imported += counts.imported;
+        result.updated += counts.updated;
+      } catch (err) {
+        result.errors.push(`bulk upsert: ${err instanceof Error ? err.message : String(err)}`);
+        // A retry can safely repeat earlier upserts. Never close jobs after a partial write.
+        return result;
+      }
+    }
+  } else {
+    for (const row of rows) {
+      if (stopped()) return result;
+      try {
+        const outcome = await sink.upsertRole(row);
+        if (outcome === 'imported') result.imported++;
+        else result.updated++;
+      } catch (err) {
+        result.errors.push(`upsert ${row.externalJobId}: ${err instanceof Error ? err.message : String(err)}`);
+      }
     }
   }
 
+  if (stopped() || result.errors.length) return result;
+  if (client.isCompleteSnapshot?.() === false) {
+    result.warnings = ['This connector returns a partial or filtered feed; found jobs were refreshed, but absent jobs were not closed.'];
+    return result;
+  }
   try {
     result.closed = await sink.closeMissing(company.id, liveIds);
   } catch (err) {

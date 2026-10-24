@@ -14142,7 +14142,8 @@ function createGreenhouseClient(fetchImpl = fetch) {
       const res = await fetchImpl(url, { signal });
       if (!res.ok) throw new Error(`Greenhouse ${token}: HTTP ${res.status}`);
       const data = await res.json();
-      return data.jobs ?? [];
+      if (!Array.isArray(data.jobs)) throw new Error(`Greenhouse ${token}: invalid jobs response`);
+      return data.jobs;
     },
     toNormalized(raw) {
       if (!raw || typeof raw.id === "undefined" || !raw.title || !raw.absolute_url) return null;
@@ -14185,7 +14186,8 @@ function createAshbyClient(fetchImpl = fetch) {
       const res = await fetchImpl(url, { signal });
       if (!res.ok) throw new Error(`Ashby ${token}: HTTP ${res.status}`);
       const data = await res.json();
-      return data.jobs ?? [];
+      if (!Array.isArray(data.jobs)) throw new Error(`Ashby ${token}: invalid jobs response`);
+      return data.jobs;
     },
     toNormalized(raw) {
       if (!raw || raw.isListed !== true) return null;
@@ -14222,7 +14224,8 @@ function createLeverClient(fetchImpl = fetch) {
       const res = await fetchImpl(url, { signal });
       if (!res.ok) throw new Error(`Lever ${token}: HTTP ${res.status}`);
       const data = await res.json();
-      return Array.isArray(data) ? data : [];
+      if (!Array.isArray(data)) throw new Error(`Lever ${token}: invalid postings response`);
+      return data;
     },
     toNormalized(raw) {
       if (!raw || !raw.id || !raw.text) return null;
@@ -14265,6 +14268,8 @@ function countryName(code) {
 function createSmartRecruitersClient(fetchImpl = fetch) {
   return {
     provider: "smartrecruiters",
+    isCompleteSnapshot: () => false,
+    // Current connector reads only the first page.
     async fetchPostings(token, signal) {
       const url = `https://api.smartrecruiters.com/v1/companies/${encodeURIComponent(
         token
@@ -14296,6 +14301,7 @@ function createSmartRecruitersClientFor(token, fetchImpl = fetch) {
   const base = createSmartRecruitersClient(fetchImpl);
   return {
     provider: "smartrecruiters",
+    isCompleteSnapshot: () => base.isCompleteSnapshot?.() === true,
     fetchPostings: (t, signal) => base.fetchPostings(t, signal),
     toNormalized(raw) {
       const normalized = base.toNormalized(raw);
@@ -14310,14 +14316,20 @@ function createSmartRecruitersClientFor(token, fetchImpl = fetch) {
 
 // src/lib/ats/providers/workable.ts
 function createWorkableClient(fetchImpl = fetch) {
+  let completeSnapshot = false;
   return {
     provider: "workable",
+    isCompleteSnapshot: () => completeSnapshot,
     async fetchPostings(token, signal) {
+      completeSnapshot = false;
       const widgetUrl = `https://www.workable.com/api/accounts/${encodeURIComponent(token)}?details=false`;
       const res = await fetchImpl(widgetUrl, { signal });
       if (res.ok) {
         const data = await res.json();
-        if (data.jobs?.length) return data.jobs;
+        if (Array.isArray(data.jobs) && data.jobs.length > 0) {
+          completeSnapshot = true;
+          return data.jobs;
+        }
       }
       const v3Url = `https://apply.workable.com/api/v3/accounts/${encodeURIComponent(token)}/jobs`;
       const v3 = await fetchImpl(v3Url, {
@@ -14370,6 +14382,8 @@ var MAX_PAGES = 5;
 function createWorkdayClient(fetchImpl = fetch) {
   return {
     provider: "workday",
+    // This search is capped and only matches "intern"; absence is not proof of closure.
+    isCompleteSnapshot: () => false,
     async fetchPostings(token, signal) {
       const coords = parseWorkdayToken(token);
       if (!coords) throw new Error(`Workday ${token}: malformed token (expected host|tenant|site)`);
@@ -14388,10 +14402,7 @@ function createWorkdayClient(fetchImpl = fetch) {
             searchText: "intern"
           })
         });
-        if (!res.ok) {
-          if (page === 0) throw new Error(`Workday ${tenant}: HTTP ${res.status}`);
-          break;
-        }
+        if (!res.ok) throw new Error(`Workday ${tenant}: HTTP ${res.status} on page ${page + 1}`);
         const data = await res.json();
         const batch = data.jobPostings ?? [];
         for (const p of batch) collected.push({ ...p, __coords: coords });
@@ -14441,7 +14452,7 @@ function clientFor(provider, token, fetchImpl) {
   }
 }
 async function syncCompany(company, sink, options = {}) {
-  const { now = /* @__PURE__ */ new Date(), timeoutMs = 2e4, fetchImpl } = options;
+  const { now = /* @__PURE__ */ new Date(), timeoutMs = 2e4, fetchImpl, signal } = options;
   const result = {
     company: company.name,
     companyId: company.id,
@@ -14450,16 +14461,27 @@ async function syncCompany(company, sink, options = {}) {
     closed: 0,
     errors: []
   };
+  const stopped = () => {
+    if (!signal?.aborted) return false;
+    result.errors.push("Sync stopped before completion: worker deadline or cancellation.");
+    return true;
+  };
+  if (stopped()) return result;
   const client = clientFor(company.atsProvider, company.atsBoardToken ?? "", fetchImpl);
   if (!client || !company.atsBoardToken) {
     result.errors.push(`No ATS client/token for ${company.name}`);
     return result;
   }
   let candidates;
+  let liveIds;
+  const fetchController = new AbortController();
+  const abortFetch = () => fetchController.abort(signal?.reason);
+  signal?.addEventListener("abort", abortFetch, { once: true });
+  const fetchTimer = setTimeout(() => fetchController.abort(new Error("ATS fetch timed out")), timeoutMs);
   try {
-    const signal = AbortSignal.timeout(timeoutMs);
-    const raw = await client.fetchPostings(company.atsBoardToken, signal);
+    const raw = await client.fetchPostings(company.atsBoardToken, fetchController.signal);
     const normalized = raw.map((r) => client.toNormalized(r)).filter((p) => p !== null);
+    liveIds = [...new Set(normalized.map((posting) => posting.externalJobId))];
     candidates = selectCandidates(normalized, now);
     if (company.internshipOnly) {
       candidates = candidates.filter(
@@ -14469,28 +14491,49 @@ async function syncCompany(company, sink, options = {}) {
   } catch (err) {
     result.errors.push(err instanceof Error ? err.message : String(err));
     return result;
+  } finally {
+    clearTimeout(fetchTimer);
+    signal?.removeEventListener("abort", abortFetch);
   }
-  const liveIds = [];
-  for (const posting of candidates) {
-    try {
-      const outcome = await sink.upsertRole({
-        ...posting,
-        companyId: company.id,
-        companyFallbackField: company.fallbackField,
-        companyHqLatitude: company.hqLatitude ?? null,
-        companyHqLongitude: company.hqLongitude ?? null,
-        companyHqCity: company.hqCity ?? null,
-        companyHqState: company.hqState ?? null,
-        companyHqCountry: company.hqCountry ?? null
-      });
-      liveIds.push(posting.externalJobId);
-      if (outcome === "imported") result.imported++;
-      else result.updated++;
-    } catch (err) {
-      result.errors.push(
-        `upsert ${posting.externalJobId}: ${err instanceof Error ? err.message : String(err)}`
-      );
+  if (stopped()) return result;
+  const rows = candidates.map((posting) => ({
+    ...posting,
+    companyId: company.id,
+    companyFallbackField: company.fallbackField,
+    companyHqLatitude: company.hqLatitude ?? null,
+    companyHqLongitude: company.hqLongitude ?? null,
+    companyHqCity: company.hqCity ?? null,
+    companyHqState: company.hqState ?? null,
+    companyHqCountry: company.hqCountry ?? null
+  }));
+  if (sink.upsertRoles) {
+    for (let offset = 0; offset < rows.length; offset += 100) {
+      if (stopped()) return result;
+      try {
+        const counts = await sink.upsertRoles(rows.slice(offset, offset + 100));
+        result.imported += counts.imported;
+        result.updated += counts.updated;
+      } catch (err) {
+        result.errors.push(`bulk upsert: ${err instanceof Error ? err.message : String(err)}`);
+        return result;
+      }
     }
+  } else {
+    for (const row of rows) {
+      if (stopped()) return result;
+      try {
+        const outcome = await sink.upsertRole(row);
+        if (outcome === "imported") result.imported++;
+        else result.updated++;
+      } catch (err) {
+        result.errors.push(`upsert ${row.externalJobId}: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
+  }
+  if (stopped() || result.errors.length) return result;
+  if (client.isCompleteSnapshot?.() === false) {
+    result.warnings = ["This connector returns a partial or filtered feed; found jobs were refreshed, but absent jobs were not closed."];
+    return result;
   }
   try {
     result.closed = await sink.closeMissing(company.id, liveIds);
@@ -23263,7 +23306,7 @@ function isUsableCity(city) {
   if (/\blocations?\b/i.test(c) && /^\s*\d/.test(c)) return false;
   return true;
 }
-function createServiceClient(env = process.env) {
+function createServiceClient(env = process.env, fetchImpl) {
   const url = env.SUPABASE_URL ?? env.VITE_SUPABASE_URL;
   const key = env.SUPABASE_SERVICE_ROLE_KEY;
   if (!url || !key) {
@@ -23271,124 +23314,187 @@ function createServiceClient(env = process.env) {
       "Missing Supabase service credentials. Set SUPABASE_URL (or VITE_SUPABASE_URL) and SUPABASE_SERVICE_ROLE_KEY."
     );
   }
-  return createClient(url, key, { auth: { persistSession: false } });
+  return createClient(url, key, {
+    auth: { persistSession: false },
+    ...fetchImpl ? { global: { fetch: fetchImpl } } : {}
+  });
+}
+function toRoleRow(data) {
+  const slug = `${data.companyId}-${data.externalJobId}`.replace(/[^a-z0-9-]/gi, "-").toLowerCase();
+  const field = data.field !== "Other" ? data.field : classifyField(data.title, data.companyFallbackField, data.employmentTypeRaw);
+  const remote = data.workArrangement === "Remote";
+  let displayCity = isUsableCity(data.city) ? data.city : null;
+  let displayState = displayCity ? data.state ?? null : null;
+  let displayCountry = displayCity ? data.country ?? null : null;
+  if (!remote && !displayCity && isUsableCity(data.companyHqCity)) {
+    displayCity = data.companyHqCity;
+    displayState = data.companyHqState ?? null;
+    displayCountry = data.companyHqCountry ?? null;
+  }
+  const locationString = [displayCity, displayState, displayCountry].filter(Boolean).join(", ");
+  const effectiveRemote = remote || isRemoteLocation(locationString);
+  let latitude = null;
+  let longitude = null;
+  if (!effectiveRemote) {
+    const resolved = resolveRoleCoords(locationString || displayCity || null);
+    if (resolved) {
+      latitude = resolved.latitude;
+      longitude = resolved.longitude;
+    }
+  }
+  if (latitude == null && data.companyHqLatitude != null && data.companyHqLongitude != null) {
+    latitude = data.companyHqLatitude;
+    longitude = data.companyHqLongitude;
+  }
+  const row = {
+    company_id: data.companyId,
+    external_job_id: data.externalJobId,
+    slug,
+    title: data.title,
+    field,
+    opportunity_type: data.opportunityType,
+    degree_levels: data.degreeLevels,
+    seasons: data.seasons,
+    cohort_year: data.cohortYear,
+    city: displayCity,
+    state: displayState,
+    country: displayCountry,
+    latitude,
+    longitude,
+    work_arrangement: data.workArrangement ?? "Onsite",
+    application_deadline: data.deadline ? data.deadline.slice(0, 10) : null,
+    apply_url: data.applyUrl,
+    description: data.descriptionHtml,
+    pay_min: data.pay?.min ?? null,
+    pay_max: data.pay?.max ?? null,
+    pay_currency: data.pay?.currency ?? null,
+    pay_period: data.pay?.period ?? null,
+    compensation_status: data.pay ? "Paid" : "Not disclosed",
+    source: "ats",
+    source_url: data.applyUrl,
+    moderation_status: "Approved",
+    listing_status: "Active",
+    last_verified_at: (/* @__PURE__ */ new Date()).toISOString()
+  };
+  return row;
 }
 var SupabaseSink = class {
   constructor(db) {
     this.db = db;
   }
   db;
+  existingIds = /* @__PURE__ */ new Map();
+  async readRoleIds(companyId, activeOnly = false) {
+    const rows = [];
+    let cursor;
+    for (; ; ) {
+      let query = this.db.from("roles").select("id,external_job_id").eq("company_id", companyId).order("id", { ascending: true }).limit(1e3);
+      if (activeOnly) query = query.eq("source", "ats").eq("listing_status", "Active");
+      if (cursor) query = query.gt("id", cursor);
+      const { data, error } = await query;
+      if (error) throw new Error(`read role IDs: ${error.message}`);
+      const page = data ?? [];
+      if (page.length === 0) return rows;
+      const next = page[page.length - 1].id;
+      if (!next || next === cursor) throw new Error("Role pagination made no progress.");
+      rows.push(...page);
+      cursor = next;
+    }
+  }
+  roleIds(companyId) {
+    let ids = this.existingIds.get(companyId);
+    if (!ids) {
+      ids = this.readRoleIds(companyId).then((rows) => new Set(
+        rows.flatMap((row) => row.external_job_id ? [row.external_job_id] : [])
+      ));
+      this.existingIds.set(companyId, ids);
+    }
+    return ids;
+  }
   async upsertRole(data) {
-    const slug = `${data.companyId}-${data.externalJobId}`.replace(/[^a-z0-9-]/gi, "-").toLowerCase();
-    const field = data.field !== "Other" ? data.field : classifyField(data.title, data.companyFallbackField, data.employmentTypeRaw);
-    const remote = data.workArrangement === "Remote";
-    let displayCity = isUsableCity(data.city) ? data.city : null;
-    let displayState = displayCity ? data.state ?? null : null;
-    let displayCountry = displayCity ? data.country ?? null : null;
-    if (!remote && !displayCity && isUsableCity(data.companyHqCity)) {
-      displayCity = data.companyHqCity;
-      displayState = data.companyHqState ?? null;
-      displayCountry = data.companyHqCountry ?? null;
+    const counts = await this.upsertRoles([data]);
+    return counts.imported ? "imported" : "updated";
+  }
+  async upsertRoles(data) {
+    const unique = [...new Map(data.map((row) => [
+      `${row.companyId}\0${row.externalJobId}`,
+      row
+    ])).values()];
+    if (!unique.length) return { imported: 0, updated: 0 };
+    const known = /* @__PURE__ */ new Map();
+    for (const companyId of new Set(unique.map((row) => row.companyId))) {
+      known.set(companyId, await this.roleIds(companyId));
     }
-    const locationString = [displayCity, displayState, displayCountry].filter(Boolean).join(", ");
-    const effectiveRemote = remote || isRemoteLocation(locationString);
-    let latitude = null;
-    let longitude = null;
-    if (!effectiveRemote) {
-      const resolved = resolveRoleCoords(locationString || displayCity || null);
-      if (resolved) {
-        latitude = resolved.latitude;
-        longitude = resolved.longitude;
-      }
-    }
-    if (latitude == null && data.companyHqLatitude != null && data.companyHqLongitude != null) {
-      latitude = data.companyHqLatitude;
-      longitude = data.companyHqLongitude;
-    }
-    const row = {
-      company_id: data.companyId,
-      external_job_id: data.externalJobId,
-      slug,
-      title: data.title,
-      field,
-      opportunity_type: data.opportunityType,
-      degree_levels: data.degreeLevels,
-      seasons: data.seasons,
-      cohort_year: data.cohortYear,
-      city: displayCity,
-      state: displayState,
-      country: displayCountry,
-      latitude,
-      longitude,
-      work_arrangement: data.workArrangement ?? "Onsite",
-      application_deadline: data.deadline ? data.deadline.slice(0, 10) : null,
-      apply_url: data.applyUrl,
-      description: data.descriptionHtml,
-      pay_min: data.pay?.min ?? null,
-      pay_max: data.pay?.max ?? null,
-      pay_currency: data.pay?.currency ?? null,
-      pay_period: data.pay?.period ?? null,
-      compensation_status: data.pay ? "Paid" : "Not disclosed",
-      source: "ats",
-      source_url: data.applyUrl,
-      moderation_status: "Approved",
-      listing_status: "Active",
-      last_verified_at: (/* @__PURE__ */ new Date()).toISOString()
-    };
-    const { data: existing } = await this.db.from("roles").select("id").eq("company_id", data.companyId).eq("external_job_id", data.externalJobId).maybeSingle();
-    let { error } = await this.db.from("roles").upsert(row, { onConflict: "company_id,external_job_id" });
+    const rows = unique.map(toRoleRow);
+    let { error } = await this.db.from("roles").upsert(rows, { onConflict: "company_id,external_job_id" });
     if (error && /latitude|longitude/.test(error.message) && /column/i.test(error.message)) {
-      const { latitude: _lat, longitude: _lng, ...rest } = row;
-      void _lat;
-      void _lng;
-      ({ error } = await this.db.from("roles").upsert(rest, { onConflict: "company_id,external_job_id" }));
+      const withoutCoordinates = rows.map(({ latitude: _lat, longitude: _lng, ...rest }) => {
+        void _lat;
+        void _lng;
+        return rest;
+      });
+      ({ error } = await this.db.from("roles").upsert(withoutCoordinates, { onConflict: "company_id,external_job_id" }));
     }
-    if (error) throw new Error(`upsert role ${data.externalJobId}: ${error.message}`);
-    return existing ? "updated" : "imported";
+    if (error) throw new Error(`upsert roles: ${error.message}`);
+    const counts = { imported: 0, updated: 0 };
+    for (const row of unique) {
+      const ids = known.get(row.companyId);
+      if (ids.has(row.externalJobId)) counts.updated++;
+      else counts.imported++;
+      ids.add(row.externalJobId);
+    }
+    return counts;
   }
   async closeMissing(companyId, liveIds) {
-    const { data } = await this.db.from("roles").select("id, external_job_id").eq("company_id", companyId).eq("source", "ats").eq("listing_status", "Active");
-    const toClose = (data ?? []).filter(
-      (r) => r.external_job_id && !liveIds.includes(r.external_job_id)
-    );
-    for (const r of toClose) {
-      await this.db.from("roles").update({ listing_status: "Closed" }).eq("id", r.id);
+    const live = new Set(liveIds);
+    const rows = await this.readRoleIds(companyId, true);
+    const toClose = rows.filter((row) => row.external_job_id && !live.has(row.external_job_id));
+    let closed = 0;
+    for (let offset = 0; offset < toClose.length; offset += 200) {
+      const ids = toClose.slice(offset, offset + 200).map((row) => row.id);
+      const { error, count } = await this.db.from("roles").update({ listing_status: "Closed" }, { count: "exact" }).eq("company_id", companyId).eq("source", "ats").eq("listing_status", "Active").in("id", ids);
+      if (error) throw new Error(`close missing roles: ${error.message}`);
+      closed += count ?? 0;
     }
-    return toClose.length;
+    return closed;
   }
 };
+var SYNC_COMPANY_SELECT = "id,slug,name,ats_provider,ats_board_token,fields,company_locations(city,state,country,latitude,longitude,location_type)";
 async function loadSyncableCompanies(db, slug) {
-  const pageSize = 1e3;
   const allRows = [];
-  for (let offset = 0; ; offset += pageSize) {
-    let q = db.from("companies").select(
-      "id,slug,name,ats_provider,ats_board_token,fields,company_locations(city,state,country,latitude,longitude,location_type)"
-    ).neq("ats_provider", "none").range(offset, offset + pageSize - 1);
+  let cursor;
+  for (; ; ) {
+    let q = db.from("companies").select(SYNC_COMPANY_SELECT).eq("moderation_status", "Approved").neq("ats_provider", "none").not("ats_board_token", "is", null).neq("ats_board_token", "").order("id", { ascending: true }).limit(1e3);
     if (slug) q = q.eq("slug", slug);
+    if (cursor) q = q.gt("id", cursor);
     const { data, error } = await q;
     if (error) throw new Error(`load companies: ${error.message}`);
     const rows = data ?? [];
+    if (!rows.length) break;
+    const next = rows[rows.length - 1].id;
+    if (!next || next === cursor) throw new Error("Company pagination made no progress.");
     allRows.push(...rows);
-    if (rows.length < pageSize) break;
+    cursor = next;
   }
-  return allRows.map((c) => {
-    const fields = c.fields ?? [];
-    const locs = c.company_locations ?? [];
-    const hq = locs.find((l) => l.location_type === "HQ" && l.latitude != null) ?? locs.find((l) => l.latitude != null) ?? locs.find((l) => l.location_type === "HQ") ?? locs[0];
-    return {
-      id: c.id,
-      name: c.name,
-      atsProvider: c.ats_provider,
-      atsBoardToken: c.ats_board_token ?? null,
-      fallbackField: fields[0],
-      hqLatitude: hq?.latitude ?? null,
-      hqLongitude: hq?.longitude ?? null,
-      hqCity: hq?.city ?? null,
-      hqState: hq?.state ?? null,
-      hqCountry: hq?.country ?? null,
-      internshipOnly: INTERNSHIP_ONLY_SLUGS.has(c.slug)
-    };
-  });
+  return allRows.map(mapSyncableCompany);
+}
+function mapSyncableCompany(c) {
+  const fields = Array.isArray(c.fields) ? c.fields : [];
+  const locs = Array.isArray(c.company_locations) ? c.company_locations : [];
+  const hq = locs.find((l) => l.location_type === "HQ" && l.latitude != null) ?? locs.find((l) => l.latitude != null) ?? locs.find((l) => l.location_type === "HQ") ?? locs[0];
+  return {
+    id: c.id,
+    name: c.name,
+    atsProvider: c.ats_provider,
+    atsBoardToken: c.ats_board_token ?? null,
+    fallbackField: fields[0],
+    hqLatitude: hq?.latitude ?? null,
+    hqLongitude: hq?.longitude ?? null,
+    hqCity: hq?.city ?? null,
+    hqState: hq?.state ?? null,
+    hqCountry: hq?.country ?? null,
+    internshipOnly: INTERNSHIP_ONLY_SLUGS.has(c.slug)
+  };
 }
 
 // api/_src/sync.ts
@@ -23464,8 +23570,7 @@ async function handler(req, res) {
       return;
     }
     const limit = Math.max(1, parseInt(String(limitRaw ?? 40), 10) || 40);
-    const cronOffset = isCron && offsetRaw == null ? (/* @__PURE__ */ new Date()).getUTCMinutes() * limit : 0;
-    const offset = Math.max(0, parseInt(String(offsetRaw ?? cronOffset), 10) || 0);
+    const offset = Math.max(0, parseInt(String(offsetRaw ?? 0), 10) || 0);
     const requestedBudget = Math.max(5e3, parseInt(String(timeBudgetRaw ?? 45e3), 10) || 45e3);
     const timeBudgetMs = Math.min(45e3, requestedBudget);
     const batch = companies.slice(offset, offset + Math.min(40, limit));

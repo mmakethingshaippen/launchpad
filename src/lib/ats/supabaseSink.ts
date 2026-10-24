@@ -33,7 +33,10 @@ export function isUsableCity(city: string | null | undefined): boolean {
   return true;
 }
 
-export function createServiceClient(env: NodeJS.ProcessEnv = process.env): SupabaseClient {
+export function createServiceClient(
+  env: NodeJS.ProcessEnv = process.env,
+  fetchImpl?: typeof fetch,
+): SupabaseClient {
   const url = env.SUPABASE_URL ?? env.VITE_SUPABASE_URL;
   const key = env.SUPABASE_SERVICE_ROLE_KEY;
   if (!url || !key) {
@@ -41,13 +44,13 @@ export function createServiceClient(env: NodeJS.ProcessEnv = process.env): Supab
       'Missing Supabase service credentials. Set SUPABASE_URL (or VITE_SUPABASE_URL) and SUPABASE_SERVICE_ROLE_KEY.',
     );
   }
-  return createClient(url, key, { auth: { persistSession: false } });
+  return createClient(url, key, {
+    auth: { persistSession: false },
+    ...(fetchImpl ? { global: { fetch: fetchImpl } } : {}),
+  });
 }
 
-export class SupabaseSink implements SyncSink {
-  constructor(private db: SupabaseClient) {}
-
-  async upsertRole(data: UpsertRoleData): Promise<'imported' | 'updated'> {
+function toRoleRow(data: UpsertRoleData) {
     const slug = `${data.companyId}-${data.externalJobId}`.replace(/[^a-z0-9-]/gi, '-').toLowerCase();
 
     // Refine the field with the company fallback for ambiguous titles.
@@ -117,74 +120,155 @@ export class SupabaseSink implements SyncSink {
       listing_status: 'Active',
       last_verified_at: new Date().toISOString(),
     };
-    const { data: existing } = await this.db
-      .from('roles')
-      .select('id')
-      .eq('company_id', data.companyId)
-      .eq('external_job_id', data.externalJobId)
-      .maybeSingle();
+    return row;
+}
 
-    let { error } = await this.db.from('roles').upsert(row, { onConflict: 'company_id,external_job_id' });
+interface StoredRoleId {
+  id: string;
+  external_job_id: string | null;
+}
 
-    // Graceful degradation: if the role-coordinate columns haven't been added
-    // yet (migration 0003 not applied), retry without them so classification
-    // and other fields still sync. Map pins populate after the migration runs.
-    if (error && /latitude|longitude/.test(error.message) && /column/i.test(error.message)) {
-      const { latitude: _lat, longitude: _lng, ...rest } = row;
-      void _lat;
-      void _lng;
-      ({ error } = await this.db.from('roles').upsert(rest, { onConflict: 'company_id,external_job_id' }));
+export class SupabaseSink implements SyncSink {
+  private existingIds = new Map<string, Promise<Set<string>>>();
+
+  constructor(private db: SupabaseClient) {}
+
+  private async readRoleIds(companyId: string, activeOnly = false): Promise<StoredRoleId[]> {
+    const rows: StoredRoleId[] = [];
+    let cursor: string | undefined;
+    for (;;) {
+      let query = this.db.from('roles').select('id,external_job_id')
+        .eq('company_id', companyId).order('id', { ascending: true }).limit(1000);
+      if (activeOnly) query = query.eq('source', 'ats').eq('listing_status', 'Active');
+      if (cursor) query = query.gt('id', cursor);
+      const { data, error } = await query;
+      if (error) throw new Error(`read role IDs: ${error.message}`);
+      const page = (data ?? []) as StoredRoleId[];
+      if (page.length === 0) return rows;
+      const next = page[page.length - 1].id;
+      if (!next || next === cursor) throw new Error('Role pagination made no progress.');
+      rows.push(...page);
+      cursor = next;
+      // Do not stop on a short page: a project may configure an API limit below 1000.
     }
-    if (error) throw new Error(`upsert role ${data.externalJobId}: ${error.message}`);
-    return existing ? 'updated' : 'imported';
+  }
+
+  private roleIds(companyId: string): Promise<Set<string>> {
+    let ids = this.existingIds.get(companyId);
+    if (!ids) {
+      ids = this.readRoleIds(companyId).then((rows) => new Set(
+        rows.flatMap((row) => row.external_job_id ? [row.external_job_id] : []),
+      ));
+      this.existingIds.set(companyId, ids);
+    }
+    return ids;
+  }
+
+  async upsertRole(data: UpsertRoleData): Promise<'imported' | 'updated'> {
+    const counts = await this.upsertRoles([data]);
+    return counts.imported ? 'imported' : 'updated';
+  }
+
+  async upsertRoles(data: UpsertRoleData[]): Promise<{ imported: number; updated: number }> {
+    const unique = [...new Map(data.map((row) => [
+      `${row.companyId}\u0000${row.externalJobId}`, row,
+    ])).values()];
+    if (!unique.length) return { imported: 0, updated: 0 };
+    const known = new Map<string, Set<string>>();
+    for (const companyId of new Set(unique.map((row) => row.companyId))) {
+      known.set(companyId, await this.roleIds(companyId));
+    }
+    const rows = unique.map(toRoleRow);
+    let { error } = await this.db.from('roles').upsert(rows, { onConflict: 'company_id,external_job_id' });
+    // Older databases may not yet have migration 0003's coordinate columns.
+    if (error && /latitude|longitude/.test(error.message) && /column/i.test(error.message)) {
+      const withoutCoordinates = rows.map(({ latitude: _lat, longitude: _lng, ...rest }) => {
+        void _lat;
+        void _lng;
+        return rest;
+      });
+      ({ error } = await this.db.from('roles').upsert(withoutCoordinates, { onConflict: 'company_id,external_job_id' }));
+    }
+    if (error) throw new Error(`upsert roles: ${error.message}`);
+    const counts = { imported: 0, updated: 0 };
+    for (const row of unique) {
+      const ids = known.get(row.companyId)!;
+      if (ids.has(row.externalJobId)) counts.updated++;
+      else counts.imported++;
+      ids.add(row.externalJobId);
+    }
+    return counts;
   }
 
   async closeMissing(companyId: string, liveIds: string[]): Promise<number> {
-    const { data } = await this.db
-      .from('roles')
-      .select('id, external_job_id')
-      .eq('company_id', companyId)
-      .eq('source', 'ats')
-      .eq('listing_status', 'Active');
-    const toClose = (data ?? []).filter(
-      (r: { external_job_id: string | null }) => r.external_job_id && !liveIds.includes(r.external_job_id),
-    );
-    for (const r of toClose) {
-      await this.db.from('roles').update({ listing_status: 'Closed' }).eq('id', (r as { id: string }).id);
+    const live = new Set(liveIds);
+    const rows = await this.readRoleIds(companyId, true);
+    const toClose = rows.filter((row) => row.external_job_id && !live.has(row.external_job_id));
+    let closed = 0;
+    for (let offset = 0; offset < toClose.length; offset += 200) {
+      const ids = toClose.slice(offset, offset + 200).map((row) => row.id);
+      const { error, count } = await this.db.from('roles')
+        .update({ listing_status: 'Closed' }, { count: 'exact' })
+        .eq('company_id', companyId).eq('source', 'ats').eq('listing_status', 'Active')
+        .in('id', ids);
+      if (error) throw new Error(`close missing roles: ${error.message}`);
+      closed += count ?? 0;
     }
-    return toClose.length;
+    return closed;
   }
 }
 
 /** Load approved, ATS-enabled companies from the database as sync targets. */
+const SYNC_COMPANY_SELECT =
+  'id,slug,name,ats_provider,ats_board_token,fields,company_locations(city,state,country,latitude,longitude,location_type)';
+
 export async function loadSyncableCompanies(
   db: SupabaseClient,
   slug?: string,
 ): Promise<SyncableCompany[]> {
-  const pageSize = 1000;
   const allRows: Record<string, unknown>[] = [];
+  let cursor: string | undefined;
 
   // Supabase/PostgREST applies a default maximum row count to select queries.
   // Page explicitly so large company rosters are not silently truncated.
-  for (let offset = 0; ; offset += pageSize) {
+  for (;;) {
     let q = db
       .from('companies')
-      .select(
-        'id,slug,name,ats_provider,ats_board_token,fields,company_locations(city,state,country,latitude,longitude,location_type)',
-      )
+      .select(SYNC_COMPANY_SELECT)
+      .eq('moderation_status', 'Approved')
       .neq('ats_provider', 'none')
-      .range(offset, offset + pageSize - 1);
+      .not('ats_board_token', 'is', null)
+      .neq('ats_board_token', '')
+      .order('id', { ascending: true }).limit(1000);
     if (slug) q = q.eq('slug', slug);
+    if (cursor) q = q.gt('id', cursor);
     const { data, error } = await q;
     if (error) throw new Error(`load companies: ${error.message}`);
     const rows = (data ?? []) as Record<string, unknown>[];
+    if (!rows.length) break;
+    const next = rows[rows.length - 1].id as string;
+    if (!next || next === cursor) throw new Error('Company pagination made no progress.');
     allRows.push(...rows);
-    if (rows.length < pageSize) break;
+    cursor = next;
   }
 
-  return allRows.map((c) => {
-    const fields = (c.fields as FieldType[]) ?? [];
-    const locs = (c.company_locations as Array<Record<string, unknown>>) ?? [];
+  return allRows.map(mapSyncableCompany);
+}
+
+export async function loadSyncableCompany(
+  db: SupabaseClient,
+  id: string,
+): Promise<SyncableCompany | null> {
+  const { data, error } = await db.from('companies').select(SYNC_COMPANY_SELECT)
+    .eq('id', id).eq('moderation_status', 'Approved').neq('ats_provider', 'none')
+    .not('ats_board_token', 'is', null).neq('ats_board_token', '').maybeSingle();
+  if (error) throw new Error(`load company: ${error.message}`);
+  return data ? mapSyncableCompany(data as Record<string, unknown>) : null;
+}
+
+export function mapSyncableCompany(c: Record<string, unknown>): SyncableCompany {
+    const fields = Array.isArray(c.fields) ? c.fields as FieldType[] : [];
+    const locs = Array.isArray(c.company_locations) ? c.company_locations as Array<Record<string, unknown>> : [];
     // Prefer the HQ location; fall back to the first with coordinates.
     const hq =
       locs.find((l) => l.location_type === 'HQ' && l.latitude != null) ??
@@ -204,7 +288,6 @@ export async function loadSyncableCompanies(
       hqCountry: (hq?.country as string) ?? null,
       internshipOnly: INTERNSHIP_ONLY_SLUGS.has(c.slug as string),
     };
-  });
 }
 
 export interface SeedReportRow {

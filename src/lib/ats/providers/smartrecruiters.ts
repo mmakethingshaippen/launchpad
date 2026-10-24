@@ -45,6 +45,7 @@ export function createSmartRecruitersClient(
 ): ProviderClient<SrPosting> {
   return {
     provider: 'smartrecruiters',
+    isCompleteSnapshot: () => false, // Current connector reads only the first page.
     async fetchPostings(token, signal) {
       const url = `https://api.smartrecruiters.com/v1/companies/${encodeURIComponent(
         token,
@@ -88,6 +89,7 @@ export function createSmartRecruitersClientFor(
   const base = createSmartRecruitersClient(fetchImpl);
   return {
     provider: 'smartrecruiters',
+    isCompleteSnapshot: () => base.isCompleteSnapshot?.() === true,
     fetchPostings: (t, signal) => base.fetchPostings(t, signal),
     toNormalized(raw) {
       const normalized = base.toNormalized(raw);

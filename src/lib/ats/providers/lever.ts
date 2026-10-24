@@ -39,7 +39,8 @@ export function createLeverClient(fetchImpl: FetchLike = fetch): ProviderClient<
       const res = await fetchImpl(url, { signal });
       if (!res.ok) throw new Error(`Lever ${token}: HTTP ${res.status}`);
       const data = (await res.json()) as LeverPosting[];
-      return Array.isArray(data) ? data : [];
+      if (!Array.isArray(data)) throw new Error(`Lever ${token}: invalid postings response`);
+      return data;
     },
     toNormalized(raw) {
       if (!raw || !raw.id || !raw.text) return null;

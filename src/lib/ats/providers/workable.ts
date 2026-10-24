@@ -44,14 +44,20 @@ interface WorkableV3Response {
 }
 
 export function createWorkableClient(fetchImpl: FetchLike = fetch): ProviderClient<WorkableWidgetJob> {
+  let completeSnapshot = false;
   return {
     provider: 'workable',
+    isCompleteSnapshot: () => completeSnapshot,
     async fetchPostings(token, signal) {
+      completeSnapshot = false;
       const widgetUrl = `https://www.workable.com/api/accounts/${encodeURIComponent(token)}?details=false`;
       const res = await fetchImpl(widgetUrl, { signal });
       if (res.ok) {
         const data = (await res.json()) as WorkableWidgetResponse;
-        if (data.jobs?.length) return data.jobs;
+        if (Array.isArray(data.jobs) && data.jobs.length > 0) {
+          completeSnapshot = true;
+          return data.jobs;
+        }
       }
 
       // Fallback: v3 search API (POST). Normalize its shape into the widget shape.

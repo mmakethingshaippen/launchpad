@@ -23,8 +23,8 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
 async function main() {
   await build({
-    entryPoints: [path.join(root, 'api/_src/sync.ts')],
-    outfile: path.join(root, 'api/sync.js'),
+    entryPoints: [path.join(root, 'api/_src/sync.ts'), path.join(root, 'api/_src/reverify-jobs.ts')],
+    outdir: path.join(root, 'api'),
     bundle: true,
     platform: 'node',
     target: 'node20',
@@ -38,7 +38,7 @@ async function main() {
     sourcemap: false,
   });
   // eslint-disable-next-line no-console
-  console.log('Bundled api/sync.js');
+  console.log('Bundled api/sync.js and api/reverify-jobs.js');
 }
 
 main().catch((err) => {

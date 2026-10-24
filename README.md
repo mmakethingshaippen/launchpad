@@ -184,7 +184,7 @@ Batch `syncAll()` runs with bounded concurrency (5) and a per-request 10s timeou
    - Server: `SUPABASE_SERVICE_ROLE_KEY` (and `VITE_SUPABASE_URL`)
 3. Vercel builds the SPA and deploys `api/sync.ts` as a serverless function.
 4. Apply Supabase migrations and elevate your admin user.
-5. (Optional) Add a Vercel Cron job to POST `/api/sync` on a schedule to keep `last_verified_at` fresh and auto-close stale roles.
+5. For midnight Pacific refreshes, follow [the scheduler setup](docs/MIDNIGHT-SYNC.md). Supabase Cron dispatches the protected `/api/reverify-jobs` worker in resumable batches. `/api/sync` remains available for manual admin syncs.
 
 ---
 

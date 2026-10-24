@@ -137,11 +137,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     }
 
     const limit = Math.max(1, parseInt(String(limitRaw ?? 40), 10) || 40);
-    // Vercel cron invokes this endpoint once per minute during the 08:00 UTC
-    // hour. Use the minute as a deterministic batch cursor so the daily cron
-    // covers the full company roster without a long-running function or DB cursor.
-    const cronOffset = isCron && offsetRaw == null ? new Date().getUTCMinutes() * limit : 0;
-    const offset = Math.max(0, parseInt(String(offsetRaw ?? cronOffset), 10) || 0);
+    // Manual batching uses the caller's explicit cursor. The midnight worker
+    // has its own durable queue and never infers progress from wall-clock time.
+    const offset = Math.max(0, parseInt(String(offsetRaw ?? 0), 10) || 0);
     const requestedBudget = Math.max(5000, parseInt(String(timeBudgetRaw ?? 45000), 10) || 45000);
     // Leave headroom for auth, database operations, and response serialization.
     const timeBudgetMs = Math.min(45000, requestedBudget);

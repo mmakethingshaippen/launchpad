@@ -42,7 +42,8 @@ export function createGreenhouseClient(fetchImpl: FetchLike = fetch): ProviderCl
       const res = await fetchImpl(url, { signal });
       if (!res.ok) throw new Error(`Greenhouse ${token}: HTTP ${res.status}`);
       const data = (await res.json()) as GreenhouseResponse;
-      return data.jobs ?? [];
+      if (!Array.isArray(data.jobs)) throw new Error(`Greenhouse ${token}: invalid jobs response`);
+      return data.jobs;
     },
     toNormalized(raw) {
       if (!raw || typeof raw.id === 'undefined' || !raw.title || !raw.absolute_url) return null;
