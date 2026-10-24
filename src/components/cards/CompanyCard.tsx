@@ -5,12 +5,13 @@ import { Card } from '../ui/Card';
 import { Badge } from '../ui/Badge';
 import { CompanyLogo } from '../ui/CompanyLogo';
 import { uniqueCompanyFields, visibleCompanyDescription } from '../../lib/companyDisplay';
+import { formatLocation } from '../../lib/locationFormat';
 
 export function CompanyCard({ company }: { company: CompanyCardData }) {
   const loc = company.locations[0];
   const fields = uniqueCompanyFields(company.fields);
   const description = visibleCompanyDescription(company.description);
-  const locLabel = loc ? [loc.city, loc.state, loc.country].filter(Boolean).join(', ') : null;
+  const locLabel = loc ? formatLocation({ city: loc.city, state: loc.state, country: loc.country }) : null;
   return (
     <Card className="flex h-full flex-col">
       <div className="flex items-start gap-3">

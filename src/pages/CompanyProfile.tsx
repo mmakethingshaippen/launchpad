@@ -1,3 +1,4 @@
+import { formatLocation } from '../lib/locationFormat';
 import { useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
 import { Helmet } from 'react-helmet-async';
@@ -108,7 +109,7 @@ View pins on map
           {company.locations[0] && (
             <span className="inline-flex items-center gap-1 text-slate-500">
               <MapPin className="h-4 w-4" aria-hidden="true" />
-              {[company.locations[0].city, company.locations[0].state, company.locations[0].country].filter(Boolean).join(', ')}
+              {formatLocation({ city: company.locations[0].city, state: company.locations[0].state, country: company.locations[0].country })}
             </span>
           )}
         </div>

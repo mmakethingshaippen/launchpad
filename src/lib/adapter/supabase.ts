@@ -1,3 +1,4 @@
+import { dedupeRoles } from '../roleDeduplication';
 import type { SupabaseClient } from '@supabase/supabase-js';
 import type {
   DataAdapter,
@@ -212,6 +213,19 @@ export class SupabaseAdapter implements DataAdapter {
     const plan = buildRolePlan(filters);
     const pageSize = plan.range.to - plan.range.from + 1;
 
+    let companyMatchId: string | null = null;
+    if (filters.keyword?.trim()) {
+      const kw = filters.keyword.trim();
+      const { data: matched } = await this.db
+        .from('companies')
+        .select('id')
+        .or(`name.ilike.${kw},slug.eq.${kw.toLowerCase()}`)
+        .limit(1);
+      if (matched && matched.length > 0) {
+        companyMatchId = (matched[0] as { id: string }).id;
+      }
+    }
+
     const build = () => {
       let q = this.db
         .from('public_roles')
@@ -222,7 +236,11 @@ export class SupabaseAdapter implements DataAdapter {
         else if (op.type === 'in') q = q.in(op.column, op.values);
         else if (op.type === 'ilike') q = q.ilike(op.column, op.value);
       }
-      if (plan.textSearch) q = q.textSearch('search_tsv', plan.textSearch, { type: 'websearch' });
+      if (companyMatchId) {
+        q = q.eq('company_id', companyMatchId);
+      } else if (plan.textSearch) {
+        q = q.textSearch('search_tsv', plan.textSearch, { type: 'websearch' });
+      }
       if (filters.companyType !== 'All') q = q.eq('companies.company_type', filters.companyType);
       q = q.order(plan.order.column, {
         ascending: plan.order.ascending,
@@ -238,7 +256,8 @@ export class SupabaseAdapter implements DataAdapter {
       const { data, count, error } = await build().range(windowStart, windowStart + WINDOW - 1);
       if (error) throw error;
       const all = (data ?? []).map((r) => mapRoleCard(r as never));
-      const diversified = interleaveByCompany(all);
+      const deduped = dedupeRoles(all);
+      const diversified = interleaveByCompany(deduped);
       const start = plan.range.from - windowStart;
       return {
         items: diversified.slice(start, start + pageSize),
@@ -250,8 +269,9 @@ export class SupabaseAdapter implements DataAdapter {
 
     const { data, count, error } = await build().range(plan.range.from, plan.range.to);
     if (error) throw error;
+    const all = (data ?? []).map((r) => mapRoleCard(r as never));
     return {
-      items: (data ?? []).map((r) => mapRoleCard(r as never)),
+      items: dedupeRoles(all),
       total: count ?? 0,
       page: filters.page,
       pageSize,
@@ -326,7 +346,8 @@ export class SupabaseAdapter implements DataAdapter {
       .from('public_roles')
       .select(ROLE_CARD_SELECT_WITH_COMPANY)
       .eq('company_id', (data as { id: string }).id);
-    const roles = (roleRows ?? []).map((r) => mapRoleCard(r as never));
+    const rawRoles = (roleRows ?? []).map((r) => mapRoleCard(r as never));
+    const roles = dedupeRoles(rawRoles);
     return mapCompanyDetail(data as never, roles);
   }
 

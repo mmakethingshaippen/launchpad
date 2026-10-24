@@ -1,6 +1,6 @@
 import { useRef, useState } from 'react';
 import { Helmet } from 'react-helmet-async';
-import { useQuery } from '@tanstack/react-query';
+import { useQuery, keepPreviousData } from '@tanstack/react-query';
 import { SlidersHorizontal, LayoutGrid, Building2 } from 'lucide-react';
 import { useAdapter } from '../hooks/useAdapter';
 import { useRoleFilters } from '../hooks/useRoleFilters';
@@ -54,18 +54,20 @@ export function Browse() {
     queryKey: ['roles', filters],
     queryFn: () => adapter.searchRoles(filters),
     enabled: filters.view === 'opportunities',
+    placeholderData: keepPreviousData,
   });
   const companyQuery = useQuery({
     queryKey: ['companies', filters],
     queryFn: () => adapter.searchCompanies(filters),
     enabled: filters.view === 'companies',
+    placeholderData: keepPreviousData,
   });
 
   const isCompanies = filters.view === 'companies';
   const activeQuery = isCompanies ? companyQuery : roleQuery;
   const total = activeQuery.data?.total ?? 0;
   const pageSize = activeQuery.data?.pageSize ?? 21;
-  const loading = activeQuery.isLoading;
+  const loading = activeQuery.isLoading && !activeQuery.data;
   const gridRef = useRef<HTMLDivElement>(null);
 
   const goToPage = (page: number) => {

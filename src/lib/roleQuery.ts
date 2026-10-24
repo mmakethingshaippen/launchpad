@@ -20,7 +20,8 @@ function overlaps<T>(a: readonly T[], b: readonly T[]): boolean {
 /** Keyword match across title, company name, field (used by Local keyword search). */
 function matchesKeyword(role: RoleCard, keyword: string): boolean {
   if (!keyword) return true;
-  const q = keyword.toLowerCase();
+  const q = keyword.trim().toLowerCase();
+  if (role.companyName.toLowerCase() === q) return true;
   return (
     role.title.toLowerCase().includes(q) ||
     role.companyName.toLowerCase().includes(q) ||

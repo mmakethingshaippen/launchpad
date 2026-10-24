@@ -7,12 +7,15 @@ import { Badge, SeasonBadge } from '../ui/Badge';
 import { Button } from '../ui/Button';
 import { CompanyLogo } from '../ui/CompanyLogo';
 import { formatRelativeTime } from '../ui/RelativeTime';
+import { formatLocation } from '../../lib/locationFormat';
 
 function locationLabel(r: RoleCardData): string {
-  if (r.workArrangement === 'Remote') return 'Remote';
-  const parts = [r.city, r.state].filter(Boolean);
-  const base = parts.join(', ') || r.country || 'Location N/A';
-  return r.workArrangement === 'Hybrid' ? `${base} · Hybrid` : base;
+  return formatLocation({
+    city: r.city,
+    state: r.state,
+    country: r.country,
+    workArrangement: r.workArrangement,
+  });
 }
 
 function payLabel(r: RoleCardData): string | null {
@@ -21,10 +24,10 @@ function payLabel(r: RoleCardData): string | null {
   if (!r.pay || (r.pay.min == null && r.pay.max == null)) return 'Paid';
   const cur = r.pay.currency ?? 'USD';
   const fmt = (n: number) => `${cur === 'USD' ? '$' : cur + ' '}${n.toLocaleString()}`;
-  const range =
-    r.pay.min != null && r.pay.max != null
-      ? `${fmt(r.pay.min)}–${fmt(r.pay.max)}`
-      : fmt((r.pay.min ?? r.pay.max)!);
+  const isRange = r.pay.min != null && r.pay.max != null && r.pay.min !== r.pay.max;
+  const range = isRange
+    ? `${fmt(r.pay.min!)}–${fmt(r.pay.max!)}`
+    : fmt((r.pay.min ?? r.pay.max)!);
   return r.pay.period ? `${range}/${r.pay.period}` : range;
 }
 
@@ -127,7 +130,7 @@ export function RoleCard({
                 onClick={handleTrackClick}
                 disabled={trackingSaving}
                 className="inline-flex items-center gap-1 rounded-md bg-emerald-600 px-2.5 py-1.5 text-xs font-semibold text-white shadow-sm hover:bg-emerald-700 transition-colors disabled:opacity-50"
-                aria-label={`✓ Tracked ${role.title}. Click to untrack`}
+                aria-label={`Tracked ${role.title}. Click to untrack`}
                 title="Click to remove from tracked applications"
               >
                 {trackingSaving ? (
@@ -135,7 +138,7 @@ export function RoleCard({
                 ) : (
                   <Check className="h-3.5 w-3.5" aria-hidden="true" />
                 )}
-                <span>{trackingSaving ? 'Updating…' : '✓ Tracked'}</span>
+                <span>{trackingSaving ? 'Updating…' : 'Tracked'}</span>
               </button>
             ) : (
               <button

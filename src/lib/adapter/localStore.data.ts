@@ -1,3 +1,4 @@
+import { dedupeRoles } from '../roleDeduplication';
 import type {
   Company,
   CompanyLocation,
@@ -274,15 +275,16 @@ export class LocalStore implements SyncSink {
       ...this.companyToCard(c),
       websiteUrl: c.websiteUrl,
       lastVerifiedAt: c.lastVerifiedAt,
-      roles,
+      roles: dedupeRoles(roles),
     };
   }
 
   // ── Query surfaces ───────────────────────────────────────────────────────────
   publicRoleCards(): RoleCard[] {
-    return [...this.roles.values()]
+    const raw = [...this.roles.values()]
       .filter((r) => this.isPubliclyEligible(r))
       .map((r) => this.roleToCard(r));
+    return dedupeRoles(raw);
   }
 
   /** Raw eligible Role records (with coordinates) for building map markers. */

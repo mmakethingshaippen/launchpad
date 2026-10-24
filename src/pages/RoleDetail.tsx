@@ -11,6 +11,7 @@ import { LoadingBlock } from '../components/ui/Spinner';
 import { EmptyState } from '../components/ui/EmptyState';
 import { RelativeTime } from '../components/ui/RelativeTime';
 import { sanitizeHtml } from '../lib/sanitize';
+import { formatLocation } from '../lib/locationFormat';
 
 export function RoleDetail() {
   const { slug = '' } = useParams();
@@ -45,6 +46,13 @@ export function RoleDetail() {
     await adapter.reportListing({ roleId: role.id, reason: 'expired' });
     setReported(true);
   };
+
+  const formattedLocation = formatLocation({
+    city: role.city,
+    state: role.state,
+    country: role.country,
+    workArrangement: role.workArrangement,
+  });
 
   return (
     <div className="mx-auto max-w-3xl">
@@ -103,10 +111,7 @@ export function RoleDetail() {
 
         <dl className="mt-4 grid grid-cols-2 gap-3 text-sm">
           <Meta label="Field" value={role.field} />
-          <Meta
-            label="Location"
-            value={role.workArrangement === 'Remote' ? 'Remote' : [role.city, role.state, role.country].filter(Boolean).join(', ') || '—'}
-          />
+          <Meta label="Location" value={formattedLocation || '—'} />
           <Meta label="Compensation" value={compLabel(role)} />
           <Meta label="Duration" value={role.duration ?? '—'} />
           <Meta
@@ -130,10 +135,10 @@ export function RoleDetail() {
                 onClick={() => { void removeAsync(trackedApplication.id); }}
                 className="inline-flex items-center gap-1.5 rounded-lg bg-emerald-600 px-4 py-2 text-sm font-semibold text-white shadow-sm hover:bg-emerald-700 transition-colors disabled:opacity-50"
                 title="Click to remove from tracked applications"
-                aria-label="Tracked ✓. Click to untrack"
+                aria-label="Tracked. Click to untrack"
               >
                 <Check className="h-4 w-4" aria-hidden="true" />
-                <span>{isSaving ? 'Updating…' : '✓ Tracked'}</span>
+                <span>{isSaving ? 'Updating…' : 'Tracked'}</span>
               </button>
             ) : (
               <Button
@@ -193,6 +198,7 @@ function compLabel(role: { compensationStatus: string; pay: { min: number | null
   if (!role.pay || (role.pay.min == null && role.pay.max == null)) return 'Paid';
   const cur = role.pay.currency ?? 'USD';
   const fmt = (n: number) => `${cur === 'USD' ? '$' : cur + ' '}${n.toLocaleString()}`;
-  const range = role.pay.min != null && role.pay.max != null ? `${fmt(role.pay.min)}–${fmt(role.pay.max)}` : fmt((role.pay.min ?? role.pay.max)!);
+  const isRange = role.pay.min != null && role.pay.max != null && role.pay.min !== role.pay.max;
+  const range = isRange ? `${fmt(role.pay.min!)}–${fmt(role.pay.max!)}` : fmt((role.pay.min ?? role.pay.max)!);
   return role.pay.period ? `${range}/${role.pay.period}` : range;
 }
