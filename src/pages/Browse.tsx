@@ -5,12 +5,10 @@ import { SlidersHorizontal, LayoutGrid, Building2 } from 'lucide-react';
 import { useAdapter } from '../hooks/useAdapter';
 import { useRoleFilters } from '../hooks/useRoleFilters';
 import { useSaved } from '../hooks/useSaved';
-import { useApplications } from '../hooks/useApplications';
-import type { ApplicationStatus, RoleCard as RoleCardData } from '../lib/adapter/types';
 import { FilterPanel } from '../components/browse/FilterPanel';
 import { ActiveChips } from '../components/browse/ActiveChips';
 import { Pagination } from '../components/browse/Pagination';
-import { RoleCard } from '../components/cards/RoleCard';
+import { TrackedRoleCard as RoleCard } from '../components/cards/TrackedRoleCard';
 import { CompanyCard } from '../components/cards/CompanyCard';
 import { Drawer } from '../components/ui/Drawer';
 import { Button } from '../components/ui/Button';
@@ -32,22 +30,6 @@ export function Browse() {
   const adapter = useAdapter();
   const { filters, activeCount, setFilters, clearAll } = useRoleFilters();
   const { savedIds, toggleSave } = useSaved();
-  const { applications, toggleTrack } = useApplications();
-  const [trackingRoleId, setTrackingRoleId] = useState<string | null>(null);
-  const trackedIds = new Set(applications.map((application) => application.roleId).filter((id): id is string => Boolean(id)));
-  const handleToggleTrack = async (role: RoleCardData) => {
-    setTrackingRoleId(role.id);
-    try {
-      await toggleTrack({
-        id: role.id,
-        companyName: role.companyName,
-        title: role.title,
-        applyUrl: role.applyUrl ?? null,
-      });
-    } finally {
-      setTrackingRoleId(null);
-    }
-  };
   const [drawerOpen, setDrawerOpen] = useState(false);
 
   const roleQuery = useQuery({
@@ -178,7 +160,7 @@ export function Browse() {
                     ? interleaveByCompany(roleQuery.data!.items)
                     : roleQuery.data!.items
                   ).map((r) => (
-                    <RoleCard key={r.id} role={r} saved={savedIds.has(r.id)} onToggleSave={toggleSave} tracked={trackedIds.has(r.id)} trackingSaving={trackingRoleId === r.id} onToggleTrack={handleToggleTrack} onTrack={(_id) => { void handleToggleTrack(r); }} />
+                    <RoleCard key={r.id} role={r} saved={savedIds.has(r.id)} onToggleSave={toggleSave} />
                   ))}
                 </div>
               )}

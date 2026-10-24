@@ -89,6 +89,7 @@ describe('MyApplications', () => {
     await adapter.save(list.items[0].id);
 
     renderPage(adapter);
+    await userEvent.click(screen.getByRole('tab', { name: /Saved Opportunities/i }));
     expect(await screen.findByText('Summer 2027 Software Intern')).toBeInTheDocument();
     expect(screen.getByRole('tab', { name: /Saved Opportunities \(1\)/i })).toBeInTheDocument();
   });

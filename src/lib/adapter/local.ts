@@ -222,8 +222,8 @@ export class LocalAdapter implements DataAdapter {
   async listApplications(): Promise<Application[]> {
     return store.getApplications();
   }
-  async upsertApplication(input: ApplicationInput): Promise<void> {
-    store.upsertApplication(input);
+  async upsertApplication(input: ApplicationInput): Promise<Application> {
+    return store.upsertApplication(input);
   }
   async deleteApplication(id: string): Promise<void> {
     store.deleteApplication(id);

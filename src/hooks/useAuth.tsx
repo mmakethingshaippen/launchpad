@@ -1,4 +1,4 @@
-import { createContext, useContext, useEffect, useState, useCallback, type ReactNode } from 'react';
+import { createContext, useContext, useEffect, useState, useCallback, useRef, type ReactNode } from 'react';
 import { resolveAdapterMode } from '../lib/adapter';
 
 export interface AuthUser {
@@ -8,6 +8,8 @@ export interface AuthUser {
 }
 
 export interface AuthState {
+  authError?: string | null;
+  refreshSession?: () => Promise<void>;
   user: AuthUser | null;
   loading: boolean;
   isCloud: boolean;
@@ -35,6 +37,8 @@ function SupabaseAuthProvider({ children }: { children: ReactNode }) {
   const isCloud = resolveAdapterMode() === 'supabase';
   const [user, setUser] = useState<AuthUser | null>(null);
   const [loading, setLoading] = useState(isCloud);
+  const [authError, setAuthError] = useState<string | null>(null);
+  const refresh = useRef<() => Promise<void>>(async () => {});
 
   useEffect(() => {
     if (!isCloud) {
@@ -43,14 +47,23 @@ function SupabaseAuthProvider({ children }: { children: ReactNode }) {
     }
     let active = true;
     let unsub: (() => void) | undefined;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let version = 0;
 
     (async () => {
       const { getSupabaseClient } = await import('../lib/supabaseClient');
       const db = getSupabaseClient();
 
       const hydrate = async () => {
-        const { data } = await db.auth.getUser();
-        if (!active) return;
+        const requestVersion = ++version;
+        const { data, error } = await db.auth.getUser();
+        if (!active || requestVersion !== version) return;
+        if (error && error.name !== 'AuthSessionMissingError') {
+          setAuthError('Could not verify your sign-in. Retry before saving applications.');
+          setLoading(false);
+          return;
+        }
+        setAuthError(null);
         if (!data.user) {
           setUser(null);
           setLoading(false);
@@ -61,6 +74,7 @@ function SupabaseAuthProvider({ children }: { children: ReactNode }) {
           .select('account_role')
           .eq('id', data.user.id)
           .maybeSingle();
+        if (!active || requestVersion !== version) return;
         setUser({
           id: data.user.id,
           email: data.user.email ?? null,
@@ -69,15 +83,21 @@ function SupabaseAuthProvider({ children }: { children: ReactNode }) {
         setLoading(false);
       };
 
-      await hydrate();
+      refresh.current = hydrate;
       const { data: sub } = db.auth.onAuthStateChange(() => {
-        void hydrate();
+        // Leave the auth callback before calling Supabase again (auth uses a lock).
+        ++version;
+        setLoading(true);
+        clearTimeout(timer);
+        timer = setTimeout(() => { void hydrate(); }, 0);
       });
       unsub = () => sub.subscription.unsubscribe();
+      await hydrate();
     })();
 
     return () => {
       active = false;
+      clearTimeout(timer);
       unsub?.();
     };
   }, [isCloud]);
@@ -99,7 +119,8 @@ function SupabaseAuthProvider({ children }: { children: ReactNode }) {
 
   const signOut = useCallback(async () => {
     const { getSupabaseClient } = await import('../lib/supabaseClient');
-    await getSupabaseClient().auth.signOut();
+    const { error } = await getSupabaseClient().auth.signOut();
+    if (error) throw error;
     setUser(null);
   }, []);
 
@@ -117,7 +138,7 @@ function SupabaseAuthProvider({ children }: { children: ReactNode }) {
   }, []);
 
   return (
-    <AuthContext.Provider value={{ user, loading, isCloud, signIn, signUp, signOut, resetPasswordForEmail, updatePassword }}>
+    <AuthContext.Provider value={{ user, loading, isCloud, authError, refreshSession: () => refresh.current(), signIn, signUp, signOut, resetPasswordForEmail, updatePassword }}>
       {children}
     </AuthContext.Provider>
   );

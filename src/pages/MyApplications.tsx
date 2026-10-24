@@ -11,7 +11,7 @@ import { Button } from '../components/ui/Button';
 import { Badge } from '../components/ui/Badge';
 import { EmptyState } from '../components/ui/EmptyState';
 import { LoadingBlock } from '../components/ui/Spinner';
-import { RoleCard } from '../components/cards/RoleCard';
+import { TrackedRoleCard as RoleCard } from '../components/cards/TrackedRoleCard';
 import { followUpState } from '../lib/followUp';
 import { APPLICATION_STATUSES, type Application, type ApplicationStatus } from '../lib/adapter/types';
 
@@ -19,9 +19,10 @@ type Tab = 'saved' | 'applications';
 
 export function MyApplications() {
   const { saved, savedIds, toggleSave, isLoading: savedLoading } = useSaved();
-  const { applications, isLoading: appsLoading, upsert, remove } = useApplications();
+  const { applications, isLoading: appsLoading, upsert, upsertAsync, remove,
+    error, retry, canEdit, isSaving, isApplicationPending } = useApplications();
   const { user, isCloud } = useAuth();
-  const [tab, setTab] = useState<Tab>('saved');
+  const [tab, setTab] = useState<Tab>('applications');
   const [adding, setAdding] = useState(false);
   const [showSignIn, setShowSignIn] = useState(false);
 
@@ -74,6 +75,10 @@ export function MyApplications() {
         </button>
       </div>
 
+      {error && <p role="alert" className="mb-4 rounded-lg bg-red-50 p-3 text-sm text-red-700">
+        {error} {!canEdit && <button type="button" onClick={retry} className="underline">Retry</button>}
+      </p>}
+
       {tab === 'saved' ? (
         savedLoading ? (
           <LoadingBlock />
@@ -106,15 +111,18 @@ export function MyApplications() {
       ) : (
         <div>
           <div className="mb-4">
-            <Button variant="outline" size="sm" onClick={() => setAdding((v) => !v)}>
+            <Button variant="outline" size="sm" disabled={!canEdit} onClick={() => setAdding((v) => !v)}>
               <Plus className="h-4 w-4" aria-hidden="true" /> Add manual application
             </Button>
           </div>
           {adding && (
             <ApplicationForm
-              onSubmit={(input) => {
-                upsert(input);
-                setAdding(false);
+              saving={isSaving}
+              onSubmit={async (input) => {
+                try {
+                  await upsertAsync(input);
+                  setAdding(false);
+                } catch { /* Keep the form open; the shared error is shown above. */ }
               }}
               onCancel={() => setAdding(false)}
             />
@@ -132,7 +140,8 @@ export function MyApplications() {
               }
             />
           ) : (
-            <StatusBoard applications={applications} onStatusChange={upsert} onRemove={remove} />
+            <StatusBoard applications={applications} onStatusChange={upsert} onRemove={remove}
+              isPending={application => !canEdit || isApplicationPending(application)} />
           )}
         </div>
       )}
@@ -144,10 +153,12 @@ function StatusBoard({
   applications,
   onStatusChange,
   onRemove,
+  isPending,
 }: {
   applications: Application[];
   onStatusChange: (input: import('../lib/adapter/types').ApplicationInput) => void;
   onRemove: (id: string) => void;
+  isPending: (application: Application) => boolean;
 }) {
   return (
     <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-4">
@@ -161,7 +172,7 @@ function StatusBoard({
             </h2>
             <div className="space-y-3">
               {items.map((a) => (
-                <ApplicationCard key={a.id} app={a} onStatusChange={onStatusChange} onRemove={onRemove} />
+                <ApplicationCard key={a.id} app={a} onStatusChange={onStatusChange} onRemove={onRemove} pending={isPending(a)} />
               ))}
             </div>
           </section>
@@ -175,10 +186,12 @@ function ApplicationCard({
   app,
   onStatusChange,
   onRemove,
+  pending,
 }: {
   app: Application;
   onStatusChange: (input: import('../lib/adapter/types').ApplicationInput) => void;
   onRemove: (id: string) => void;
+  pending: boolean;
 }) {
   const fu = followUpState(app.followUpDate);
   return (
@@ -188,7 +201,7 @@ function ApplicationCard({
           <p className="truncate font-semibold text-navy">{app.roleTitle}</p>
           <p className="truncate text-sm text-slate-500">{app.companyName}</p>
         </div>
-        <button onClick={() => onRemove(app.id)} aria-label="Remove application" className="text-slate-400 hover:text-red-500">
+        <button disabled={pending} onClick={() => onRemove(app.id)} aria-label="Remove application" className="text-slate-400 hover:text-red-500 disabled:opacity-50">
           <Trash2 className="h-4 w-4" aria-hidden="true" />
         </button>
       </div>
@@ -214,9 +227,11 @@ function ApplicationCard({
         <label className="text-xs text-slate-500">
           <span className="sr-only">Status for {app.roleTitle}</span>
           <select
+            disabled={pending}
             value={app.status}
             onChange={(e) =>
               onStatusChange({
+                id: app.id,
                 roleId: app.roleId,
                 companyName: app.companyName,
                 roleTitle: app.roleTitle,
@@ -250,9 +265,11 @@ function ApplicationCard({
 function ApplicationForm({
   onSubmit,
   onCancel,
+  saving,
 }: {
   onSubmit: (input: import('../lib/adapter/types').ApplicationInput) => void;
   onCancel: () => void;
+  saving: boolean;
 }) {
   const [companyName, setCompanyName] = useState('');
   const [roleTitle, setRoleTitle] = useState('');
@@ -288,7 +305,7 @@ function ApplicationForm({
         <input type="date" value={followUpDate} onChange={(e) => setFollowUpDate(e.target.value)} className="rounded-lg border border-slate-300 px-3 py-2 text-sm outline-none focus:border-cyan" aria-label="Follow-up date" />
         <input value={applicationUrl} onChange={(e) => setApplicationUrl(e.target.value)} placeholder="Application URL (optional)" className="sm:col-span-2 rounded-lg border border-slate-300 px-3 py-2 text-sm outline-none focus:border-cyan" />
         <div className="flex gap-2 sm:col-span-2">
-          <Button type="submit">Save application</Button>
+          <Button type="submit" disabled={saving}>{saving ? 'Saving…' : 'Save application'}</Button>
           <Button type="button" variant="outline" onClick={onCancel}>
             Cancel
           </Button>

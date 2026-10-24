@@ -510,8 +510,8 @@ export class SupabaseAdapter implements DataAdapter {
     return buildMapData(inputs);
   }
 
-  async listSaved(): Promise<SavedItem[]> {
-    const uid = await this.userId();
+  async listSaved(expectedUserId?: string | null): Promise<SavedItem[]> {
+    const uid = await this.applicationOwner(expectedUserId);
     if (!uid) {
       const items = store.getSaved();
       if (items.length === 0) return [];
@@ -544,8 +544,8 @@ export class SupabaseAdapter implements DataAdapter {
     }));
   }
 
-  async save(roleId: string): Promise<void> {
-    const uid = await this.userId();
+  async save(roleId: string, expectedUserId?: string | null): Promise<void> {
+    const uid = await this.applicationOwner(expectedUserId);
     if (!uid) {
       store.addSaved(roleId);
       return;
@@ -566,13 +566,25 @@ export class SupabaseAdapter implements DataAdapter {
     store.removeSaved(roleId);
   }
 
-  async listApplications(): Promise<Application[]> {
-    const uid = await this.userId();
+  private async applicationOwner(expectedUserId?: string | null): Promise<string | null> {
+    // Explicit guest operations never borrow a newly signed-in session.
+    if (expectedUserId === null) return null;
+    const { data, error } = await this.db.auth.getUser();
+    if (error && error.name !== 'AuthSessionMissingError') throw error;
+    const uid = data.user?.id ?? null;
+    if (expectedUserId !== undefined && uid !== expectedUserId) {
+      throw new Error('Your session changed. Please sign in again before updating applications.');
+    }
+    return uid;
+  }
+
+  async listApplications(expectedUserId?: string | null): Promise<Application[]> {
+    const uid = await this.applicationOwner(expectedUserId);
     if (!uid) {
       return store.getApplications();
     }
     const { data, error } = await this.db
-      .from('applications')
+      .from('tracked_applications')
       .select('*')
       .eq('user_id', uid)
       .order('updated_at', { ascending: false });
@@ -580,37 +592,42 @@ export class SupabaseAdapter implements DataAdapter {
     return (data ?? []).map(mapApplication);
   }
 
-  async upsertApplication(input: ApplicationInput): Promise<void> {
-    const uid = await this.userId();
+  async upsertApplication(input: ApplicationInput, expectedUserId?: string | null): Promise<Application> {
+    const uid = await this.applicationOwner(expectedUserId);
     if (!uid) {
-      store.upsertApplication(input);
-      return;
+      return store.upsertApplication(input);
     }
     const row = {
       user_id: uid,
       role_id: input.roleId ?? null,
       company_name: input.companyName.trim(),
       role_title: input.roleTitle.trim(),
-      status: input.status ?? 'Applied',
-      notes: input.notes ?? null,
-      application_url: sanitizeExternalUrl(input.applicationUrl),
-      applied_at: input.appliedAt ?? null,
-      follow_up_date: input.followUpDate ?? null,
+      ...(input.status !== undefined ? { status: input.status } : {}),
+      ...(input.notes !== undefined ? { notes: input.notes } : {}),
+      ...(input.applicationUrl !== undefined ? { application_url: sanitizeExternalUrl(input.applicationUrl) } : {}),
+      ...(input.appliedAt !== undefined ? { applied_at: input.appliedAt } : {}),
+      ...(input.followUpDate !== undefined ? { follow_up_date: input.followUpDate } : {}),
     };
-    const { error } = await this.db.from('applications').upsert(row, {
-      onConflict: input.roleId ? 'user_id,role_id' : undefined,
-    });
+    const table = this.db.from('tracked_applications');
+    const request = input.id
+      ? table.update(row).eq('id', input.id).eq('user_id', uid)
+      : table.upsert(row, { onConflict: input.roleId ? 'user_id,role_id' : undefined });
+    const { data, error } = await request.select('*').single();
     if (error) throw error;
+    if (!data) throw new Error('The application was not saved. Please retry.');
+    return mapApplication(data);
   }
 
-  async deleteApplication(id: string): Promise<void> {
-    const uid = await this.userId();
+  async deleteApplication(id: string, expectedUserId?: string | null): Promise<void> {
+    const uid = await this.applicationOwner(expectedUserId);
     if (!uid) {
       store.deleteApplication(id);
       return;
     }
-    await this.db.from('applications').delete().eq('id', id).eq('user_id', uid);
-    store.deleteApplication(id);
+    const { data, error } = await this.db.from('tracked_applications')
+      .delete().eq('id', id).eq('user_id', uid).select('id');
+    if (error) throw error;
+    if (!data?.length) throw new Error('The application could not be removed. Refresh and try again.');
   }
 
   async submitCompany(input: CompanyFormA): Promise<void> {

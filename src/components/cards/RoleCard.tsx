@@ -129,22 +129,22 @@ export function RoleCard({
                 type="button"
                 onClick={handleTrackClick}
                 disabled={trackingSaving}
+                aria-pressed={true}
+                aria-busy={trackingSaving}
                 className="inline-flex items-center gap-1 rounded-md bg-emerald-600 px-2.5 py-1.5 text-xs font-semibold text-white shadow-sm hover:bg-emerald-700 transition-colors disabled:opacity-50"
                 aria-label={`Tracked ${role.title}. Click to untrack`}
                 title="Click to remove from tracked applications"
               >
-                {trackingSaving ? (
-                  <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden="true" />
-                ) : (
-                  <Check className="h-3.5 w-3.5" aria-hidden="true" />
-                )}
-                <span>{trackingSaving ? 'Updating…' : 'Tracked'}</span>
+                <Check className="h-3.5 w-3.5" aria-hidden="true" />
+                <span>Tracked</span>
               </button>
             ) : (
               <button
                 type="button"
                 onClick={handleTrackClick}
                 disabled={trackingSaving}
+                aria-pressed={false}
+                aria-busy={trackingSaving}
                 className="inline-flex items-center gap-1 rounded-md border border-slate-300 bg-white px-2.5 py-1.5 text-xs font-semibold text-slate-700 shadow-sm hover:border-slate-400 hover:text-slate-900 hover:bg-slate-50 transition-colors disabled:opacity-50"
                 aria-label={`+ Track ${role.title}`}
                 title="Track this opportunity"
@@ -152,7 +152,7 @@ export function RoleCard({
                 {trackingSaving ? (
                   <Loader2 className="h-3.5 w-3.5 animate-spin text-slate-400" aria-hidden="true" />
                 ) : null}
-                <span>{trackingSaving ? 'Saving…' : '+ Track'}</span>
+                <span>+ Track</span>
               </button>
             ))}
           <Link to={`/roles/${role.slug}`}>

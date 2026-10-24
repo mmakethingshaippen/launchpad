@@ -13,19 +13,27 @@ export function MigrationOnSignIn() {
   const adapter = useAdapter();
   const qc = useQueryClient();
   const migratedFor = useRef<string | null>(null);
+  const currentUser = useRef<string | null>(null);
+  currentUser.current = user?.id ?? null;
 
   useEffect(() => {
-    if (!isCloud || !user) return;
+    if (!isCloud || !user) {
+      migratedFor.current = null;
+      return;
+    }
     if (migratedFor.current === user.id) return;
     migratedFor.current = user.id;
-    migrateLocalToAccount(adapter)
+    migrateLocalToAccount(adapter, {
+      expectedUserId: user.id,
+      isCurrent: () => currentUser.current === user.id,
+    })
       .then(() => {
         qc.invalidateQueries({ queryKey: ['saved'] });
         qc.invalidateQueries({ queryKey: ['applications'] });
       })
       .catch(() => {
         // migration failures are non-fatal; local data remains intact
-        migratedFor.current = null;
+        if (migratedFor.current === user.id) migratedFor.current = null;
       });
   }, [isCloud, user, adapter, qc]);
 

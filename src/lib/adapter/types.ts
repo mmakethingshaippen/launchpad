@@ -284,6 +284,7 @@ export interface Application {
 }
 
 export interface ApplicationInput {
+  id?: string;
   roleId?: string | null;
   companyName: string;
   roleTitle: string;

@@ -26,6 +26,8 @@ function appKey(a: { roleId?: string | null; companyName: string; roleTitle: str
 export async function migrateLocalToAccount(
   adapter: DataAdapter,
   deps: {
+    expectedUserId?: string;
+    isCurrent?: () => boolean;
     getSaved?: () => SavedItem[];
     getApplications?: () => Application[];
     clearSaved?: () => void;
@@ -36,6 +38,10 @@ export async function migrateLocalToAccount(
   const getApplications = deps.getApplications ?? local.getApplications;
   const clearSaved = deps.clearSaved ?? local.clearSaved;
   const clearApplications = deps.clearApplications ?? local.clearApplications;
+  const assertCurrent = () => {
+    if (deps.isCurrent && !deps.isCurrent()) throw new Error('Session changed during application import.');
+  };
+  assertCurrent();
 
   const result: MigrationResult = {
     savedMigrated: 0,
@@ -46,7 +52,8 @@ export async function migrateLocalToAccount(
 
   // ── Saved opportunities: dedup by role_id ──
   const localSaved = getSaved();
-  const existingSaved = await adapter.listSaved();
+  const existingSaved = await adapter.listSaved(deps.expectedUserId);
+  assertCurrent();
   const existingRoleIds = new Set(existingSaved.map((s) => s.roleId));
   const seenRoleIds = new Set<string>();
 
@@ -56,13 +63,16 @@ export async function migrateLocalToAccount(
       continue;
     }
     seenRoleIds.add(item.roleId);
-    await adapter.save(item.roleId);
+    assertCurrent();
+    await adapter.save(item.roleId, deps.expectedUserId);
+    assertCurrent();
     result.savedMigrated++;
   }
 
   // ── Applications: dedup by composite key ──
   const localApps = getApplications();
-  const existingApps = await adapter.listApplications();
+  const existingApps = await adapter.listApplications(deps.expectedUserId);
+  assertCurrent();
   const existingKeys = new Set(existingApps.map(appKey));
   const seenKeys = new Set<string>();
 
@@ -73,6 +83,7 @@ export async function migrateLocalToAccount(
       continue;
     }
     seenKeys.add(key);
+    assertCurrent();
     await adapter.upsertApplication({
       roleId: app.roleId,
       companyName: app.companyName,
@@ -82,11 +93,13 @@ export async function migrateLocalToAccount(
       applicationUrl: app.applicationUrl,
       appliedAt: app.appliedAt,
       followUpDate: app.followUpDate,
-    });
+    }, deps.expectedUserId);
+    assertCurrent();
     result.applicationsMigrated++;
   }
 
   // Clear local data only after everything migrated.
+  assertCurrent();
   clearSaved();
   clearApplications();
 

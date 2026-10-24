@@ -53,6 +53,7 @@ describe('migrateLocalToAccount', () => {
   it('migrates new saved roles and skips ones already in the account', async () => {
     const { adapter } = makeAdapter(['role-1'], []);
     const result = await migrateLocalToAccount(adapter, {
+      expectedUserId: 'user-1',
       getSaved: () => [
         { roleId: 'role-1', savedAt: '' }, // already in account → skip
         { roleId: 'role-2', savedAt: '' }, // new → migrate
@@ -65,7 +66,7 @@ describe('migrateLocalToAccount', () => {
     expect(result.savedMigrated).toBe(1);
     expect(result.savedSkipped).toBe(2);
     expect(adapter.save).toHaveBeenCalledTimes(1);
-    expect(adapter.save).toHaveBeenCalledWith('role-2');
+    expect(adapter.save).toHaveBeenCalledWith('role-2', 'user-1');
   });
 
   it('dedups applications by role_id and by (company,title) for manual entries', async () => {
@@ -100,6 +101,22 @@ describe('migrateLocalToAccount', () => {
     });
     expect(clearSaved).toHaveBeenCalled();
     expect(clearApplications).toHaveBeenCalled();
+  });
+
+  it('keeps guest data if the session changes during migration', async () => {
+    const { adapter } = makeAdapter([], []);
+    const clearSaved = vi.fn();
+    const clearApplications = vi.fn();
+    let current = true;
+    adapter.listApplications = async () => { current = false; return []; };
+    await expect(migrateLocalToAccount(adapter, {
+      expectedUserId: 'user-1', isCurrent: () => current,
+      getSaved: () => [], getApplications: () => [app({ roleId: 'role-2' })],
+      clearSaved, clearApplications,
+    })).rejects.toThrow('Session changed');
+    expect(adapter.upsertApplication).not.toHaveBeenCalled();
+    expect(clearSaved).not.toHaveBeenCalled();
+    expect(clearApplications).not.toHaveBeenCalled();
   });
 
   it('is idempotent on a repeat run (no duplicates)', async () => {

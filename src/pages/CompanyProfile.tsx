@@ -9,7 +9,7 @@ import { useSaved } from '../hooks/useSaved';
 import { Badge } from '../components/ui/Badge';
 import { Button } from '../components/ui/Button';
 import { CompanyLogo } from '../components/ui/CompanyLogo';
-import { RoleCard } from '../components/cards/RoleCard';
+import { TrackedRoleCard as RoleCard } from '../components/cards/TrackedRoleCard';
 import { EmptyState } from '../components/ui/EmptyState';
 import { CompanyProfileSkeleton } from '../components/ui/Skeleton';
 import { SPECIFIC_SEASONS, type Season } from '../lib/adapter/types';

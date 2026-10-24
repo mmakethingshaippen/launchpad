@@ -98,12 +98,13 @@ export interface DataAdapter {
   getMapData?(filters: RoleFilters): Promise<MapData>;
 
   // ── Saving / tracking ──
-  listSaved(): Promise<SavedItem[]>;
-  save(roleId: string): Promise<void>;
+  listSaved(expectedUserId?: string | null): Promise<SavedItem[]>;
+  save(roleId: string, expectedUserId?: string | null): Promise<void>;
   unsave(roleId: string): Promise<void>;
-  listApplications(): Promise<Application[]>;
-  upsertApplication(input: ApplicationInput): Promise<void>;
-  deleteApplication(id: string): Promise<void>;
+  // null explicitly selects guest storage; a user id pins cloud work to that account.
+  listApplications(expectedUserId?: string | null): Promise<Application[]>;
+  upsertApplication(input: ApplicationInput, expectedUserId?: string | null): Promise<Application | void>;
+  deleteApplication(id: string, expectedUserId?: string | null): Promise<void>;
 
   // ── Community submissions / reports ──
   submitCompany(input: CompanyFormA): Promise<void>;

@@ -16,7 +16,7 @@ import { formatLocation } from '../lib/locationFormat';
 export function RoleDetail() {
   const { slug = '' } = useParams();
   const adapter = useAdapter();
-  const { applications, upsertAsync, removeAsync, isSaving } = useApplications();
+  const { applications, upsert, remove, isRolePending, canEdit, error, retry } = useApplications();
   const [reported, setReported] = useState(false);
 
   const { data: role, isLoading } = useQuery({
@@ -40,6 +40,7 @@ export function RoleDetail() {
 
   const isClosed = role.listingStatus !== 'Active';
   const trackedApplication = applications.find((application) => application.roleId === role.id);
+  const isSaving = !canEdit || isRolePending(role.id);
   const cleanDescription = sanitizeHtml(role.description);
 
   const report = async () => {
@@ -121,9 +122,12 @@ export function RoleDetail() {
           <Meta label="Last verified" value={<RelativeTime iso={role.lastVerifiedAt} />} />
         </dl>
 
+        {error && <p role="alert" className="mt-4 text-sm text-red-700">{error}{' '}
+          {!canEdit && <button type="button" onClick={retry} className="underline">Retry</button>}
+        </p>}
         {!isClosed && (
           <div className="mt-6 flex flex-wrap gap-2">
-            <a href={role.applyUrl} target="_blank" rel="noopener noreferrer" onClick={() => { if (!trackedApplication) void upsertAsync({ roleId: role.id, companyName: role.companyName, roleTitle: role.title, status: 'Applied', applicationUrl: role.applyUrl }); }}>
+            <a href={role.applyUrl} target="_blank" rel="noopener noreferrer" onClick={() => { if (!trackedApplication && !isSaving) upsert({ roleId: role.id, companyName: role.companyName, roleTitle: role.title, status: 'Applied', applicationUrl: role.applyUrl }); }}>
               <Button size="lg">
                 Apply on Company Website <ExternalLink className="h-4 w-4" aria-hidden="true" />
               </Button>
@@ -132,13 +136,15 @@ export function RoleDetail() {
               <button
                 type="button"
                 disabled={isSaving}
-                onClick={() => { void removeAsync(trackedApplication.id); }}
+                onClick={() => remove(trackedApplication.id)}
+                aria-pressed={true}
+                aria-busy={isSaving}
                 className="inline-flex items-center gap-1.5 rounded-lg bg-emerald-600 px-4 py-2 text-sm font-semibold text-white shadow-sm hover:bg-emerald-700 transition-colors disabled:opacity-50"
                 title="Click to remove from tracked applications"
                 aria-label="Tracked. Click to untrack"
               >
                 <Check className="h-4 w-4" aria-hidden="true" />
-                <span>{isSaving ? 'Updating…' : 'Tracked'}</span>
+                <span>Tracked</span>
               </button>
             ) : (
               <Button
@@ -146,7 +152,7 @@ export function RoleDetail() {
                 size="lg"
                 disabled={isSaving}
                 onClick={() => {
-                  void upsertAsync({
+                  upsert({
                     roleId: role.id,
                     companyName: role.companyName,
                     roleTitle: role.title,
