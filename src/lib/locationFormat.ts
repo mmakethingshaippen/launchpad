@@ -2,11 +2,12 @@
  * Canonical location formatting across Launchpad.
  *
  * Rules:
- * - US locations: "City, State" (e.g. "San Francisco, CA", "Austin, TX")
+ * - US locations: "City, State" (e.g. "San Francisco, CA", "Austin, TX", "Mountain View, CA")
+ *   Never appends "USA", "US", or "United States" to a US city/state location.
  * - International locations: "City, Full Country Name" (e.g. "Penang, Malaysia", "Treviso, Italy")
  *   If city and country are identical (e.g. "Singapore, Singapore"), collapses to "Singapore".
  * - Converts ISO 3-letter (SGP, MYS, ITA, CRI, DEU, etc.) & 2-letter codes to full country names.
- * - Guard: No location ever ends in a 3-letter country code.
+ * - Guard: No location ever ends in a 3-letter country code or redundant "USA".
  */
 
 export const US_STATE_ABBRS = new Set([
@@ -45,8 +46,14 @@ export const MAJOR_US_CITIES: Record<string, string> = {
   'berkeley': 'CA',
   'redwood city': 'CA',
   'menlo park': 'CA',
+  'foster city': 'CA',
+  'san mateo': 'CA',
   'los angeles': 'CA',
   'san diego': 'CA',
+  'long beach': 'CA',
+  'irvine': 'CA',
+  'pasadena': 'CA',
+  'sacramento': 'CA',
   'seattle': 'WA',
   'bellevue': 'WA',
   'redmond': 'WA',
@@ -56,10 +63,12 @@ export const MAJOR_US_CITIES: Record<string, string> = {
   'brooklyn': 'NY',
   'austin': 'TX',
   'dallas': 'TX',
+  'dallas-fort worth': 'TX',
   'houston': 'TX',
   'chicago': 'IL',
   'boston': 'MA',
   'cambridge': 'MA',
+  'somerville': 'MA',
   'atlanta': 'GA',
   'denver': 'CO',
   'boulder': 'CO',
@@ -142,14 +151,42 @@ export function formatLocation(loc: LocationInput): string {
   let state = (loc.state ?? '').trim();
   let country = (loc.country ?? '').trim();
 
+  // Multi-location semicolon delimiter cleanup: take primary location segment
+  if (city.includes(';')) city = city.split(';')[0].trim();
+  if (state.includes(';')) state = state.split(';')[0].trim();
+  if (country.includes(';')) country = country.split(';')[0].trim();
+
   // Clean trailing punctuation or noise
   city = city.replace(/[;,]+$/, '').trim();
   state = state.replace(/[;,]+$/, '').trim();
   country = country.replace(/[;,]+$/, '').trim();
 
+  // Normalize composite state strings from ATS like "CA USA", "CA, USA", "California USA"
+  const stateUsaMatch = state.match(/^([A-Za-z\s]+?)[,;\s]+(?:USA|US|United States)$/i);
+  if (stateUsaMatch) {
+    state = stateUsaMatch[1].trim();
+    if (!country) country = 'United States';
+  }
+
+  // Normalize composite country strings like "CA USA", "TX USA", or "USA"
+  const countryStateMatch = country.match(/^([A-Z]{2})\s+(?:USA|US)$/i);
+  if (countryStateMatch) {
+    if (!state) state = countryStateMatch[1];
+    country = 'United States';
+  }
+
+  // Normalize composite city strings like "Mountain View, CA USA" or "San Francisco, CA"
+  const cityCompositeMatch = city.match(/^(.*?)[,;\s]+([A-Z]{2})[,;\s]*(?:USA|US|United States)?$/i);
+  if (cityCompositeMatch && !state) {
+    city = cityCompositeMatch[1].trim();
+    state = cityCompositeMatch[2].trim();
+  } else if (/[,;\s]+(?:USA|US|United States)$/i.test(city)) {
+    city = city.replace(/[,;\s]+(?:USA|US|United States)$/i, '').trim();
+  }
+
   const cityNorm = city.toLowerCase().replace(/ - [a-z0-9]+$/i, '').trim();
 
-  // If state is a 3-letter country code (e.g. SGP, MYS, ITA, CRI, DEU)
+  // If state is a 3-letter foreign country code (e.g. SGP, MYS, ITA, CRI, DEU)
   const stateUpper = state.toUpperCase();
   if (state.length === 3 && ISO_COUNTRY_NAMES[stateUpper] && !US_STATE_ABBRS.has(stateUpper)) {
     if (!country) country = ISO_COUNTRY_NAMES[stateUpper];
@@ -160,6 +197,8 @@ export function formatLocation(loc: LocationInput): string {
   const countryUpper = country.toUpperCase();
   if (ISO_COUNTRY_NAMES[countryUpper]) {
     country = ISO_COUNTRY_NAMES[countryUpper];
+  } else if (/^(usa?|united states|u\.s\.a?)$/i.test(country)) {
+    country = 'United States';
   }
 
   // Check for US state in state field
@@ -176,7 +215,7 @@ export function formatLocation(loc: LocationInput): string {
   }
 
   // Major US city detection: if city is a known US city and no foreign country is explicitly set
-  const isUSCountry = !country || /^(usa?|united states|u\.s\.a?)$/i.test(country);
+  const isUSCountry = !country || country === 'United States' || /^(usa?|united states|u\.s\.a?)$/i.test(country);
   if (MAJOR_US_CITIES[cityNorm] && isUSCountry) {
     usStateAbbr = usStateAbbr ?? MAJOR_US_CITIES[cityNorm];
     country = '';
@@ -184,7 +223,7 @@ export function formatLocation(loc: LocationInput): string {
 
   let label: string;
   if (usStateAbbr) {
-    // US location: "City, State"
+    // US location: "City, State" (never append USA or country code)
     label = city ? `${city}, ${usStateAbbr}` : usStateAbbr;
   } else if (country && country !== 'United States') {
     // International location: "City, Country"
@@ -202,6 +241,11 @@ export function formatLocation(loc: LocationInput): string {
   } else {
     label = country || 'Location N/A';
   }
+
+  // Strip redundant trailing USA / US / United States on US locations
+  label = label.replace(/,\s*([A-Z]{2})[,\s]+(?:USA|US|United States|U\.S\.A\.)\b/gi, ', $1');
+  label = label.replace(/,\s*(?:USA|U\.S\.A\.)\s*$/i, '');
+  label = label.replace(/\s+(?:USA|U\.S\.A\.)\s*$/i, '');
 
   // Guard: Replace any trailing 3-letter uppercase country code (e.g. ", CRI" -> ", Costa Rica")
   label = label.replace(/,\s*([A-Z]{3})\b/g, (_, code: string) => {

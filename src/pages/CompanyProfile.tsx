@@ -11,7 +11,7 @@ import { Button } from '../components/ui/Button';
 import { CompanyLogo } from '../components/ui/CompanyLogo';
 import { RoleCard } from '../components/cards/RoleCard';
 import { EmptyState } from '../components/ui/EmptyState';
-import { LoadingBlock } from '../components/ui/Spinner';
+import { CompanyProfileSkeleton } from '../components/ui/Skeleton';
 import { SPECIFIC_SEASONS, type Season } from '../lib/adapter/types';
 import { uniqueCompanyFields, visibleCompanyDescription } from '../lib/companyDisplay';
 
@@ -26,7 +26,7 @@ export function CompanyProfile() {
     queryFn: () => adapter.getCompany(slug),
   });
 
-  if (isLoading) return <LoadingBlock label="Loading company" />;
+  if (isLoading) return <CompanyProfileSkeleton />;
   if (!company)
     return (
       <EmptyState
@@ -45,105 +45,133 @@ export function CompanyProfile() {
   const mapHref = `/map?company=${encodeURIComponent(company.name)}`;
 
   return (
-    <div className="mx-auto max-w-4xl">
+    <div>
       <Helmet>
         <title>{`${company.name} — Launchpad`}</title>
-        <meta name="description" content={description ?? `${company.name} opportunities on Launchpad`} />
+        <meta
+          name="description"
+          content={`Explore open internships and roles at ${company.name}.${description ? ` ${description}` : ''}`}
+        />
         <meta property="og:title" content={`${company.name} on Launchpad`} />
       </Helmet>
 
-      <Link to="/browse?view=companies" className="mb-4 inline-flex items-center gap-1 text-sm text-slate-500 hover:text-navy">
-        <ArrowLeft className="h-4 w-4" aria-hidden="true" /> Back to companies
+      <Link
+        to="/browse?view=companies"
+        className="mb-4 inline-flex items-center gap-1 text-sm text-slate-500 hover:text-navy"
+      >
+        <ArrowLeft className="h-4 w-4" aria-hidden="true" /> Browse companies
       </Link>
 
-      <header className="rounded-xl border border-slate-200 bg-white p-6">
-        <div className="flex items-start gap-4">
-          <CompanyLogo
-            name={company.name}
-            logoUrl={company.logoUrl}
-            websiteUrl={company.websiteUrl}
-            size={64}
-            className="rounded-xl"
-          />
-          <div className="flex-1">
-            <h1 className="text-2xl font-bold text-navy">{company.name}</h1>
-            <div className="mt-2 flex flex-wrap gap-1.5">
-              <Badge tone={company.companyType === 'Startup' ? 'cyan' : 'muted'}>{company.companyType}</Badge>
-              {fields.map((f) => (
-                <Badge key={f} tone="muted">
-                  {f}
-                </Badge>
-              ))}
-              {company.startupStage && company.startupStage !== 'Unknown / Not disclosed' && (
-                <Badge tone="muted">{company.startupStage}</Badge>
-              )}
-              {company.employeeCountRange && <Badge tone="muted">{company.employeeCountRange} employees</Badge>}
-              {company.foundingYear && <Badge tone="muted">Founded {company.foundingYear}</Badge>}
+      {/* Header */}
+      <header className="rounded-xl border border-slate-200 bg-white p-6 shadow-sm">
+        <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+          <div className="flex items-start gap-4">
+            <CompanyLogo name={company.name} logoUrl={company.logoUrl} className="h-16 w-16 text-2xl" />
+            <div>
+              <h1 className="text-2xl font-bold text-navy">{company.name}</h1>
+              {description && <p className="mt-1 max-w-2xl text-sm text-slate-600">{description}</p>}
+              <div className="mt-3 flex flex-wrap gap-1.5">
+                <Badge tone="cyan">{company.companyType}</Badge>
+                {company.startupStage && <Badge tone="muted">{company.startupStage}</Badge>}
+                {company.employeeCountRange && <Badge tone="muted">{company.employeeCountRange} employees</Badge>}
+                {fields.map((f) => (
+                  <Badge key={f} tone="muted">
+                    {f}
+                  </Badge>
+                ))}
+              </div>
             </div>
+          </div>
+
+          <div className="flex flex-wrap gap-2 sm:flex-col">
+            {company.websiteUrl && (
+              <a href={company.websiteUrl} target="_blank" rel="noopener noreferrer">
+                <Button variant="outline" size="sm" className="w-full">
+                  <Globe className="h-4 w-4" aria-hidden="true" /> Website
+                </Button>
+              </a>
+            )}
+            {company.careersUrl && (
+              <a href={company.careersUrl} target="_blank" rel="noopener noreferrer">
+                <Button variant="outline" size="sm" className="w-full">
+                  <ExternalLink className="h-4 w-4" aria-hidden="true" /> Careers Page
+                </Button>
+              </a>
+            )}
+            <Link to={mapHref}>
+              <Button variant="outline" size="sm" className="w-full">
+                <Map className="h-4 w-4" aria-hidden="true" /> View on map
+              </Button>
+            </Link>
           </div>
         </div>
 
-        {description && <p className="mt-4 text-slate-600">{description}</p>}
-
-        <div className="mt-4 flex flex-wrap items-center gap-4 text-sm">
-          {company.websiteUrl && (
-            <a href={company.websiteUrl} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1 text-slate-600 hover:text-navy">
-              <Globe className="h-4 w-4" aria-hidden="true" /> Website
-            </a>
-          )}
-          {company.careersUrl && (
-            <a href={company.careersUrl} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1 text-slate-600 hover:text-navy">
-              <ExternalLink className="h-4 w-4" aria-hidden="true" /> Careers page
-            </a>
-          )}
-          {company.activeRoleCount > 0 && (
-            <Link
-              to={mapHref}
-              className="inline-flex items-center gap-1 font-medium text-navy hover:text-cyan"
-            >
-
-<Map className="h-4 w-4 text-cyan" aria-hidden="true" />
-View pins on map
-            </Link>
-          )}
-          {company.locations[0] && (
-            <span className="inline-flex items-center gap-1 text-slate-500">
-              <MapPin className="h-4 w-4" aria-hidden="true" />
-              {formatLocation({ city: company.locations[0].city, state: company.locations[0].state, country: company.locations[0].country })}
-            </span>
-          )}
-        </div>
+        {company.locations.length > 0 && (
+          <div className="mt-6 flex flex-wrap items-center gap-2 border-t border-slate-100 pt-4 text-xs text-slate-500">
+            <MapPin className="h-3.5 w-3.5" aria-hidden="true" />
+            <span className="font-medium text-slate-600">Locations:</span>
+            {company.locations.map((loc) => (
+              <span key={loc.id} className="rounded bg-slate-100 px-1.5 py-0.5">
+                {formatLocation({ city: loc.city, state: loc.state, country: loc.country })}
+                {loc.locationType === 'HQ' ? ' (HQ)' : ''}
+              </span>
+            ))}
+          </div>
+        )}
       </header>
 
-      <section className="mt-6">
-        <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
-          <h2 className="text-lg font-semibold text-navy">
-            {company.activeRoleCount} active {company.activeRoleCount === 1 ? 'opportunity' : 'opportunities'}
-          </h2>
-          <div className="flex flex-wrap gap-1.5" role="group" aria-label="Filter by season">
-            <SeasonFilterButton label="All" active={season === 'all'} onClick={() => setSeason('all')} />
+      {/* Roles section */}
+      <section className="mt-8">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div>
+            <h2 className="text-xl font-bold text-navy">
+              Open opportunities ({roles.length}
+              {season !== 'all' ? ` for ${season}` : ''})
+            </h2>
+            <p className="text-sm text-slate-500">Active postings, deduplicated by role title and location.</p>
+          </div>
+
+          <div className="flex flex-wrap gap-1">
+            <button
+              onClick={() => setSeason('all')}
+              className={
+                'rounded-full px-3 py-1 text-xs font-medium ' +
+                (season === 'all' ? 'bg-navy text-white' : 'bg-slate-100 text-slate-700 hover:bg-slate-200')
+              }
+            >
+              All terms
+            </button>
             {SPECIFIC_SEASONS.map((s) => (
-              <SeasonFilterButton key={s} label={s} active={season === s} onClick={() => setSeason(s)} />
+              <button
+                key={s}
+                onClick={() => setSeason(s)}
+                className={
+                  'rounded-full px-3 py-1 text-xs font-medium ' +
+                  (season === s ? 'bg-navy text-white' : 'bg-slate-100 text-slate-700 hover:bg-slate-200')
+                }
+              >
+                {s}
+              </button>
             ))}
           </div>
         </div>
 
-        {company.activeRoleCount === 0 ? (
-          <EmptyState
-            title="No open roles right now"
-            description={`${company.name} has no active listings today. Check their careers page for the latest.`}
-            action={
-              company.careersUrl ? (
-                <a href={company.careersUrl} target="_blank" rel="noopener noreferrer">
-                  <Button variant="outline">Visit careers page</Button>
-                </a>
-              ) : undefined
-            }
-          />
-        ) : roles.length === 0 ? (
-          <EmptyState title={`No ${season} roles`} description="Try a different term." />
+        {roles.length === 0 ? (
+          <div className="mt-6">
+            <EmptyState
+              title={`No ${season} opportunities`}
+              description={`Check back later or view all opportunities at ${company.name}.`}
+              action={
+                season !== 'all' ? (
+                  <Button variant="outline" onClick={() => setSeason('all')}>
+                    View all terms
+                  </Button>
+                ) : undefined
+              }
+            />
+          </div>
         ) : (
-          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+          <div className="mt-6 grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
             {roles.map((r) => (
               <RoleCard key={r.id} role={r} saved={savedIds.has(r.id)} onToggleSave={toggleSave} />
             ))}
@@ -151,20 +179,5 @@ View pins on map
         )}
       </section>
     </div>
-  );
-}
-
-function SeasonFilterButton({ label, active, onClick }: { label: string; active: boolean; onClick: () => void }) {
-  return (
-    <button
-      onClick={onClick}
-      aria-pressed={active}
-      className={
-        'rounded-full px-3 py-1 text-sm font-medium transition-colors ' +
-        (active ? 'bg-cyan text-navy' : 'bg-white text-slate-600 ring-1 ring-slate-200 hover:ring-cyan')
-      }
-    >
-      {label}
-    </button>
   );
 }

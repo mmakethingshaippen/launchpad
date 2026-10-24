@@ -1,5 +1,5 @@
 import { useState, type FormEvent } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, Link } from 'react-router-dom';
 import { Helmet } from 'react-helmet-async';
 import { useQuery } from '@tanstack/react-query';
 import { Search, MapPin, Map as MapIcon, Target, Send, Bookmark } from 'lucide-react';
@@ -7,7 +7,7 @@ import { useAdapter } from '../hooks/useAdapter';
 import { Button } from '../components/ui/Button';
 import { RoleCard } from '../components/cards/RoleCard';
 import { CompanyCard } from '../components/cards/CompanyCard';
-import { LoadingBlock } from '../components/ui/Spinner';
+import { RoleCardSkeleton } from '../components/ui/Skeleton';
 import type { Season } from '../lib/adapter/types';
 
 const QUICK_TERMS: Array<{ label: string; value: Season | 'all' }> = [
@@ -59,41 +59,53 @@ export function Home() {
             fast growing teams, and public institutions, all in one place.
           </p>
 
-          <form onSubmit={submit} className="mt-8 space-y-3 text-left">
-            <div className="flex flex-col gap-3 md:flex-row">
-              <label className="flex flex-1 items-center gap-2 rounded-lg bg-white px-3 py-2 text-navy">
+          {/* Search bar */}
+          <form
+            onSubmit={submit}
+            className="mt-8 flex flex-col gap-3 rounded-xl bg-white p-3 text-slate-900 shadow-xl"
+            role="search"
+          >
+            <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+              <div className="flex flex-1 items-center gap-2 px-3 py-1">
                 <Search className="h-5 w-5 text-slate-400" aria-hidden="true" />
-                <span className="sr-only">Keyword</span>
                 <input
+                  type="text"
+                  placeholder="Role, skill, or keyword (e.g. Software, Data, Finance)"
                   value={keyword}
                   onChange={(e) => setKeyword(e.target.value)}
-                  placeholder="Role, skill, or company"
-                  className="w-full bg-transparent outline-none placeholder:text-slate-400"
+                  className="w-full text-sm outline-none placeholder:text-slate-400"
+                  aria-label="Search keywords"
                 />
-              </label>
-              <label className="flex flex-1 items-center gap-2 rounded-lg bg-white px-3 py-2 text-navy">
+              </div>
+
+              <div className="h-px bg-slate-200 sm:h-6 sm:w-px" />
+
+              <div className="flex flex-1 items-center gap-2 px-3 py-1">
                 <MapPin className="h-5 w-5 text-slate-400" aria-hidden="true" />
-                <span className="sr-only">Location</span>
                 <input
+                  type="text"
+                  placeholder="City, state, or 'Remote'"
                   value={location}
                   onChange={(e) => setLocation(e.target.value)}
-                  placeholder="City or Remote"
-                  className="w-full bg-transparent outline-none placeholder:text-slate-400"
+                  className="w-full text-sm outline-none placeholder:text-slate-400"
+                  aria-label="Location"
                 />
-              </label>
+              </div>
             </div>
 
-            <div className="flex flex-wrap items-center gap-2" role="group" aria-label="Quick term select">
+            {/* Quick term selector */}
+            <div className="flex flex-wrap items-center gap-1.5 border-t border-slate-100 pt-2 text-xs">
+              <span className="text-slate-500 font-medium mr-1">Term:</span>
               {QUICK_TERMS.map((t) => (
                 <button
-                  key={t.value}
                   type="button"
+                  key={t.value}
                   onClick={() => setTerm(t.value)}
-                  aria-pressed={term === t.value}
-                  className={
-                    'rounded-full px-3 py-1 text-sm font-medium transition-colors ' +
-                    (term === t.value ? 'bg-cyan text-navy' : 'bg-white/10 text-white hover:bg-white/20')
-                  }
+                  className={`rounded-full px-2.5 py-1 transition-colors ${
+                    term === t.value
+                      ? 'bg-navy text-white font-medium'
+                      : 'bg-slate-100 text-slate-700 hover:bg-slate-200'
+                  }`}
                 >
                   {t.label}
                 </button>
@@ -157,7 +169,24 @@ export function Home() {
       {/* Featured */}
       <section className="mt-12">
         {featured.isLoading ? (
-          <LoadingBlock label="Loading featured opportunities" />
+          <div className="space-y-10">
+            <div>
+              <div className="mb-4 h-6 w-64 rounded bg-slate-200 animate-pulse" />
+              <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
+                {Array.from({ length: 3 }).map((_, i) => (
+                  <RoleCardSkeleton key={i} />
+                ))}
+              </div>
+            </div>
+            <div>
+              <div className="mb-4 h-6 w-64 rounded bg-slate-200 animate-pulse" />
+              <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
+                {Array.from({ length: 3 }).map((_, i) => (
+                  <RoleCardSkeleton key={i} />
+                ))}
+              </div>
+            </div>
+          </div>
         ) : (
           (() => {
             const recentRoles = (featured.data?.recentlyVerified ?? []).slice(0, 3);

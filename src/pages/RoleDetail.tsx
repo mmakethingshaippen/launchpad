@@ -7,7 +7,7 @@ import { useAdapter } from '../hooks/useAdapter';
 import { useApplications } from '../hooks/useApplications';
 import { Button } from '../components/ui/Button';
 import { Badge, SeasonBadge } from '../components/ui/Badge';
-import { LoadingBlock } from '../components/ui/Spinner';
+import { RoleDetailSkeleton } from '../components/ui/Skeleton';
 import { EmptyState } from '../components/ui/EmptyState';
 import { RelativeTime } from '../components/ui/RelativeTime';
 import { sanitizeHtml } from '../lib/sanitize';
@@ -24,7 +24,7 @@ export function RoleDetail() {
     queryFn: () => adapter.getRole(slug),
   });
 
-  if (isLoading) return <LoadingBlock label="Loading role" />;
+  if (isLoading) return <RoleDetailSkeleton />;
   if (!role)
     return (
       <EmptyState
