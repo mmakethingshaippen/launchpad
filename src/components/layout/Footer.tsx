@@ -22,6 +22,9 @@ export function Footer() {
         <p className="mt-8 text-xs text-slate-400">
           Every opportunity is verified against live employer feeds. Browsing and applying never require an account.
         </p>
+        <p className="mt-2 text-xs text-slate-400">
+          Built by Maxim Culbeaux
+        </p>
       </div>
     </footer>
   );
