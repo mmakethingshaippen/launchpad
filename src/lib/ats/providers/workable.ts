@@ -1,106 +1,234 @@
+
 import type { ProviderClient, FetchLike } from '../types';
 import { mapWorkArrangement, splitLocation } from '../util';
 
-// Workable exposes a keyless public jobs widget:
-//   https://www.workable.com/api/accounts/{token}?details=false
-// returning { name, description, jobs: [{ shortcode, title, ... }] }.
-// The v3 search API (apply.workable.com/api/v3/accounts/{token}/jobs, POST)
-// is used as a fallback when the widget API is unavailable.
-interface WorkableWidgetJob {
+interface WorkableLocation {
+  city?: string;
+  region?: string;
+  country?: string;
+  country_code?: string;
+  telecommuting?: boolean;
+}
+
+interface WorkableJob {
   id?: string;
   shortcode?: string;
   title: string;
   url?: string;
   application_url?: string;
   shortlink?: string;
-  location?: {
-    city?: string;
-    region?: string;
-    country?: string;
-    country_code?: string;
-    telecommuting?: boolean;
-  };
+  location?: WorkableLocation;
   department?: string;
   employment_type?: string;
   created_at?: string;
 }
-interface WorkableWidgetResponse {
-  jobs?: WorkableWidgetJob[];
+
+interface WidgetResponse {
+  jobs?: WorkableJob[];
 }
 
-// v3 search API shapes (fallback).
-interface WorkableV3Job {
+interface V3Job {
   id?: string;
   shortcode?: string;
   title: string;
   url?: string;
-  locations?: Array<{ city?: string; region?: string; country?: string }>;
+  locations?: Array<{
+    city?: string;
+    region?: string;
+    country?: string;
+  }>;
   remote?: boolean;
   department?: string[];
   created_at?: string;
 }
-interface WorkableV3Response {
-  results?: WorkableV3Job[];
+
+interface V3Response {
+  results?: V3Job[];
+  paging?: {
+    next?: string | null;
+  };
+  next?: string | null;
 }
 
-export function createWorkableClient(fetchImpl: FetchLike = fetch): ProviderClient<WorkableWidgetJob> {
+const MAX_FALLBACK_PAGES = 100;
+
+export function createWorkableClient(
+  fetchImpl: FetchLike = fetch,
+): ProviderClient<WorkableJob> {
   let completeSnapshot = false;
+
   return {
     provider: 'workable',
+
     isCompleteSnapshot: () => completeSnapshot,
+
     async fetchPostings(token, signal) {
       completeSnapshot = false;
-      const widgetUrl = `https://www.workable.com/api/accounts/${encodeURIComponent(token)}?details=false`;
-      const res = await fetchImpl(widgetUrl, { signal });
-      if (res.ok) {
-        const data = (await res.json()) as WorkableWidgetResponse;
-        if (Array.isArray(data.jobs) && data.jobs.length > 0) {
+
+      const widgetUrl =
+        `https://www.workable.com/api/accounts/` +
+        `${encodeURIComponent(token)}?details=false`;
+
+      const widgetResponse = await fetchImpl(
+        widgetUrl,
+        { signal },
+      );
+
+      if (widgetResponse.ok) {
+        const data =
+          (await widgetResponse.json()) as WidgetResponse;
+
+        // An empty widget response must trigger the v3
+        // fallback rather than returning zero jobs.
+        if (
+          Array.isArray(data.jobs) &&
+          data.jobs.length > 0
+        ) {
           completeSnapshot = true;
           return data.jobs;
         }
       }
 
-      // Fallback: v3 search API (POST). Normalize its shape into the widget shape.
-      const v3Url = `https://apply.workable.com/api/v3/accounts/${encodeURIComponent(token)}/jobs`;
-      const v3 = await fetchImpl(v3Url, {
-        signal,
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ query: '', location: [], department: [], worktype: [], remote: [] }),
-      });
-      if (!v3.ok) throw new Error(`Workable ${token}: HTTP ${res.status}/${v3.status}`);
-      const v3data = (await v3.json()) as WorkableV3Response;
-      return (v3data.results ?? []).map((j) => ({
-        shortcode: j.shortcode ?? j.id,
-        title: j.title,
-        url: j.url,
-        location: j.locations?.[0]
-          ? { ...j.locations[0], telecommuting: j.remote }
-          : { telecommuting: j.remote },
-        department: j.department?.[0],
-        created_at: j.created_at,
-      }));
+      const endpoint =
+        `https://apply.workable.com/api/v3/accounts/` +
+        `${encodeURIComponent(token)}/jobs`;
+
+      const collected: WorkableJob[] = [];
+      const seen = new Set<string>();
+      const visitedCursors = new Set<string>();
+
+      let cursor: string | null = null;
+
+      for (
+        let page = 0;
+        page < MAX_FALLBACK_PAGES;
+        page++
+      ) {
+        const body: Record<string, unknown> = {
+          query: '',
+          location: [],
+          department: [],
+          worktype: [],
+          remote: [],
+        };
+
+        if (cursor) {
+          body.cursor = cursor;
+        }
+
+        const res = await fetchImpl(endpoint, {
+          signal,
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Accept: 'application/json',
+          },
+          body: JSON.stringify(body),
+        });
+
+        if (!res.ok) {
+          throw new Error(
+            `Workable ${token}: fallback HTTP ${res.status}`,
+          );
+        }
+
+        const data = (await res.json()) as V3Response;
+
+        if (!Array.isArray(data.results)) {
+          throw new Error(
+            `Workable ${token}: invalid fallback response`,
+          );
+        }
+
+        for (const job of data.results) {
+          const id = job.shortcode ?? job.id;
+
+          if (!id || seen.has(id)) {
+            continue;
+          }
+
+          seen.add(id);
+
+          collected.push({
+            id: job.id,
+            shortcode: job.shortcode ?? job.id,
+            title: job.title,
+            url: job.url,
+            location: job.locations?.[0]
+              ? {
+                  ...job.locations[0],
+                  telecommuting: job.remote,
+                }
+              : {
+                  telecommuting: job.remote,
+                },
+            department: job.department?.[0],
+            created_at: job.created_at,
+          });
+        }
+
+        const nextCursor =
+          data.paging?.next ?? data.next ?? null;
+
+        if (!nextCursor) {
+          break;
+        }
+
+        if (visitedCursors.has(nextCursor)) {
+          throw new Error(
+            `Workable ${token}: pagination cursor repeated`,
+          );
+        }
+
+        visitedCursors.add(nextCursor);
+        cursor = nextCursor;
+      }
+
+      // Fallback responses may be incomplete.
+      // Never close missing jobs based on this feed.
+      completeSnapshot = false;
+
+      return collected;
     },
+
     toNormalized(raw) {
-      if (!raw || !raw.title) return null;
-      const code = raw.shortcode ?? raw.id;
-      if (!code) return null;
+      if (!raw?.title) {
+        return null;
+      }
+
+      const id = raw.shortcode ?? raw.id;
+
+      if (!id) {
+        return null;
+      }
+
       const applyUrl =
         raw.application_url ??
         raw.url ??
         raw.shortlink ??
-        `https://apply.workable.com/j/${code}`;
-      const loc = raw.location;
-      const locationString = [loc?.city, loc?.region, loc?.country].filter(Boolean).join(', ');
-      const parts = splitLocation(locationString);
+        `https://apply.workable.com/j/${id}`;
+
+      const location = raw.location;
+
+      const locationText = [
+        location?.city,
+        location?.region,
+        location?.country,
+      ]
+        .filter(Boolean)
+        .join(', ');
+
       return {
-        externalJobId: String(code),
+        externalJobId: String(id),
         title: raw.title,
         descriptionHtml: '',
         applyUrl,
-        ...parts,
-        workArrangement: loc?.telecommuting ? 'Remote' : mapWorkArrangement(undefined),
-        employmentTypeRaw: raw.employment_type ?? raw.department,
+        ...splitLocation(locationText),
+        workArrangement: location?.telecommuting
+          ? 'Remote'
+          : mapWorkArrangement(undefined),
+        employmentTypeRaw:
+          raw.employment_type ?? raw.department,
         updatedAt: raw.created_at,
       };
     },

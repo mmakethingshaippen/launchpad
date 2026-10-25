@@ -1,23 +1,16 @@
-/**
- * Vercel Serverless Function: POST /api/sync[?id=<companyId>&offset=<offset>&limit=<limit>&timeBudgetMs=<ms>]
- *
- * Runs the shared ATS sync engine server-side using the Supabase SERVICE ROLE
- * (bypasses RLS for upserts). Never exposed to the browser bundle. Applies the
- * bounded-concurrency + per-request timeout policy via syncAll.
- *
- * Auth: requires the caller to be an admin. We verify the bearer token against
- * Supabase and check user_profiles.account_role = 'admin'.
- *
- * Supports paginated batching and time budgeting to prevent Vercel 504 Gateway
- * Timeouts on large company rosters.
- *
- * NOTE: This file is pre-bundled into a self-contained api/sync.js by
- * scripts/build-api.ts / scripts/build-api.mjs during `npm run build`, so the
- * ../src/lib/ats/* imports are inlined and Vercel's runtime never has to
- * resolve relative TS paths.
- */
-import { syncAll, type SyncableCompany, type SyncResult } from '../../src/lib/ats/sync';
-import { createServiceClient, loadSyncableCompanies, SupabaseSink } from '../../src/lib/ats/supabaseSink';
+
+import {
+  syncAll,
+  type SyncableCompany,
+  type SyncResult,
+} from '../../src/lib/ats/sync';
+
+import {
+  createServiceClient,
+  loadSyncableCompanies,
+  loadSyncableCompany,
+  SupabaseSink,
+} from '../../src/lib/ats/supabaseSink';
 
 interface VercelRequest {
   method?: string;
@@ -25,6 +18,7 @@ interface VercelRequest {
   headers: Record<string, string | string[] | undefined>;
   body?: unknown;
 }
+
 interface VercelResponse {
   status: (code: number) => VercelResponse;
   json: (body: unknown) => void;
@@ -38,10 +32,26 @@ export interface SyncBatchResponse {
   done: boolean;
 }
 
-export default async function handler(req: VercelRequest, res: VercelResponse) {
-  // Allowed callers:
-  //   1. Vercel Cron: GET or POST with Authorization: Bearer <CRON_SECRET>.
-  //   2. An admin user: POST with their Supabase access token.
+const BATCH_SIZE = 8;
+const MAX_BUDGET_MS = 45_000;
+
+function parseNumber(
+  raw: unknown,
+  fallback: number,
+  min: number,
+  max: number,
+): number {
+  const value = Number(raw);
+
+  if (!Number.isFinite(value)) return fallback;
+
+  return Math.min(max, Math.max(min, Math.floor(value)));
+}
+
+export default async function handler(
+  req: VercelRequest,
+  res: VercelResponse,
+) {
   if (req.method !== 'POST' && req.method !== 'GET') {
     res.status(405).json({ error: 'Method not allowed' });
     return;
@@ -50,122 +60,162 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   try {
     const db = createServiceClient();
 
-    const authHeader = req.headers['authorization'];
-    const token = (Array.isArray(authHeader) ? authHeader[0] : authHeader)?.replace(/^Bearer /, '');
+    const authHeader = req.headers.authorization;
+
+    const token = (
+      Array.isArray(authHeader)
+        ? authHeader[0]
+        : authHeader
+    )?.replace(/^Bearer /i, '');
 
     const cronSecret = process.env.CRON_SECRET;
-    const isCron = Boolean(cronSecret && token && token === cronSecret);
+    const isCron = Boolean(
+      cronSecret && token && token === cronSecret,
+    );
 
     if (!isCron) {
-      // Fall back to admin-user authorization.
       if (!token) {
         res.status(401).json({ error: 'Unauthorized' });
         return;
       }
-      const { data: userData } = await db.auth.getUser(token);
-      if (!userData.user) {
+
+      const { data: userData, error: userError } =
+        await db.auth.getUser(token);
+
+      if (userError || !userData.user) {
         res.status(401).json({ error: 'Unauthorized' });
         return;
       }
-      const { data: profile } = await db
-        .from('user_profiles')
-        .select('account_role')
-        .eq('id', userData.user.id)
-        .maybeSingle();
-      if (profile?.account_role !== 'admin') {
+
+      const { data: profile, error: profileError } =
+        await db
+          .from('user_profiles')
+          .select('account_role')
+          .eq('id', userData.user.id)
+          .maybeSingle();
+
+      if (profileError || profile?.account_role !== 'admin') {
         res.status(403).json({ error: 'Forbidden' });
+        return;
+      }
+
+      if (req.method !== 'POST') {
+        res.status(405).json({
+          error: 'Admin sync requires POST',
+        });
         return;
       }
     }
 
-    const searchParams = new URLSearchParams((req.url ?? '').split('?')[1] ?? '');
-    const id = searchParams.get('id');
+    const searchParams = new URLSearchParams(
+      (req.url ?? '').split('?')[1] ?? '',
+    );
 
-    let bodyParams: Record<string, unknown> = {};
-    if (typeof req.body === 'object' && req.body !== null) {
-      bodyParams = req.body as Record<string, unknown>;
+    let body: Record<string, unknown> = {};
+
+    if (req.body && typeof req.body === 'object') {
+      body = req.body as Record<string, unknown>;
     } else if (typeof req.body === 'string') {
       try {
-        bodyParams = JSON.parse(req.body);
+        const parsed = JSON.parse(req.body) as unknown;
+        if (
+          parsed !== null &&
+          typeof parsed === 'object' &&
+          !Array.isArray(parsed)
+        ) {
+          body = parsed as Record<string, unknown>;
+        }
       } catch {
-        // non-JSON string body, ignore
+        body = {};
       }
     }
 
-    const offsetRaw = searchParams.get('offset') ?? bodyParams.offset;
-    const limitRaw = searchParams.get('limit') ?? bodyParams.limit;
-    const timeBudgetRaw = searchParams.get('timeBudgetMs') ?? bodyParams.timeBudgetMs;
-    const isBatchRequest = offsetRaw != null || limitRaw != null;
+    const id = searchParams.get('id');
+
+    const offset = parseNumber(
+      searchParams.get('offset') ?? body.offset,
+      0,
+      0,
+      Number.MAX_SAFE_INTEGER,
+    );
+
+    const limit = parseNumber(
+      searchParams.get('limit') ?? body.limit,
+      BATCH_SIZE,
+      1,
+      BATCH_SIZE,
+    );
+
+    const timeBudgetMs = parseNumber(
+      searchParams.get('timeBudgetMs') ??
+        body.timeBudgetMs,
+      MAX_BUDGET_MS,
+      5_000,
+      MAX_BUDGET_MS,
+    );
 
     let companies: SyncableCompany[];
+
     if (id) {
-      // Load a single company by id.
-      const { data } = await db
-        .from('companies')
-        .select('id,name,ats_provider,ats_board_token')
-        .eq('id', id)
-        .neq('ats_provider', 'none');
-      companies = (data ?? []).map((c: Record<string, unknown>) => ({
-        id: c.id as string,
-        name: c.name as string,
-        atsProvider: c.ats_provider as SyncableCompany['atsProvider'],
-        atsBoardToken: (c.ats_board_token as string) ?? null,
-      }));
+      const company = await loadSyncableCompany(db, id);
+      companies = company ? [company] : [];
     } else {
       companies = await loadSyncableCompanies(db);
     }
 
     const totalCompanies = companies.length;
 
-    // Single-company requests retain the legacy array response unless the caller
-    // explicitly requests batch metadata.
-    if (id) {
-      const results = await syncAll(companies, new SupabaseSink(db), {});
-      if (isBatchRequest) {
-        const payload: SyncBatchResponse = {
-          results,
-          syncedCount: results.length,
-          nextOffset: null,
-          totalCompanies,
-          done: true,
-        };
-        res.status(200).json(payload);
-        return;
-      }
-      res.status(200).json(results);
+    if (id && companies.length === 0) {
+      res.status(404).json({
+        error:
+          'Company is not approved or has no configured ATS source.',
+      });
       return;
     }
 
-    const limit = Math.max(1, parseInt(String(limitRaw ?? 40), 10) || 40);
-    // Manual batching uses the caller's explicit cursor. The midnight worker
-    // has its own durable queue and never infers progress from wall-clock time.
-    const offset = Math.max(0, parseInt(String(offsetRaw ?? 0), 10) || 0);
-    const requestedBudget = Math.max(5000, parseInt(String(timeBudgetRaw ?? 45000), 10) || 45000);
-    // Leave headroom for auth, database operations, and response serialization.
-    const timeBudgetMs = Math.min(45000, requestedBudget);
-    const batch = companies.slice(offset, offset + Math.min(40, limit));
+    const batch = id
+      ? companies
+      : companies.slice(offset, offset + limit);
 
-    // Bound per-provider fetch time and run a modest pool to avoid one large
-    // invocation overwhelming the serverless runtime or ATS providers.
-    const results = await syncAll(batch, new SupabaseSink(db), {
-      timeoutMs: Math.min(10000, timeBudgetMs),
-      concurrency: 12,
-    });
+    const results = await syncAll(
+      batch,
+      new SupabaseSink(db),
+      {
+        timeoutMs: Math.min(20_000, timeBudgetMs),
+        concurrency: 4,
+      },
+    );
 
-    const nextOffsetIndex = offset + batch.length;
-    const done = nextOffsetIndex >= totalCompanies;
-    const nextOffset = done ? null : nextOffsetIndex;
+    const nextIndex = id
+      ? totalCompanies
+      : offset + batch.length;
 
-    const payload: SyncBatchResponse = {
+    // Always produce a boolean, not string | boolean.
+    const done =
+      Boolean(id) || nextIndex >= totalCompanies;
+
+    const response: SyncBatchResponse = {
       results,
       syncedCount: results.length,
-      nextOffset,
+      nextOffset: done ? null : nextIndex,
       totalCompanies,
       done,
     };
 
-    res.status(200).json(payload);
-  } catch (err) {
-    res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+    res.status(200).json(response);
+  } catch (error) {
+    console.error('ATS sync request failed', {
+      message:
+        error instanceof Error
+          ? error.message
+          : 'Unknown error',
+    });
+
+    res.status(500).json({
+      error:
+        error instanceof Error
+          ? error.message
+          : 'Synchronization failed',
+    });
   }
 }

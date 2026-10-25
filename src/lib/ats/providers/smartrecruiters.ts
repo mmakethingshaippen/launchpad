@@ -1,34 +1,41 @@
+
 import type { ProviderClient, FetchLike } from '../types';
 
-// https://api.smartrecruiters.com/v1/companies/{token}/postings?limit=100
-// Public, keyless postings feed. Returns a paginated { content: [...] } list.
 interface SrLocation {
   city?: string;
   region?: string;
   country?: string;
   remote?: boolean;
 }
+
 interface SrPosting {
   id: string;
-  name: string; // title
+  name: string;
   releasedDate?: string;
   location?: SrLocation;
   department?: { label?: string };
   typeOfEmployment?: { label?: string };
-  customField?: Array<{ fieldLabel?: string; valueLabel?: string }>;
+  customField?: Array<{
+    fieldLabel?: string;
+    valueLabel?: string;
+  }>;
 }
+
 interface SrResponse {
   content?: SrPosting[];
+  totalFound?: number;
 }
+
+const PAGE_SIZE = 100;
+const MAX_PAGES = 100;
 
 function countryName(code: string | undefined): string | undefined {
   if (!code) return undefined;
-  // SmartRecruiters uses ISO-3166 alpha-2 codes; map the common ones, else keep.
-  const map: Record<string, string> = {
+
+  const countries: Record<string, string> = {
     us: 'USA',
     ca: 'Canada',
     gb: 'UK',
-    uk: 'UK',
     ie: 'Ireland',
     de: 'Germany',
     fr: 'France',
@@ -37,66 +44,131 @@ function countryName(code: string | undefined): string | undefined {
     au: 'Australia',
     jp: 'Japan',
   };
-  return map[code.toLowerCase()] ?? code.toUpperCase();
+
+  return countries[code.toLowerCase()] ?? code.toUpperCase();
 }
 
 export function createSmartRecruitersClient(
   fetchImpl: FetchLike = fetch,
 ): ProviderClient<SrPosting> {
+  let completeSnapshot = false;
+
   return {
     provider: 'smartrecruiters',
-    isCompleteSnapshot: () => false, // Current connector reads only the first page.
+
+    isCompleteSnapshot: () => completeSnapshot,
+
     async fetchPostings(token, signal) {
-      const url = `https://api.smartrecruiters.com/v1/companies/${encodeURIComponent(
-        token,
-      )}/postings?limit=100`;
-      const res = await fetchImpl(url, { signal });
-      if (!res.ok) throw new Error(`SmartRecruiters ${token}: HTTP ${res.status}`);
-      const data = (await res.json()) as SrResponse;
-      return data.content ?? [];
+      completeSnapshot = false;
+
+      const collected: SrPosting[] = [];
+      const seen = new Set<string>();
+
+      for (let page = 0; page < MAX_PAGES; page++) {
+        const offset = page * PAGE_SIZE;
+
+        const url =
+          `https://api.smartrecruiters.com/v1/companies/` +
+          `${encodeURIComponent(token)}/postings` +
+          `?limit=${PAGE_SIZE}&offset=${offset}`;
+
+        const res = await fetchImpl(url, { signal });
+
+        if (!res.ok) {
+          throw new Error(
+            `SmartRecruiters ${token}: HTTP ${res.status} at offset ${offset}`,
+          );
+        }
+
+        const data = (await res.json()) as SrResponse;
+
+        if (!Array.isArray(data.content)) {
+          throw new Error(
+            `SmartRecruiters ${token}: invalid postings response`,
+          );
+        }
+
+        let newItems = 0;
+
+        for (const posting of data.content) {
+          if (!posting?.id || seen.has(posting.id)) continue;
+
+          seen.add(posting.id);
+          collected.push(posting);
+          newItems++;
+        }
+
+        if (data.content.length === 0) {
+          completeSnapshot = true;
+          break;
+        }
+
+        if (
+          typeof data.totalFound === 'number' &&
+          offset + data.content.length >= data.totalFound
+        ) {
+          completeSnapshot = true;
+          break;
+        }
+
+        if (data.content.length < PAGE_SIZE) {
+          completeSnapshot = true;
+          break;
+        }
+
+        if (newItems === 0) {
+          throw new Error(
+            `SmartRecruiters ${token}: pagination stopped making progress`,
+          );
+        }
+      }
+
+      return collected;
     },
+
     toNormalized(raw) {
-      if (!raw || !raw.id || !raw.name) return null;
-      // The company token is needed for the apply URL; SmartRecruiters embeds it
-      // in the posting feed path, but not on each item — reconstruct a stable
-      // public apply URL using the posting id. Consumers pass the token via the
-      // closure below (see createSmartRecruitersClientFor).
+      if (!raw?.id || !raw.name) return null;
+
       return {
         externalJobId: String(raw.id),
         title: raw.name,
         descriptionHtml: '',
-        applyUrl: '', // filled by the token-bound wrapper
+        applyUrl: '',
         city: raw.location?.city,
         state: raw.location?.region,
         country: countryName(raw.location?.country),
         workArrangement: raw.location?.remote ? 'Remote' : undefined,
-        employmentTypeRaw: raw.typeOfEmployment?.label ?? raw.department?.label,
+        employmentTypeRaw:
+          raw.typeOfEmployment?.label ?? raw.department?.label,
         updatedAt: raw.releasedDate,
       };
     },
   };
 }
 
-/**
- * SmartRecruiters apply URLs require the company token, which isn't on each
- * posting. This token-bound variant builds the correct public apply URL:
- *   https://jobs.smartrecruiters.com/{token}/{id}
- */
 export function createSmartRecruitersClientFor(
   token: string,
   fetchImpl: FetchLike = fetch,
 ): ProviderClient<SrPosting> {
   const base = createSmartRecruitersClient(fetchImpl);
+
   return {
     provider: 'smartrecruiters',
+
     isCompleteSnapshot: () => base.isCompleteSnapshot?.() === true,
-    fetchPostings: (t, signal) => base.fetchPostings(t, signal),
+
+    fetchPostings: (board, signal) =>
+      base.fetchPostings(board, signal),
+
     toNormalized(raw) {
       const normalized = base.toNormalized(raw);
       if (!normalized) return null;
+
       return {
         ...normalized,
-        applyUrl: `https://jobs.smartrecruiters.com/${encodeURIComponent(token)}/${normalized.externalJobId}`,
+        applyUrl:
+          `https://jobs.smartrecruiters.com/` +
+          `${encodeURIComponent(token)}/${normalized.externalJobId}`,
       };
     },
   };

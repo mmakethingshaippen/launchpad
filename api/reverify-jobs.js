@@ -23157,13 +23157,14 @@ function createLeverClient(fetchImpl = fetch) {
 }
 
 // src/lib/ats/providers/smartrecruiters.ts
+var PAGE_SIZE = 100;
+var MAX_PAGES = 100;
 function countryName(code) {
   if (!code) return void 0;
-  const map = {
+  const countries = {
     us: "USA",
     ca: "Canada",
     gb: "UK",
-    uk: "UK",
     ie: "Ireland",
     de: "Germany",
     fr: "France",
@@ -23172,30 +23173,66 @@ function countryName(code) {
     au: "Australia",
     jp: "Japan"
   };
-  return map[code.toLowerCase()] ?? code.toUpperCase();
+  return countries[code.toLowerCase()] ?? code.toUpperCase();
 }
 function createSmartRecruitersClient(fetchImpl = fetch) {
+  let completeSnapshot = false;
   return {
     provider: "smartrecruiters",
-    isCompleteSnapshot: () => false,
-    // Current connector reads only the first page.
+    isCompleteSnapshot: () => completeSnapshot,
     async fetchPostings(token, signal) {
-      const url = `https://api.smartrecruiters.com/v1/companies/${encodeURIComponent(
-        token
-      )}/postings?limit=100`;
-      const res = await fetchImpl(url, { signal });
-      if (!res.ok) throw new Error(`SmartRecruiters ${token}: HTTP ${res.status}`);
-      const data = await res.json();
-      return data.content ?? [];
+      completeSnapshot = false;
+      const collected = [];
+      const seen = /* @__PURE__ */ new Set();
+      for (let page = 0; page < MAX_PAGES; page++) {
+        const offset = page * PAGE_SIZE;
+        const url = `https://api.smartrecruiters.com/v1/companies/${encodeURIComponent(token)}/postings?limit=${PAGE_SIZE}&offset=${offset}`;
+        const res = await fetchImpl(url, { signal });
+        if (!res.ok) {
+          throw new Error(
+            `SmartRecruiters ${token}: HTTP ${res.status} at offset ${offset}`
+          );
+        }
+        const data = await res.json();
+        if (!Array.isArray(data.content)) {
+          throw new Error(
+            `SmartRecruiters ${token}: invalid postings response`
+          );
+        }
+        let newItems = 0;
+        for (const posting of data.content) {
+          if (!posting?.id || seen.has(posting.id)) continue;
+          seen.add(posting.id);
+          collected.push(posting);
+          newItems++;
+        }
+        if (data.content.length === 0) {
+          completeSnapshot = true;
+          break;
+        }
+        if (typeof data.totalFound === "number" && offset + data.content.length >= data.totalFound) {
+          completeSnapshot = true;
+          break;
+        }
+        if (data.content.length < PAGE_SIZE) {
+          completeSnapshot = true;
+          break;
+        }
+        if (newItems === 0) {
+          throw new Error(
+            `SmartRecruiters ${token}: pagination stopped making progress`
+          );
+        }
+      }
+      return collected;
     },
     toNormalized(raw) {
-      if (!raw || !raw.id || !raw.name) return null;
+      if (!raw?.id || !raw.name) return null;
       return {
         externalJobId: String(raw.id),
         title: raw.name,
         descriptionHtml: "",
         applyUrl: "",
-        // filled by the token-bound wrapper
         city: raw.location?.city,
         state: raw.location?.region,
         country: countryName(raw.location?.country),
@@ -23211,7 +23248,7 @@ function createSmartRecruitersClientFor(token, fetchImpl = fetch) {
   return {
     provider: "smartrecruiters",
     isCompleteSnapshot: () => base.isCompleteSnapshot?.() === true,
-    fetchPostings: (t, signal) => base.fetchPostings(t, signal),
+    fetchPostings: (board, signal) => base.fetchPostings(board, signal),
     toNormalized(raw) {
       const normalized = base.toNormalized(raw);
       if (!normalized) return null;
@@ -23224,6 +23261,7 @@ function createSmartRecruitersClientFor(token, fetchImpl = fetch) {
 }
 
 // src/lib/ats/providers/workable.ts
+var MAX_FALLBACK_PAGES = 100;
 function createWorkableClient(fetchImpl = fetch) {
   let completeSnapshot = false;
   return {
@@ -23232,47 +23270,111 @@ function createWorkableClient(fetchImpl = fetch) {
     async fetchPostings(token, signal) {
       completeSnapshot = false;
       const widgetUrl = `https://www.workable.com/api/accounts/${encodeURIComponent(token)}?details=false`;
-      const res = await fetchImpl(widgetUrl, { signal });
-      if (res.ok) {
-        const data = await res.json();
+      const widgetResponse = await fetchImpl(
+        widgetUrl,
+        { signal }
+      );
+      if (widgetResponse.ok) {
+        const data = await widgetResponse.json();
         if (Array.isArray(data.jobs) && data.jobs.length > 0) {
           completeSnapshot = true;
           return data.jobs;
         }
       }
-      const v3Url = `https://apply.workable.com/api/v3/accounts/${encodeURIComponent(token)}/jobs`;
-      const v3 = await fetchImpl(v3Url, {
-        signal,
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ query: "", location: [], department: [], worktype: [], remote: [] })
-      });
-      if (!v3.ok) throw new Error(`Workable ${token}: HTTP ${res.status}/${v3.status}`);
-      const v3data = await v3.json();
-      return (v3data.results ?? []).map((j) => ({
-        shortcode: j.shortcode ?? j.id,
-        title: j.title,
-        url: j.url,
-        location: j.locations?.[0] ? { ...j.locations[0], telecommuting: j.remote } : { telecommuting: j.remote },
-        department: j.department?.[0],
-        created_at: j.created_at
-      }));
+      const endpoint = `https://apply.workable.com/api/v3/accounts/${encodeURIComponent(token)}/jobs`;
+      const collected = [];
+      const seen = /* @__PURE__ */ new Set();
+      const visitedCursors = /* @__PURE__ */ new Set();
+      let cursor = null;
+      for (let page = 0; page < MAX_FALLBACK_PAGES; page++) {
+        const body = {
+          query: "",
+          location: [],
+          department: [],
+          worktype: [],
+          remote: []
+        };
+        if (cursor) {
+          body.cursor = cursor;
+        }
+        const res = await fetchImpl(endpoint, {
+          signal,
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Accept: "application/json"
+          },
+          body: JSON.stringify(body)
+        });
+        if (!res.ok) {
+          throw new Error(
+            `Workable ${token}: fallback HTTP ${res.status}`
+          );
+        }
+        const data = await res.json();
+        if (!Array.isArray(data.results)) {
+          throw new Error(
+            `Workable ${token}: invalid fallback response`
+          );
+        }
+        for (const job of data.results) {
+          const id = job.shortcode ?? job.id;
+          if (!id || seen.has(id)) {
+            continue;
+          }
+          seen.add(id);
+          collected.push({
+            id: job.id,
+            shortcode: job.shortcode ?? job.id,
+            title: job.title,
+            url: job.url,
+            location: job.locations?.[0] ? {
+              ...job.locations[0],
+              telecommuting: job.remote
+            } : {
+              telecommuting: job.remote
+            },
+            department: job.department?.[0],
+            created_at: job.created_at
+          });
+        }
+        const nextCursor = data.paging?.next ?? data.next ?? null;
+        if (!nextCursor) {
+          break;
+        }
+        if (visitedCursors.has(nextCursor)) {
+          throw new Error(
+            `Workable ${token}: pagination cursor repeated`
+          );
+        }
+        visitedCursors.add(nextCursor);
+        cursor = nextCursor;
+      }
+      completeSnapshot = false;
+      return collected;
     },
     toNormalized(raw) {
-      if (!raw || !raw.title) return null;
-      const code = raw.shortcode ?? raw.id;
-      if (!code) return null;
-      const applyUrl = raw.application_url ?? raw.url ?? raw.shortlink ?? `https://apply.workable.com/j/${code}`;
-      const loc = raw.location;
-      const locationString = [loc?.city, loc?.region, loc?.country].filter(Boolean).join(", ");
-      const parts = splitLocation(locationString);
+      if (!raw?.title) {
+        return null;
+      }
+      const id = raw.shortcode ?? raw.id;
+      if (!id) {
+        return null;
+      }
+      const applyUrl = raw.application_url ?? raw.url ?? raw.shortlink ?? `https://apply.workable.com/j/${id}`;
+      const location2 = raw.location;
+      const locationText = [
+        location2?.city,
+        location2?.region,
+        location2?.country
+      ].filter(Boolean).join(", ");
       return {
-        externalJobId: String(code),
+        externalJobId: String(id),
         title: raw.title,
         descriptionHtml: "",
         applyUrl,
-        ...parts,
-        workArrangement: loc?.telecommuting ? "Remote" : mapWorkArrangement(void 0),
+        ...splitLocation(locationText),
+        workArrangement: location2?.telecommuting ? "Remote" : mapWorkArrangement(void 0),
         employmentTypeRaw: raw.employment_type ?? raw.department,
         updatedAt: raw.created_at
       };
@@ -23283,59 +23385,117 @@ function createWorkableClient(fetchImpl = fetch) {
 // src/lib/ats/providers/workday.ts
 function parseWorkdayToken(token) {
   const parts = token.split("|");
-  if (parts.length !== 3 || parts.some((p) => !p)) return null;
-  return { host: parts[0], tenant: parts[1], site: parts[2] };
+  if (parts.length !== 3 || parts.some((part) => !part.trim())) {
+    return null;
+  }
+  const [host, tenant, site] = parts;
+  if (!/^[a-z0-9.-]+\.myworkdayjobs\.com$/i.test(host)) {
+    return null;
+  }
+  return { host, tenant, site };
 }
-var PAGE_LIMIT = 20;
-var MAX_PAGES = 5;
+var PAGE_SIZE2 = 20;
+var MAX_PAGES2 = 250;
 function createWorkdayClient(fetchImpl = fetch) {
+  let completeSnapshot = false;
   return {
     provider: "workday",
-    // This search is capped and only matches "intern"; absence is not proof of closure.
-    isCompleteSnapshot: () => false,
+    isCompleteSnapshot: () => completeSnapshot,
     async fetchPostings(token, signal) {
+      completeSnapshot = false;
       const coords = parseWorkdayToken(token);
-      if (!coords) throw new Error(`Workday ${token}: malformed token (expected host|tenant|site)`);
+      if (!coords) {
+        throw new Error(
+          `Workday: malformed board token ${token}`
+        );
+      }
       const { host, tenant, site } = coords;
-      const base = `https://${host}/wday/cxs/${tenant}/${site}/jobs`;
+      const endpoint = `https://${host}/wday/cxs/${encodeURIComponent(tenant)}/${encodeURIComponent(site)}/jobs`;
       const collected = [];
-      for (let page = 0; page < MAX_PAGES; page++) {
-        const res = await fetchImpl(base, {
-          signal,
+      const seen = /* @__PURE__ */ new Set();
+      for (let page = 0; page < MAX_PAGES2; page++) {
+        const offset = page * PAGE_SIZE2;
+        const res = await fetchImpl(endpoint, {
           method: "POST",
-          headers: { "Content-Type": "application/json", Accept: "application/json" },
+          signal,
+          headers: {
+            "Content-Type": "application/json",
+            Accept: "application/json"
+          },
           body: JSON.stringify({
             appliedFacets: {},
-            limit: PAGE_LIMIT,
-            offset: page * PAGE_LIMIT,
-            searchText: "intern"
+            limit: PAGE_SIZE2,
+            offset,
+            searchText: ""
           })
         });
-        if (!res.ok) throw new Error(`Workday ${tenant}: HTTP ${res.status} on page ${page + 1}`);
+        if (!res.ok) {
+          throw new Error(
+            `Workday ${tenant}: HTTP ${res.status} on page ${page + 1}`
+          );
+        }
         const data = await res.json();
-        const batch = data.jobPostings ?? [];
-        for (const p of batch) collected.push({ ...p, __coords: coords });
-        if (batch.length < PAGE_LIMIT) break;
+        if (!Array.isArray(data.jobPostings)) {
+          throw new Error(
+            `Workday ${tenant}: invalid jobs response`
+          );
+        }
+        let newItems = 0;
+        for (const posting of data.jobPostings) {
+          if (!posting?.externalPath) {
+            continue;
+          }
+          if (seen.has(posting.externalPath)) {
+            continue;
+          }
+          seen.add(posting.externalPath);
+          collected.push({
+            ...posting,
+            __coords: coords
+          });
+          newItems++;
+        }
+        if (data.jobPostings.length === 0) {
+          completeSnapshot = true;
+          break;
+        }
+        if (typeof data.total === "number" && offset + data.jobPostings.length >= data.total) {
+          completeSnapshot = true;
+          break;
+        }
+        if (data.jobPostings.length < PAGE_SIZE2) {
+          completeSnapshot = true;
+          break;
+        }
+        if (newItems === 0) {
+          throw new Error(
+            `Workday ${tenant}: pagination stopped making progress`
+          );
+        }
       }
       return collected;
     },
     toNormalized(raw) {
-      if (!raw || !raw.title || !raw.externalPath) return null;
+      if (!raw?.title || !raw.externalPath) {
+        return null;
+      }
       const { host, site } = raw.__coords;
-      const applyUrl = `https://${host}/en-US/${site}${raw.externalPath}`;
+      const applyUrl = `https://${host}/en-US/${encodeURIComponent(site)}${raw.externalPath}`;
       const externalJobId = raw.bulletFields?.[0] ?? raw.externalPath.split("_").pop() ?? raw.externalPath;
-      const locText = (raw.locationsText ?? "").trim();
-      const remote = /remote/i.test(locText);
-      const looksBad = !locText || /\blocations?\b/i.test(locText) || /^(location\s*)?n\/?a$/i.test(locText);
-      const loc = remote || looksBad ? {} : splitLocation(locText);
+      const locationText = (raw.locationsText ?? "").trim();
+      const remote = /remote/i.test(locationText);
+      const invalidLocation = !locationText || /\blocations?\b/i.test(locationText) || /^(location\s*)?n\/?a$/i.test(
+        locationText
+      );
+      const location2 = remote || invalidLocation ? {} : splitLocation(locationText);
       return {
-        externalJobId: String(externalJobId),
+        externalJobId,
         title: raw.title,
         descriptionHtml: "",
         applyUrl,
-        ...loc,
+        ...location2,
         workArrangement: remote ? "Remote" : void 0,
-        employmentTypeRaw: "Intern"
+        updatedAt: void 0
       };
     }
   };
