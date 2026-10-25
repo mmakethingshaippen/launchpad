@@ -1,4 +1,3 @@
-
 /// <reference types="node" />
 
 /**
@@ -18,6 +17,7 @@
 import { createServiceClient, loadSyncableCompanies, SupabaseSink } from '../src/lib/ats/supabaseSink';
 import { syncAll } from '../src/lib/ats/sync';
 import { aggregatorRunSucceeded, ingestAggregators } from '../src/lib/ats/aggregators/ingest';
+import { planEmployerConfirmation, type ConfirmableRole } from '../src/lib/ats/employerConfirm';
 
 const args = process.argv.slice(2);
 const atsOnly = args.includes('--ats-only');
@@ -96,6 +96,67 @@ async function runAggregators(): Promise<boolean> {
   return aggregatorRunSucceeded(results);
 }
 
+async function runEmployerConfirmation(): Promise<boolean> {
+  log('Checking Greenhouse, Lever, and Ashby boards for closed jobs');
+  const roles: ConfirmableRole[] = [];
+  let after = '';
+
+  for (;;) {
+    let query = db.from('roles')
+      .select('id,apply_url,companies(ats_provider,ats_board_token)')
+      .eq('listing_status', 'Active')
+      .order('id', { ascending: true })
+      .limit(1000);
+    if (after) query = query.gt('id', after);
+    const { data, error } = await query;
+    if (error) {
+      log(`ERROR employer check: ${error.message}`);
+      return false;
+    }
+    const page = data ?? [];
+    for (const row of page) {
+      const company = Array.isArray(row.companies) ? row.companies[0] : row.companies;
+      roles.push({
+        id: String(row.id),
+        applyUrl: typeof row.apply_url === 'string' ? row.apply_url : null,
+        company: company ? {
+          atsProvider: company.ats_provider as string | null,
+          atsBoardToken: company.ats_board_token as string | null,
+        } : null,
+      });
+    }
+    if (page.length < 1000) break;
+    after = String(page[page.length - 1].id);
+  }
+
+  const plan = await planEmployerConfirmation(roles);
+  const now = new Date().toISOString();
+
+  for (let offset = 0; offset < plan.closeIds.length; offset += 100) {
+    const ids = plan.closeIds.slice(offset, offset + 100);
+    const { error } = await db.from('roles').update({ listing_status: 'Closed' }).in('id', ids).eq('listing_status', 'Active');
+    if (error) {
+      log(`ERROR employer close: ${error.message}`);
+      return false;
+    }
+  }
+
+  for (let offset = 0; offset < plan.confirmIds.length; offset += 100) {
+    const ids = plan.confirmIds.slice(offset, offset + 100);
+    const { error } = await db.from('roles').update({ last_verified_at: now }).in('id', ids).eq('listing_status', 'Active');
+    if (error) {
+      log(`ERROR employer confirm: ${error.message}`);
+      return false;
+    }
+  }
+
+  log(
+    `Employer check: boards ${plan.boardsChecked}; failed boards ${plan.boardsFailed}; ` +
+    `confirmed open ${plan.confirmIds.length}; closed ${plan.closeIds.length}; skipped ${plan.skipped}`,
+  );
+  return true;
+}
+
 async function main(): Promise<void> {
   const started = Date.now();
   let success = true;
@@ -107,6 +168,8 @@ async function main(): Promise<void> {
   if (!atsOnly) {
     success = (await runAggregators()) && success;
   }
+
+  success = (await runEmployerConfirmation()) && success;
 
   log(`Synchronization finished in ${((Date.now() - started) / 1000).toFixed(1)}s`);
 
