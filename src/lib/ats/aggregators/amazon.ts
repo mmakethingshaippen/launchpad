@@ -11,7 +11,7 @@ import { isEarlyCareerTitle } from '../classify';
  * job_path, id, is_intern, posted_date, ... }] }.
  *
  * The `category[]=student-programs` facet returns 0 for anonymous callers, so we
- * query `base_query=intern` and page through results, then apply the shared
+ * query `base_query=intern` and page through every result, then apply the shared
  * strict title gate. Each role's apply URL is the absolute amazon.jobs path.
  *
  * This is a direct employer feed (zero HTML scraping); roles attach to the
@@ -37,7 +37,8 @@ interface AmazonResponse {
 }
 
 const RESULT_LIMIT = 100;
-const MAX_PAGES = 5; // up to 500 intern-matching postings per run
+/** Safety stop only. Paging ends earlier when Amazon returns a short page. */
+const MAX_PAGES = 100;
 
 function countryName(code: string | undefined): string | undefined {
   if (!code) return undefined;
@@ -51,27 +52,37 @@ export function createAmazonClient(fetchImpl: FetchLike = fetch): AggregatorClie
     async fetchEarlyCareer(signal) {
       const out: AggregatedPosting[] = [];
       const seen = new Set<string>();
+      let previousFirstId: string | undefined;
 
       for (let page = 0; page < MAX_PAGES; page++) {
+        const offset = page * RESULT_LIMIT;
         const url =
           `https://www.amazon.jobs/en/search.json?base_query=intern` +
-          `&result_limit=${RESULT_LIMIT}&offset=${page * RESULT_LIMIT}`;
+          `&result_limit=${RESULT_LIMIT}&offset=${offset}`;
         let res;
         try {
           res = await fetchImpl(url, { signal, headers: { 'User-Agent': 'launchpad-jobs' } });
         } catch {
-          break; // network error: stop paging
+          console.error(`Amazon: stopped early at offset ${offset} after a network error`);
+          break;
         }
-        if (!res.ok) break;
+        if (!res.ok) {
+          console.error(`Amazon: stopped early at offset ${offset}: HTTP ${res.status}`);
+          break;
+        }
 
         let data: AmazonResponse;
         try {
           data = (await res.json()) as AmazonResponse;
         } catch {
+          console.error(`Amazon: stopped early at offset ${offset}: response was not JSON`);
           break;
         }
         const jobs = data.jobs ?? [];
         if (jobs.length === 0) break;
+        const firstId = jobs[0]?.id ?? jobs[0]?.job_path;
+        if (firstId && firstId === previousFirstId) break;
+        previousFirstId = firstId;
 
         for (const j of jobs) {
           const title = j.title?.trim();
@@ -105,7 +116,12 @@ export function createAmazonClient(fetchImpl: FetchLike = fetch): AggregatorClie
           });
         }
 
+        const hits = typeof data.hits === 'number' ? data.hits : undefined;
         if (jobs.length < RESULT_LIMIT) break;
+        if (hits !== undefined && offset + jobs.length >= hits) break;
+        if (page === MAX_PAGES - 1) {
+          console.error(`Amazon: safety stop at ${MAX_PAGES} pages; more results may remain`);
+        }
       }
 
       return out;
