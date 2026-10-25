@@ -120,7 +120,7 @@ export function Home() {
                 type="button"
                 variant="outline"
                 size="lg"
-                className="flex-1 border-white/30 text-white hover:bg-white/10"
+                className="flex-1"
                 onClick={() => navigate('/map')}
               >
                 <MapIcon className="h-5 w-5" aria-hidden="true" /> Explore Interactive Map
@@ -134,7 +134,7 @@ export function Home() {
       <section className="mt-8 grid grid-cols-1 gap-4 sm:grid-cols-3" aria-label="Launchpad statistics">
         {[
           { label: 'Companies listed', value: stats.data?.companies },
-          { label: 'Active, verified opportunities', value: stats.data?.activeRoles },
+          { label: 'Active opportunities', value: stats.data?.activeRoles },
           { label: 'Cities & hubs mapped', value: stats.data?.cities },
         ].map((s) => (
           <div key={s.label} className="rounded-xl border border-slate-200 bg-white p-6 text-center">

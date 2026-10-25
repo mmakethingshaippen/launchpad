@@ -27,7 +27,8 @@ const RELEVANT_CATEGORY_RE =
   /\b(engineering|software|data|it|information technology|science|finance|accounting|business|operations|product|design|analytics|marketing)\b/i;
 
 const LEVELS = ['Internship', 'Entry Level'];
-const PAGES_PER_LEVEL = 2; // keep the request count bounded
+/** Safety stop only. Paging ends earlier when The Muse reports its last page. */
+const MAX_PAGES_PER_LEVEL = 100;
 
 export function createTheMuseClient(fetchImpl: FetchLike = fetch): AggregatorClient {
   return {
@@ -36,17 +37,34 @@ export function createTheMuseClient(fetchImpl: FetchLike = fetch): AggregatorCli
       const out: AggregatedPosting[] = [];
       const seen = new Set<string>(); // dedup across level/page queries
       for (const level of LEVELS) {
-        for (let page = 1; page <= PAGES_PER_LEVEL; page++) {
+        let previousFirstId: number | undefined;
+        for (let page = 1; page <= MAX_PAGES_PER_LEVEL; page++) {
           const url = `https://www.themuse.com/api/public/jobs?level=${encodeURIComponent(level)}&page=${page}`;
           let res;
           try {
             res = await fetchImpl(url, { signal });
           } catch {
-            break; // network error on this level: move on
+            console.error(`The Muse: stopped early on ${level} page ${page} after a network error`);
+            break;
           }
-          if (!res.ok) break;
-          const data = (await res.json()) as MuseResponse;
-          for (const j of data.results ?? []) {
+          if (!res.ok) {
+            console.error(`The Muse: stopped early on ${level} page ${page}: HTTP ${res.status}`);
+            break;
+          }
+          let data: MuseResponse;
+          try {
+            data = (await res.json()) as MuseResponse;
+          } catch {
+            console.error(`The Muse: stopped early on ${level} page ${page}: response was not JSON`);
+            break;
+          }
+          const results = data.results ?? [];
+          if (results.length === 0) break;
+          const firstId = results[0]?.id;
+          if (firstId !== undefined && firstId === previousFirstId) break;
+          previousFirstId = firstId;
+
+          for (const j of results) {
             const companyName = j.company?.name ?? j.company?.short_name;
             if (!companyName || !j.name) continue;
 
@@ -80,7 +98,11 @@ export function createTheMuseClient(fetchImpl: FetchLike = fetch): AggregatorCli
               updatedAt: j.publication_date,
             });
           }
-          if ((data.page_count ?? 0) <= page) break;
+          const pageCount = data.page_count ?? 0;
+          if (pageCount <= page) break;
+          if (page === MAX_PAGES_PER_LEVEL) {
+            console.error(`The Muse: safety stop on ${level} at ${MAX_PAGES_PER_LEVEL} pages; more results may remain`);
+          }
         }
       }
       return out;

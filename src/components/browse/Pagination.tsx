@@ -1,5 +1,5 @@
+import { useEffect, useState } from 'react';
 import { ChevronLeft, ChevronRight } from 'lucide-react';
-import { cn } from '../../lib/cn';
 
 /**
  * Compute the sequence of page tokens to render: always first & last, the
@@ -32,21 +32,31 @@ export interface PaginationProps {
 }
 
 /**
- * Responsive pagination bar: a summary line plus Previous / numbered pages
- * (with ellipses) / Next. Page numbers are clickable buttons; the current page
- * is highlighted and disabled.
+ * Sticky results pager. Previous / Next step one page. The number box jumps
+ * to an exact page. The slider scrubs across the whole result set without
+ * listing dozens of page buttons.
  */
 export function Pagination({ page, pageSize, total, noun, onPageChange }: PaginationProps) {
   const totalPages = Math.max(1, Math.ceil(total / pageSize));
   const current = Math.min(Math.max(1, page), totalPages);
+  const [draft, setDraft] = useState(String(current));
+  const [slider, setSlider] = useState(current);
+
+  useEffect(() => {
+    setDraft(String(current));
+    setSlider(current);
+  }, [current]);
+
   if (total === 0) return null;
 
   const start = (current - 1) * pageSize + 1;
   const end = Math.min(current * pageSize, total);
-  const tokens = paginationRange(current, totalPages);
 
   const go = (p: number) => {
-    const next = Math.min(Math.max(1, p), totalPages);
+    if (!Number.isFinite(p)) return;
+    const next = Math.min(Math.max(1, Math.trunc(p)), totalPages);
+    setDraft(String(next));
+    setSlider(next);
     if (next !== current) onPageChange(next);
   };
 
@@ -55,65 +65,88 @@ export function Pagination({ page, pageSize, total, noun, onPageChange }: Pagina
 
   return (
     <nav
-      className="mt-8 flex flex-col items-center gap-3 sm:flex-row sm:justify-between"
+      className="sticky top-20 z-20 mb-4 flex flex-col gap-2 rounded-xl border border-slate-200 bg-white/95 p-3 shadow-md backdrop-blur"
       aria-label="Pagination"
     >
-      <p className="text-sm text-slate-500" aria-live="polite" data-testid="pagination-summary">
-        Showing{' '}
-        <span className="font-medium text-navy">
-          {start.toLocaleString()}–{end.toLocaleString()}
-        </span>{' '}
-        of <span className="font-medium text-navy">{total.toLocaleString()}</span> {noun}
-      </p>
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <p className="text-sm text-slate-500" aria-live="polite" data-testid="pagination-summary">
+          Showing{' '}
+          <span className="font-medium text-navy">
+            {start.toLocaleString()}–{end.toLocaleString()}
+          </span>{' '}
+          of <span className="font-medium text-navy">{total.toLocaleString()}</span> {noun}
+        </p>
 
-      <div className="flex flex-wrap items-center gap-1.5">
-        <button
-          type="button"
-          className={navBtn}
-          onClick={() => go(current - 1)}
-          disabled={current <= 1}
-          aria-label="Previous page"
-        >
-          <ChevronLeft className="h-4 w-4" aria-hidden="true" />
-          <span className="hidden sm:inline">Previous</span>
-        </button>
+        <div className="flex items-center gap-1.5">
+          <button
+            type="button"
+            className={navBtn}
+            onClick={() => go(current - 1)}
+            disabled={current <= 1}
+            aria-label="Previous page"
+          >
+            <ChevronLeft className="h-4 w-4" aria-hidden="true" />
+            <span className="hidden sm:inline">Previous</span>
+          </button>
 
-        {tokens.map((t, i) =>
-          t === 'ellipsis' ? (
-            <span key={`e${i}`} className="px-1.5 text-slate-400" aria-hidden="true">
-              …
-            </span>
-          ) : (
-            <button
-              key={t}
-              type="button"
-              onClick={() => go(t)}
-              aria-label={`Page ${t}`}
-              aria-current={t === current ? 'page' : undefined}
-              disabled={t === current}
-              className={cn(
-                'inline-flex h-9 min-w-9 items-center justify-center rounded-lg border px-2.5 text-sm font-medium transition-colors',
-                t === current
-                  ? 'border-navy bg-navy text-white'
-                  : 'border-slate-200 bg-white text-navy hover:border-cyan',
-              )}
-            >
-              {t}
-            </button>
-          ),
-        )}
+          <label className="flex items-center gap-1.5 text-sm text-slate-600">
+            <span className="sr-only">Go to page</span>
+            <input
+              type="number"
+              inputMode="numeric"
+              min={1}
+              max={totalPages}
+              value={draft}
+              aria-label="Go to page"
+              onChange={(event) => setDraft(event.target.value)}
+              onBlur={() => go(Number(draft))}
+              onKeyDown={(event) => {
+                if (event.key === 'Enter') {
+                  event.preventDefault();
+                  go(Number(draft));
+                }
+              }}
+              className="h-9 w-16 rounded-lg border border-slate-200 px-2 text-center text-sm font-medium text-navy outline-none focus:border-cyan"
+            />
+            <span>of {totalPages.toLocaleString()}</span>
+          </label>
 
-        <button
-          type="button"
-          className={navBtn}
-          onClick={() => go(current + 1)}
-          disabled={current >= totalPages}
-          aria-label="Next page"
-        >
-          <span className="hidden sm:inline">Next</span>
-          <ChevronRight className="h-4 w-4" aria-hidden="true" />
-        </button>
+          <button
+            type="button"
+            className={navBtn}
+            onClick={() => go(current + 1)}
+            disabled={current >= totalPages}
+            aria-label="Next page"
+          >
+            <span className="hidden sm:inline">Next</span>
+            <ChevronRight className="h-4 w-4" aria-hidden="true" />
+          </button>
+        </div>
       </div>
+
+      {totalPages > 1 && (
+        <input
+          type="range"
+          min={1}
+          max={totalPages}
+          step={1}
+          value={slider}
+          aria-label="Page slider"
+          aria-valuetext={`Page ${slider} of ${totalPages}`}
+          onChange={(event) => {
+            const next = Number(event.target.value);
+            setSlider(next);
+            setDraft(String(next));
+          }}
+          onPointerUp={(event) => go(Number(event.currentTarget.value))}
+          onKeyUp={(event) => {
+            if (event.key === 'ArrowLeft' || event.key === 'ArrowRight' || event.key === 'Home' || event.key === 'End') {
+              go(Number(event.currentTarget.value));
+            }
+          }}
+          className="h-2 w-full cursor-pointer accent-navy"
+        />
+      )}
     </nav>
   );
 }

@@ -9,19 +9,15 @@
  *   npx tsx --env-file=.env scripts/sync-all-sources.ts --ats-only
  *   npx tsx --env-file=.env scripts/sync-all-sources.ts
  *
+ * Aggregator feeds are downloaded once inside ingestAggregators. That pass
+ * inserts new rows and refreshes verification timestamps for listings it
+ * actually saw. It does not fetch the feeds again.
+ *
  * Do not expose SUPABASE_SERVICE_ROLE_KEY to the browser or commit it.
  */
 import { createServiceClient, loadSyncableCompanies, SupabaseSink } from '../src/lib/ats/supabaseSink';
 import { syncAll } from '../src/lib/ats/sync';
-import { ingestAggregators } from '../src/lib/ats/aggregators/ingest';
-import { createSimplifyClient } from '../src/lib/ats/simplify';
-import { createAmazonClient } from '../src/lib/ats/aggregators/amazon';
-import { createTheMuseClient } from '../src/lib/ats/aggregators/themuse';
-import { createRemotiveClient } from '../src/lib/ats/aggregators/remotive';
-import { createAdzunaClient } from '../src/lib/ats/aggregators/adzuna';
-import { createUsaJobsClient } from '../src/lib/ats/aggregators/usajobs';
-import type { AggregatorClient } from '../src/lib/ats/aggregators/types';
-import { normalizeApplyUrl } from '../src/lib/ats/util';
+import { aggregatorRunSucceeded, ingestAggregators } from '../src/lib/ats/aggregators/ingest';
 
 const args = process.argv.slice(2);
 const atsOnly = args.includes('--ats-only');
@@ -38,145 +34,6 @@ const log = (message: string) =>
 
 const errorMessage = (error: unknown) =>
   error instanceof Error ? error.message : String(error);
-
-type ExistingRole = {
-  id: string;
-  apply_url: string | null;
-};
-
-async function loadActiveAggregatorRoles(): Promise<ExistingRole[]> {
-  const rows: ExistingRole[] = [];
-  let cursor: string | undefined;
-
-  for (;;) {
-    let query = db
-      .from('roles')
-      .select('id,apply_url')
-      .eq('source', 'aggregator')
-      .eq('listing_status', 'Active')
-      .order('id', { ascending: true })
-      .limit(500);
-
-    if (cursor) {
-      query = query.gt('id', cursor);
-    }
-
-    const { data, error } = await query;
-
-    if (error) {
-      throw new Error(`Cannot list aggregator jobs: ${error.message}`);
-    }
-
-    const page = (data ?? []) as ExistingRole[];
-
-    if (!page.length) {
-      break;
-    }
-
-    rows.push(...page);
-
-    const next = page[page.length - 1].id;
-
-    if (!next || next === cursor) {
-      throw new Error('Aggregator pagination stopped advancing.');
-    }
-
-    cursor = next;
-  }
-
-  return rows;
-}
-
-async function refreshExistingAggregators(): Promise<boolean> {
-  const roles = await loadActiveAggregatorRoles();
-  const byUrl = new Map<string, string[]>();
-
-  for (const role of roles) {
-    if (!role.apply_url) {
-      continue;
-    }
-
-    const key = normalizeApplyUrl(role.apply_url);
-    byUrl.set(key, [...(byUrl.get(key) ?? []), role.id]);
-  }
-
-  const sources: AggregatorClient[] = [
-    createSimplifyClient(),
-    createAmazonClient(),
-    createTheMuseClient(),
-    createRemotiveClient(),
-    createAdzunaClient(),
-    createUsaJobsClient(),
-  ];
-
-  const matchedIds = new Set<string>();
-  let failures = 0;
-
-  for (const source of sources) {
-    // Only refresh URLs actually observed in the feed.
-    // Never close absent jobs because aggregator feeds may be incomplete.
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 90_000);
-
-    try {
-      const postings = await source.fetchEarlyCareer(controller.signal);
-      let matched = 0;
-
-      for (const posting of postings) {
-        if (!posting.applyUrl) {
-          continue;
-        }
-
-        const url = normalizeApplyUrl(posting.applyUrl);
-        const ids = byUrl.get(url) ?? [];
-
-        for (const id of ids) {
-          if (!matchedIds.has(id)) {
-            matched++;
-          }
-
-          matchedIds.add(id);
-        }
-      }
-
-      log(
-        `${source.source}: ${postings.length} results, ${matched} existing roles matched`
-      );
-    } catch (error) {
-      failures++;
-      log(`ERROR ${source.source}: ${errorMessage(error)}`);
-    } finally {
-      clearTimeout(timer);
-    }
-  }
-
-  let refreshed = 0;
-  const ids = [...matchedIds];
-
-  for (let i = 0; i < ids.length; i += 100) {
-    const batch = ids.slice(i, i + 100);
-
-    const { error } = await db
-      .from('roles')
-      .update({ last_verified_at: new Date().toISOString() })
-      .eq('source', 'aggregator')
-      .eq('listing_status', 'Active')
-      .in('id', batch);
-
-    if (error) {
-      failures++;
-      log(`ERROR refreshing matched roles: ${error.message}`);
-    } else {
-      refreshed += batch.length;
-    }
-  }
-
-  log(
-    `Aggregator matches refreshed: ${refreshed}/${roles.length} active aggregator roles`
-  );
-
-  return failures === 0;
-}
 
 async function runAts(): Promise<boolean> {
   const companies = await loadSyncableCompanies(db);
@@ -207,29 +64,40 @@ async function runAts(): Promise<boolean> {
 }
 
 async function runAggregators(): Promise<boolean> {
-  log('Importing available aggregator postings');
+  log('Importing and refreshing aggregator postings from a single fetch per source');
 
   const results = await ingestAggregators(db);
-  let failures = 0;
 
   for (const result of results) {
     log(
-      `${result.source}: ${result.rolesUpserted} roles written; ${result.errors.length} errors`
+      `${result.source}: fetched ${result.fetched}; processed ${result.processed}; ` +
+      `new ${result.rolesUpserted}; refreshed ${result.refreshed}; ` +
+      `duplicates ${result.duplicatesSkipped}; invalid ${result.skippedInvalid}; ` +
+      `expired ${result.skippedExpired}; companies ${result.companiesUpserted}; ` +
+      `errors ${result.errors.length}; ${(result.durationMs / 1000).toFixed(1)}s`,
     );
-
-    failures += result.errors.length;
 
     for (const error of result.errors.slice(0, 10)) {
       log(`ERROR ${result.source}: ${error}`);
     }
+    if (result.errors.length > 10) {
+      log(`ERROR ${result.source}: ${result.errors.length - 10} more errors omitted`);
+    }
   }
 
-  const refreshed = await refreshExistingAggregators();
+  const inserted = results.reduce((sum, result) => sum + result.rolesUpserted, 0);
+  const refreshed = results.reduce((sum, result) => sum + result.refreshed, 0);
+  log(
+    `Aggregator totals: new ${inserted}; refreshed ${refreshed}; ` +
+    `sources with errors ${results.filter((result) => result.errors.length).length}. ` +
+    'Unobserved jobs were not closed or re-stamped.',
+  );
 
-  return failures === 0 && refreshed;
+  return aggregatorRunSucceeded(results);
 }
 
 async function main(): Promise<void> {
+  const started = Date.now();
   let success = true;
 
   if (!aggregatorsOnly) {
@@ -240,12 +108,14 @@ async function main(): Promise<void> {
     success = (await runAggregators()) && success;
   }
 
+  log(`Synchronization finished in ${((Date.now() - started) / 1000).toFixed(1)}s`);
+
   if (!success) {
     log('Some sources failed. Inspect logs; skipped jobs are not verified.');
     process.exitCode = 1;
   } else {
     log(
-      'Requested stages completed. Only jobs observed in current feeds were refreshed.'
+      'Requested stages completed. Only jobs observed in current feeds were refreshed.',
     );
   }
 }

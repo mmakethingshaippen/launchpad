@@ -15,6 +15,7 @@ interface AdzunaJob {
   contract_type?: string;
 }
 interface AdzunaResponse {
+  count?: number;
   results?: AdzunaJob[];
 }
 
@@ -60,6 +61,10 @@ const EMPLOYER_PASSES: AdzunaPass[] = [
   {}, // broad internship pass
 ];
 
+const PAGE_SIZE = 50;
+/** Safety stop only. Each search ends earlier when Adzuna returns a short page. */
+const MAX_PAGES = 20;
+
 export function createAdzunaClient(
   fetchImpl: FetchLike = fetch,
   env: NodeJS.ProcessEnv = typeof process !== 'undefined' ? process.env : {},
@@ -82,65 +87,87 @@ export function createAdzunaClient(
       const seen = new Set<string>();
 
       for (const pass of EMPLOYER_PASSES) {
-        // `what` requires the intern keyword; `what_phrase` pins the employer name.
-        const params = new URLSearchParams({
-          app_id: appId!,
-          app_key: appKey!,
-          results_per_page: '50',
-          what: 'intern',
-          'content-type': 'application/json',
-        });
-        if (pass.company) params.set('what_phrase', pass.company);
+        const label = pass.company ?? 'broad';
+        let previousFirstId: string | undefined;
+        for (let page = 1; page <= MAX_PAGES; page++) {
+          // `what` requires the intern keyword; `what_phrase` pins the employer name.
+          const params = new URLSearchParams({
+            app_id: appId!,
+            app_key: appKey!,
+            results_per_page: String(PAGE_SIZE),
+            what: 'intern',
+            'content-type': 'application/json',
+          });
+          if (pass.company) params.set('what_phrase', pass.company);
 
-        const url = `https://api.adzuna.com/v1/api/jobs/us/search/1?${params.toString()}`;
-        let res;
-        try {
-          res = await fetchImpl(url, { signal });
-        } catch {
-          continue; // one pass failing shouldn't abort the rest
-        }
-        if (!res.ok) continue;
-        let data: AdzunaResponse;
-        try {
-          data = (await res.json()) as AdzunaResponse;
-        } catch {
-          continue;
-        }
-
-        for (const j of data.results ?? []) {
-          if (!j.title || !j.company?.display_name || !j.redirect_url) continue;
-          // Strict title-level early-career gate (A1 seniority + A2 recruiter + B).
-          if (!isEarlyCareerTitle(j.title)) continue;
-
-          // For a targeted employer pass, only keep rows whose company actually
-          // matches, then rewrite to our canonical seeded name.
-          let companyName = j.company.display_name;
-          let companyWebsite: string | undefined;
-          if (pass.company) {
-            const re = new RegExp(pass.company.replace(/\s+/g, '.*'), 'i');
-            if (!re.test(j.company.display_name)) continue;
-            companyName = pass.canonicalName ?? companyName;
-            companyWebsite = pass.canonicalWebsite;
+          const url = `https://api.adzuna.com/v1/api/jobs/us/search/${page}?${params.toString()}`;
+          let res;
+          try {
+            res = await fetchImpl(url, { signal });
+          } catch {
+            console.error(`Adzuna: stopped early on ${label} page ${page} after a network error`);
+            break;
+          }
+          if (!res.ok) {
+            console.error(`Adzuna: stopped early on ${label} page ${page}: HTTP ${res.status}`);
+            break;
+          }
+          let data: AdzunaResponse;
+          try {
+            data = (await res.json()) as AdzunaResponse;
+          } catch {
+            console.error(`Adzuna: stopped early on ${label} page ${page}: response was not JSON`);
+            break;
           }
 
-          // Dedup only after we've decided to keep the role, so an employer pass
-          // that skips a non-matching company doesn't suppress the broad pass.
-          const externalJobId = `adzuna-${j.id ?? j.redirect_url}`;
-          if (seen.has(externalJobId)) continue;
-          seen.add(externalJobId);
+          const results = data.results ?? [];
+          if (results.length === 0) break;
+          const firstId = results[0]?.id ?? results[0]?.redirect_url;
+          if (firstId && firstId === previousFirstId) break;
+          previousFirstId = firstId;
 
-          out.push({
-            source: 'adzuna',
-            companyName,
-            companyWebsite,
-            externalJobId,
-            title: j.title,
-            descriptionHtml: j.description ?? '',
-            applyUrl: j.redirect_url,
-            ...parseLocation(j.location),
-            employmentTypeRaw: j.contract_type,
-            updatedAt: j.created,
-          });
+          for (const j of results) {
+            if (!j.title || !j.company?.display_name || !j.redirect_url) continue;
+            // Strict title-level early-career gate (A1 seniority + A2 recruiter + B).
+            if (!isEarlyCareerTitle(j.title)) continue;
+
+            // For a targeted employer pass, only keep rows whose company actually
+            // matches, then rewrite to our canonical seeded name.
+            let companyName = j.company.display_name;
+            let companyWebsite: string | undefined;
+            if (pass.company) {
+              const re = new RegExp(pass.company.replace(/\s+/g, '.*'), 'i');
+              if (!re.test(j.company.display_name)) continue;
+              companyName = pass.canonicalName ?? companyName;
+              companyWebsite = pass.canonicalWebsite;
+            }
+
+            // Dedup only after we've decided to keep the role, so an employer pass
+            // that skips a non-matching company doesn't suppress the broad pass.
+            const externalJobId = `adzuna-${j.id ?? j.redirect_url}`;
+            if (seen.has(externalJobId)) continue;
+            seen.add(externalJobId);
+
+            out.push({
+              source: 'adzuna',
+              companyName,
+              companyWebsite,
+              externalJobId,
+              title: j.title,
+              descriptionHtml: j.description ?? '',
+              applyUrl: j.redirect_url,
+              ...parseLocation(j.location),
+              employmentTypeRaw: j.contract_type,
+              updatedAt: j.created,
+            });
+          }
+
+          const count = typeof data.count === 'number' ? data.count : undefined;
+          if (results.length < PAGE_SIZE) break;
+          if (count !== undefined && page * PAGE_SIZE >= count) break;
+          if (page === MAX_PAGES) {
+            console.error(`Adzuna: safety stop on ${label} at ${MAX_PAGES} pages; more results may remain`);
+          }
         }
       }
       return out;

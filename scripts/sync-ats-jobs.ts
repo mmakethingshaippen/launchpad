@@ -79,8 +79,13 @@ async function main() {
     console.table(
       agg.map((a) => ({
         source: a.source,
+        fetched: a.fetched,
+        new: a.rolesUpserted,
+        refreshed: a.refreshed,
+        duplicates: a.duplicatesSkipped,
+        invalid: a.skippedInvalid,
+        expired: a.skippedExpired,
         companies: a.companiesUpserted,
-        roles: a.rolesUpserted,
         errors: a.errors.length,
       })),
     );
@@ -130,8 +135,13 @@ async function main() {
     console.table(
       agg.map((a) => ({
         source: a.source,
+        fetched: a.fetched,
+        new: a.rolesUpserted,
+        refreshed: a.refreshed,
+        duplicates: a.duplicatesSkipped,
+        invalid: a.skippedInvalid,
+        expired: a.skippedExpired,
         companies: a.companiesUpserted,
-        roles: a.rolesUpserted,
         errors: a.errors.length,
       })),
     );
