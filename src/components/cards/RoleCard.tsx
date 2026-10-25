@@ -6,8 +6,18 @@ import { Card } from '../ui/Card';
 import { Badge, SeasonBadge } from '../ui/Badge';
 import { Button } from '../ui/Button';
 import { CompanyLogo } from '../ui/CompanyLogo';
-import { formatRelativeTime } from '../ui/RelativeTime';
+import { verificationLabel } from '../ui/RelativeTime';
 import { formatLocation } from '../../lib/locationFormat';
+
+function httpUrl(url: string | null | undefined): string | null {
+  if (!url) return null;
+  try {
+    const parsed = new URL(url);
+    return parsed.protocol === 'https:' || parsed.protocol === 'http:' ? parsed.toString() : null;
+  } catch {
+    return null;
+  }
+}
 
 function locationLabel(r: RoleCardData): string {
   return formatLocation({
@@ -49,6 +59,9 @@ export function RoleCard({
   onToggleTrack?: (role: RoleCardData) => void;
 }) {
   const pay = payLabel(role);
+  const applyHref = httpUrl(role.applyUrl);
+  const checked = verificationLabel(role.lastVerifiedAt);
+  const stale = checked.startsWith('Not rechecked');
   const handleTrackClick = () => {
     if (onToggleTrack) {
       onToggleTrack(role);
@@ -72,7 +85,7 @@ export function RoleCard({
           <div className="min-w-0">
             <Link
               to={`/roles/${role.slug}`}
-              className="block truncate font-semibold text-slate-900 hover:text-cyan transition-colors"
+              className="block line-clamp-2 font-semibold text-slate-900 hover:text-cyan transition-colors"
             >
               {role.title}
             </Link>
@@ -119,8 +132,8 @@ export function RoleCard({
       </dl>
 
       <div className="mt-auto flex items-center justify-between pt-4">
-        <span className="text-xs text-slate-400">
-          Verified live {formatRelativeTime(role.lastVerifiedAt)}
+        <span className={'text-xs ' + (stale ? 'text-amber-700' : 'text-slate-400')}>
+          {checked}
         </span>
         <div className="flex items-center gap-2">
           {hasTrackingAction &&
@@ -155,6 +168,16 @@ export function RoleCard({
                 <span>+ Track</span>
               </button>
             ))}
+          {applyHref && (
+            <a
+              href={applyHref}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="inline-flex h-8 items-center justify-center rounded-lg border border-navy/20 px-3 text-sm font-medium text-navy hover:bg-navy/5"
+            >
+              Apply
+            </a>
+          )}
           <Link to={`/roles/${role.slug}`}>
             <Button variant="outline" size="sm">
               Details
