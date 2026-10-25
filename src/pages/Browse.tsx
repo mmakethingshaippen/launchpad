@@ -148,6 +148,14 @@ export function Browse() {
             />
           ) : (
             <div ref={gridRef}>
+              <Pagination
+                page={filters.page}
+                pageSize={pageSize}
+                total={total}
+                noun={isCompanies ? 'companies' : 'opportunities'}
+                onPageChange={goToPage}
+              />
+
               {isCompanies ? (
                 <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-3">
                   {companyQuery.data!.items.map((c) => (
@@ -164,14 +172,6 @@ export function Browse() {
                   ))}
                 </div>
               )}
-
-              <Pagination
-                page={filters.page}
-                pageSize={pageSize}
-                total={total}
-                noun={isCompanies ? 'companies' : 'opportunities'}
-                onPageChange={goToPage}
-              />
             </div>
           )}
         </div>
