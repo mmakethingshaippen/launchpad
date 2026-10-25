@@ -1,0 +1,35 @@
+name: Launchpad Aggregator Sync
+
+on:
+  workflow_dispatch:
+  schedule:
+    # 10:15 UTC daily = 2:15 AM PST / 3:15 AM PDT
+    - cron: '15 10 * * *'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: launchpad-aggregator-sync
+  cancel-in-progress: false
+
+jobs:
+  sync-aggregators:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+      - name: Refresh aggregator feeds and matched job records
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          ADZUNA_APP_ID: ${{ secrets.ADZUNA_APP_ID }}
+          ADZUNA_API_KEY: ${{ secrets.ADZUNA_API_KEY }}
+          USAJOBS_API_KEY: ${{ secrets.USAJOBS_API_KEY }}
+          USAJOBS_USER_AGENT: ${{ secrets.USAJOBS_USER_AGENT }}
+        run: npx tsx scripts/sync-all-sources.ts --aggregators-only
