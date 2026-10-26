@@ -1,4 +1,3 @@
-
 import type { ProviderClient, FetchLike } from '../types';
 import { splitLocation } from '../util';
 
@@ -40,7 +39,7 @@ export function parseWorkdayToken(
   const [host, tenant, site] = parts;
 
   if (
-    !/^[a-z0-9.-]+\.myworkdayjobs\.com$/i.test(host)
+    !/^[a-z0-9.-]+\.myworkday(?:jobs|site)\.com$/i.test(host)
   ) {
     return null;
   }
@@ -181,12 +180,11 @@ export function createWorkdayClient(
         return null;
       }
 
-      const { host, site } = raw.__coords;
-
-      const applyUrl =
-        `https://${host}/en-US/` +
-        `${encodeURIComponent(site)}` +
-        `${raw.externalPath}`;
+      const { host, tenant, site } = raw.__coords;
+      const onRecruitingSite = host.toLowerCase().endsWith('.myworkdaysite.com');
+      const applyUrl = onRecruitingSite
+        ? `https://${host}/recruiting/${encodeURIComponent(tenant)}/${encodeURIComponent(site)}${raw.externalPath}`
+        : `https://${host}/en-US/${encodeURIComponent(site)}${raw.externalPath}`;
 
       // Preserve the original Workday job identifier.
       // This prevents existing roles from being duplicated.
