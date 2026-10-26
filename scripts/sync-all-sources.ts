@@ -47,7 +47,7 @@ async function runAts(): Promise<boolean> {
 
     const results = await syncAll(batch, new SupabaseSink(db), {
       concurrency: 4,
-      timeoutMs: 30_000,
+      timeoutMs: 480_000,
     });
 
     for (const result of results) {
