@@ -22,4 +22,6 @@ export interface AggregatedPosting extends NormalizedPosting {
 export interface AggregatorClient {
   readonly source: AggregatorSource;
   fetchEarlyCareer(signal?: AbortSignal): Promise<AggregatedPosting[]>;
+  /** True only when the last fetch read the whole feed. Absent or false must not close older rows. */
+  feedWasComplete?(): boolean;
 }

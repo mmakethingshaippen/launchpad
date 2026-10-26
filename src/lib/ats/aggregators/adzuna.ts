@@ -73,16 +73,20 @@ export function createAdzunaClient(
   const appKey = env.ADZUNA_API_KEY;
   const enabled = Boolean(appId && appKey);
 
+  let feedComplete = false;
   return {
     source: 'adzuna',
     enabled,
+    feedWasComplete: () => feedComplete,
     async fetchEarlyCareer(signal) {
+      feedComplete = false;
       if (!enabled) {
         // eslint-disable-next-line no-console
         console.log('Skipping Adzuna sync: ADZUNA_APP_ID / ADZUNA_API_KEY not configured in .env');
         return [];
       }
 
+      let stoppedEarly = false;
       const out: AggregatedPosting[] = [];
       const seen = new Set<string>();
 
@@ -106,10 +110,12 @@ export function createAdzunaClient(
             res = await fetchImpl(url, { signal });
           } catch {
             console.error(`Adzuna: stopped early on ${label} page ${page} after a network error`);
+            stoppedEarly = true;
             break;
           }
           if (!res.ok) {
             console.error(`Adzuna: stopped early on ${label} page ${page}: HTTP ${res.status}`);
+            stoppedEarly = true;
             break;
           }
           let data: AdzunaResponse;
@@ -117,6 +123,7 @@ export function createAdzunaClient(
             data = (await res.json()) as AdzunaResponse;
           } catch {
             console.error(`Adzuna: stopped early on ${label} page ${page}: response was not JSON`);
+            stoppedEarly = true;
             break;
           }
 
@@ -167,9 +174,11 @@ export function createAdzunaClient(
           if (count !== undefined && page * PAGE_SIZE >= count) break;
           if (page === MAX_PAGES) {
             console.error(`Adzuna: safety stop on ${label} at ${MAX_PAGES} pages; more results may remain`);
+            stoppedEarly = true;
           }
         }
       }
+      feedComplete = !stoppedEarly;
       return out;
     },
   };

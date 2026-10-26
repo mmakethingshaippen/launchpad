@@ -47,9 +47,13 @@ function countryName(code: string | undefined): string | undefined {
 }
 
 export function createAmazonClient(fetchImpl: FetchLike = fetch): AggregatorClient {
+  let feedComplete = false;
   return {
     source: 'amazon',
+    feedWasComplete: () => feedComplete,
     async fetchEarlyCareer(signal) {
+      feedComplete = false;
+      let stoppedEarly = false;
       const out: AggregatedPosting[] = [];
       const seen = new Set<string>();
       let previousFirstId: string | undefined;
@@ -64,10 +68,12 @@ export function createAmazonClient(fetchImpl: FetchLike = fetch): AggregatorClie
           res = await fetchImpl(url, { signal, headers: { 'User-Agent': 'launchpad-jobs' } });
         } catch {
           console.error(`Amazon: stopped early at offset ${offset} after a network error`);
+          stoppedEarly = true;
           break;
         }
         if (!res.ok) {
           console.error(`Amazon: stopped early at offset ${offset}: HTTP ${res.status}`);
+          stoppedEarly = true;
           break;
         }
 
@@ -76,6 +82,7 @@ export function createAmazonClient(fetchImpl: FetchLike = fetch): AggregatorClie
           data = (await res.json()) as AmazonResponse;
         } catch {
           console.error(`Amazon: stopped early at offset ${offset}: response was not JSON`);
+          stoppedEarly = true;
           break;
         }
         const jobs = data.jobs ?? [];
@@ -121,9 +128,11 @@ export function createAmazonClient(fetchImpl: FetchLike = fetch): AggregatorClie
         if (hits !== undefined && offset + jobs.length >= hits) break;
         if (page === MAX_PAGES - 1) {
           console.error(`Amazon: safety stop at ${MAX_PAGES} pages; more results may remain`);
+          stoppedEarly = true;
         }
       }
 
+      feedComplete = !stoppedEarly;
       return out;
     },
   };

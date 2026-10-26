@@ -21,9 +21,12 @@ interface RemotiveResponse {
 }
 
 export function createRemotiveClient(fetchImpl: FetchLike = fetch): AggregatorClient {
+  let feedComplete = false;
   return {
     source: 'remotive',
+    feedWasComplete: () => feedComplete,
     async fetchEarlyCareer(signal) {
+      feedComplete = false;
       const url = 'https://remotive.com/api/remote-jobs';
       const res = await fetchImpl(url, { signal });
       if (!res.ok) throw new Error(`Remotive: HTTP ${res.status}`);
@@ -48,6 +51,7 @@ export function createRemotiveClient(fetchImpl: FetchLike = fetch): AggregatorCl
           updatedAt: j.publication_date,
         });
       }
+      feedComplete = true;
       return out;
     },
   };

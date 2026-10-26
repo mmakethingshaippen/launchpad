@@ -64,9 +64,13 @@ function parseSimplifyLocation(locations: string[] | undefined): {
 }
 
 export function createSimplifyClient(fetchImpl: FetchLike = fetch): AggregatorClient {
+  let feedComplete = false;
   return {
     source: 'simplify',
+    feedWasComplete: () => feedComplete,
     async fetchEarlyCareer(signal) {
+      feedComplete = false;
+      let stoppedEarly = false;
       const out: AggregatedPosting[] = [];
       const seen = new Set<string>(); // dedup by external id across repos
 
@@ -75,14 +79,19 @@ export function createSimplifyClient(fetchImpl: FetchLike = fetch): AggregatorCl
         try {
           res = await fetchImpl(listingsUrl(repo), { signal });
         } catch {
+          stoppedEarly = true;
           continue; // network error on this repo: try the next one
         }
-        if (!res.ok) continue;
+        if (!res.ok) {
+          stoppedEarly = true;
+          continue;
+        }
 
         let listings: SimplifyListing[];
         try {
           listings = (await res.json()) as SimplifyListing[];
         } catch {
+          stoppedEarly = true;
           continue;
         }
         if (!Array.isArray(listings)) continue;
@@ -130,6 +139,7 @@ export function createSimplifyClient(fetchImpl: FetchLike = fetch): AggregatorCl
         }
       }
 
+      feedComplete = !stoppedEarly;
       return out;
     },
   };

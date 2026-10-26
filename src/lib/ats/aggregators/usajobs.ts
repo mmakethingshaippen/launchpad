@@ -68,10 +68,13 @@ export function createUsaJobsClient(
   const userAgent = env.USAJOBS_USER_AGENT;
   const enabled = Boolean(apiKey);
 
+  let feedComplete = false;
   return {
     source: 'usajobs',
     enabled,
+    feedWasComplete: () => feedComplete,
     async fetchEarlyCareer(signal) {
+      feedComplete = false;
       if (!enabled) {
         // eslint-disable-next-line no-console
         console.log('Skipping USAJOBS: USAJOBS_API_KEY not set');
@@ -80,6 +83,7 @@ export function createUsaJobsClient(
 
       const out: AggregatedPosting[] = [];
       const seen = new Set<string>();
+      let stoppedEarly = false;
       let previousFirstId: string | undefined;
       const headers = {
         'Authorization-Key': apiKey!,
@@ -95,6 +99,7 @@ export function createUsaJobsClient(
         if (!res.ok) {
           if (page === 1) throw new Error(`USAJOBS: HTTP ${res.status}`);
           console.error(`USAJOBS: stopped early on page ${page}: HTTP ${res.status}`);
+          stoppedEarly = true;
           break;
         }
         const data = (await res.json()) as UsaJobsResponse;
@@ -134,8 +139,10 @@ export function createUsaJobsClient(
         if (typeof total === 'number' && page * PAGE_SIZE >= total) break;
         if (page === MAX_PAGES) {
           console.error(`USAJOBS: safety stop at ${MAX_PAGES} pages; more results may remain`);
+          stoppedEarly = true;
         }
       }
+      feedComplete = !stoppedEarly;
       return out;
     },
   };

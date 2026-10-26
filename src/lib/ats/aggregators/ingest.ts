@@ -27,12 +27,22 @@ export interface AggregatorResult {
   duplicatesSkipped: number;
   skippedInvalid: number;
   skippedExpired: number;
+  /** Active rows from this source removed because a complete feed no longer lists them. */
+  closed: number;
   errors: string[];
   durationMs: number;
 }
 
 const WRITE_BATCH = 100;
 const READ_PAGE = 1000;
+const SOURCE_PREFIX: Record<string, string> = {
+  amazon: 'amazon-',
+  simplify: 'simplify-',
+  themuse: 'muse-',
+  remotive: 'remotive-',
+  adzuna: 'adzuna-',
+  usajobs: 'usajobs-',
+};
 const stamp = () => new Date().toISOString();
 const message = (error: unknown) => error instanceof Error ? error.message : String(error);
 
@@ -125,6 +135,7 @@ export async function ingestAggregators(
       duplicatesSkipped: 0,
       skippedInvalid: 0,
       skippedExpired: 0,
+      closed: 0,
       errors: [],
       durationMs: 0,
     };
@@ -293,12 +304,33 @@ export async function ingestAggregators(
     }
     await flushWrites();
     await flushRefresh();
+    if (result.errors.length === 0 && client.feedWasComplete?.()) {
+      const prefix = SOURCE_PREFIX[client.source];
+      const live = new Set(postings.map((posting) => posting.externalJobId));
+      const stale = prefix ? index.staleIds(prefix, live) : [];
+      for (let offset = 0; offset < stale.length; offset += WRITE_BATCH) {
+        const batch = stale.slice(offset, offset + WRITE_BATCH);
+        const { error } = await db.from('roles').update({ listing_status: 'Closed' })
+          .eq('source', 'aggregator')
+          .eq('listing_status', 'Active')
+          .in('id', batch);
+        if (error) {
+          result.errors.push(`Close missing (${batch.length}): ${error.message}`);
+          console.error(`[${stamp()}] ${client.source}: close missing failed: ${error.message}`);
+          break;
+        }
+        result.closed += batch.length;
+      }
+      if (result.closed) {
+        console.log(`[${stamp()}] ${client.source}: closed ${result.closed} listings missing from the completed feed`);
+      }
+    }
     result.durationMs = Date.now() - sourceStarted;
     console.log(
       `[${stamp()}] ${client.source}: complete in ${(result.durationMs / 1000).toFixed(1)}s; ` +
       `fetched ${result.fetched}; new ${result.rolesUpserted}; refreshed ${result.refreshed}; ` +
       `duplicates ${result.duplicatesSkipped}; invalid ${result.skippedInvalid}; ` +
-      `expired ${result.skippedExpired}; companies ${result.companiesUpserted}; errors ${result.errors.length}`,
+      `expired ${result.skippedExpired}; closed ${result.closed}; companies ${result.companiesUpserted}; errors ${result.errors.length}`,
     );
     results.push(result);
   }
@@ -307,7 +339,7 @@ export async function ingestAggregators(
   console.log(
     `[${stamp()}] Aggregator pass finished in ${((Date.now() - startedAt) / 1000).toFixed(1)}s; ` +
     `${results.length} sources; errors ${withErrors}. ` +
-    'Unobserved jobs were not closed or re-stamped.',
+    'Listings are closed only when their own feed was fully read and no longer contains them.',
   );
   return results;
 }
@@ -332,6 +364,7 @@ class RoleIndex {
   private readonly urlToIds = new Map<string, string[]>();
   private readonly externalToIds = new Map<string, string[]>();
   readonly refreshable = new Set<string>();
+  private readonly aggregatorExternal = new Map<string, string>();
   private readonly queuedRefresh = new Set<string>();
   private pendingRefresh: string[] = [];
 
@@ -354,7 +387,18 @@ class RoleIndex {
     }
     if (role.source === 'aggregator' && role.listing_status === 'Active') {
       this.refreshable.add(role.id);
+      if (role.external_job_id) this.aggregatorExternal.set(role.id, role.external_job_id);
     }
+  }
+
+  staleIds(prefix: string, liveExternalIds: Set<string>): string[] {
+    const stale: string[] = [];
+    for (const [id, externalId] of this.aggregatorExternal) {
+      if (!externalId.startsWith(prefix)) continue;
+      if (liveExternalIds.has(externalId) || this.queuedRefresh.has(id)) continue;
+      stale.push(id);
+    }
+    return stale;
   }
 
   observe(url: string, externalKey: string): 'new' | 'refresh' | 'duplicate' {

@@ -31,9 +31,13 @@ const LEVELS = ['Internship', 'Entry Level'];
 const MAX_PAGES_PER_LEVEL = 100;
 
 export function createTheMuseClient(fetchImpl: FetchLike = fetch): AggregatorClient {
+  let feedComplete = false;
   return {
     source: 'themuse',
+    feedWasComplete: () => feedComplete,
     async fetchEarlyCareer(signal) {
+      feedComplete = false;
+      let stoppedEarly = false;
       const out: AggregatedPosting[] = [];
       const seen = new Set<string>(); // dedup across level/page queries
       for (const level of LEVELS) {
@@ -45,10 +49,12 @@ export function createTheMuseClient(fetchImpl: FetchLike = fetch): AggregatorCli
             res = await fetchImpl(url, { signal });
           } catch {
             console.error(`The Muse: stopped early on ${level} page ${page} after a network error`);
+            stoppedEarly = true;
             break;
           }
           if (!res.ok) {
             console.error(`The Muse: stopped early on ${level} page ${page}: HTTP ${res.status}`);
+            stoppedEarly = true;
             break;
           }
           let data: MuseResponse;
@@ -56,6 +62,7 @@ export function createTheMuseClient(fetchImpl: FetchLike = fetch): AggregatorCli
             data = (await res.json()) as MuseResponse;
           } catch {
             console.error(`The Muse: stopped early on ${level} page ${page}: response was not JSON`);
+            stoppedEarly = true;
             break;
           }
           const results = data.results ?? [];
@@ -102,9 +109,11 @@ export function createTheMuseClient(fetchImpl: FetchLike = fetch): AggregatorCli
           if (pageCount <= page) break;
           if (page === MAX_PAGES_PER_LEVEL) {
             console.error(`The Muse: safety stop on ${level} at ${MAX_PAGES_PER_LEVEL} pages; more results may remain`);
+            stoppedEarly = true;
           }
         }
       }
+      feedComplete = !stoppedEarly;
       return out;
     },
   };

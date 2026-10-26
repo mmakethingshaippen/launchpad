@@ -22,9 +22,14 @@ function posting(overrides: Partial<AggregatedPosting> = {}): AggregatedPosting 
   };
 }
 
-function client(source: AggregatorSource, postings: AggregatedPosting[] | Error): AggregatorClient {
+function client(
+  source: AggregatorSource,
+  postings: AggregatedPosting[] | Error,
+  complete = false,
+): AggregatorClient {
   return {
     source,
+    feedWasComplete: () => complete,
     fetchEarlyCareer: vi.fn(async () => {
       if (postings instanceof Error) throw postings;
       return postings;
@@ -379,5 +384,55 @@ describe('aggregator ingestion', () => {
     expect(results.map((result) => result.refreshed)).toEqual([1, 0]);
     expect(results[1].duplicatesSkipped).toBe(1);
     expect(fake.state.roleUpdates).toEqual([['role-b']]);
+  });
+
+  it('closes listings missing from a completed feed and leaves other sources alone', async () => {
+    const fake = createDb({
+      companies: [{ id: 'co-b', slug: 'acme-labs' }],
+      roles: [
+        {
+          id: 'role-live', company_id: 'co-b', external_job_id: 'amazon-1',
+          apply_url: 'https://www.amazon.jobs/live', source: 'aggregator', listing_status: 'Active',
+        },
+        {
+          id: 'role-old', company_id: 'co-b', external_job_id: 'amazon-9',
+          apply_url: 'https://www.amazon.jobs/old', source: 'aggregator', listing_status: 'Active',
+        },
+        {
+          id: 'role-muse', company_id: 'co-b', external_job_id: 'muse-9',
+          apply_url: 'https://www.themuse.com/jobs/old', source: 'aggregator', listing_status: 'Active',
+        },
+      ],
+    });
+    const results = await ingestAggregators(fake.db, {
+      now: NOW,
+      clients: [client('amazon', [posting({
+        source: 'amazon',
+        companyName: 'Amazon',
+        externalJobId: 'amazon-1',
+        applyUrl: 'https://www.amazon.jobs/live',
+      })], true)],
+    });
+    expect(results[0].closed).toBe(1);
+    expect(results[0].errors).toEqual([]);
+    expect(fake.state.roles.find((role) => role.id === 'role-old')?.listing_status).toBe('Closed');
+    expect(fake.state.roles.find((role) => role.id === 'role-live')?.listing_status).toBe('Active');
+    expect(fake.state.roles.find((role) => role.id === 'role-muse')?.listing_status).toBe('Active');
+  });
+
+  it('does not close listings when the feed stopped early', async () => {
+    const fake = createDb({
+      companies: [{ id: 'co-b', slug: 'acme-labs' }],
+      roles: [{
+        id: 'role-old', company_id: 'co-b', external_job_id: 'amazon-9',
+        apply_url: 'https://www.amazon.jobs/old', source: 'aggregator', listing_status: 'Active',
+      }],
+    });
+    const results = await ingestAggregators(fake.db, {
+      now: NOW,
+      clients: [client('amazon', [], false)],
+    });
+    expect(results[0].closed).toBe(0);
+    expect(fake.state.roles[0].listing_status).toBe('Active');
   });
 });
