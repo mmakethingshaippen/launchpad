@@ -1,4 +1,4 @@
-import { useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Helmet } from 'react-helmet-async';
 import { useQuery, keepPreviousData } from '@tanstack/react-query';
 import { SlidersHorizontal, LayoutGrid, Building2 } from 'lucide-react';
@@ -50,7 +50,13 @@ export function Browse() {
   const total = activeQuery.data?.total ?? 0;
   const pageSize = activeQuery.data?.pageSize ?? 21;
   const loading = activeQuery.isLoading && !activeQuery.data;
+  const totalPages = Math.max(1, Math.ceil(total / pageSize));
   const gridRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!activeQuery.data || filters.page <= totalPages) return;
+    setFilters({ page: totalPages });
+  }, [activeQuery.data, filters.page, totalPages, setFilters]);
 
   const goToPage = (page: number) => {
     setFilters({ page });

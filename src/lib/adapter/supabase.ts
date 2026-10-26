@@ -255,13 +255,18 @@ export class SupabaseAdapter implements DataAdapter {
       const windowStart = Math.floor(plan.range.from / WINDOW) * WINDOW;
       const { data, count, error } = await build().range(windowStart, windowStart + WINDOW - 1);
       if (error) throw error;
+      const fetched = data?.length ?? 0;
       const all = (data ?? []).map((r) => mapRoleCard(r as never));
-      const deduped = dedupeRoles(all);
-      const diversified = interleaveByCompany(deduped);
+      const diversified = interleaveByCompany(dedupeRoles(all));
+      const atEnd = fetched < WINDOW;
       const start = plan.range.from - windowStart;
       return {
-        items: diversified.slice(start, start + pageSize),
-        total: count ?? 0,
+        items: start >= 0 && start < diversified.length
+          ? diversified.slice(start, start + pageSize)
+          : [],
+        // The raw count includes duplicates removed above. Past the last fetched
+        // row, page off the cards that remain so the last page is not blank.
+        total: atEnd ? windowStart + diversified.length : (count ?? 0),
         page: filters.page,
         pageSize,
       };
