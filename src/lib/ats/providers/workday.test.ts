@@ -126,4 +126,17 @@ describe('Workday provider', () => {
     expect(raw.map((posting) => posting.title)).toEqual(['Pharmacy Intern']);
     expect(client.toNormalized(raw[0])).toMatchObject({ city: 'Sterling Heights', state: 'MI' });
   });
+
+  it('retries a temporary 502 and keeps the jobs', async () => {
+    let calls = 0;
+    const fetchImpl: FetchLike = async () => {
+      calls += 1;
+      if (calls === 1) return { ok: false, status: 502, json: async () => ({}) };
+      return { ok: true, status: 200, json: async () => FIXTURE };
+    };
+    const client = createWorkdayClient(fetchImpl);
+    const raw = await client.fetchPostings('cvshealth.wd1.myworkdayjobs.com|cvshealth|CVS_Health_Careers');
+    expect(raw).toHaveLength(2);
+    expect(calls).toBeGreaterThan(1);
+  });
 });

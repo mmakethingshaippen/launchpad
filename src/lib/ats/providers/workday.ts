@@ -63,6 +63,12 @@ export function parseWorkdayToken(
 const PAGE_SIZE = 20;
 const MAX_PAGES = 250;
 const BOARD_CAP = PAGE_SIZE * MAX_PAGES;
+const RETRYABLE_STATUS = new Set([429, 500, 502, 503, 504]);
+const RETRY_DELAYS_MS = [2000, 5000, 10000, 20000];
+
+function wait(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
 
 /** A board bigger than the page cap cannot be finished. An internship category that fits can. */
 function selectInternshipFacet(
@@ -128,25 +134,40 @@ export function createWorkdayClient(
         page++
       ) {
         const offset = page * PAGE_SIZE;
+        let res: { ok: boolean; status: number; json: () => Promise<unknown> } | null = null;
 
-        const res = await fetchImpl(endpoint, {
-          method: 'POST',
-          signal,
-          headers: {
-            'Content-Type': 'application/json',
-            Accept: 'application/json',
-          },
-          body: JSON.stringify({
-            appliedFacets,
-            limit: PAGE_SIZE,
-            offset,
-            searchText: '',
-          }),
-        });
+        for (let attempt = 0; attempt <= RETRY_DELAYS_MS.length; attempt++) {
+          res = await fetchImpl(endpoint, {
+            method: 'POST',
+            signal,
+            headers: {
+              'Content-Type': 'application/json',
+              Accept: 'application/json',
+            },
+            body: JSON.stringify({
+              appliedFacets,
+              limit: PAGE_SIZE,
+              offset,
+              searchText: '',
+            }),
+          });
+          if (res.ok || !RETRYABLE_STATUS.has(res.status) || attempt === RETRY_DELAYS_MS.length) break;
+          console.log(
+            `Workday ${tenant}: HTTP ${res.status} on page ${page + 1}; retrying`,
+          );
+          await wait(RETRY_DELAYS_MS[attempt]);
+        }
 
-        if (!res.ok) {
+        if (!res?.ok) {
+          if (collected.length > 0) {
+            console.log(
+              `Workday ${tenant}: HTTP ${res?.status ?? 0} on page ${page + 1}; ` +
+              `keeping ${collected.length} jobs already read and leaving the rest open`,
+            );
+            break;
+          }
           throw new Error(
-            `Workday ${tenant}: HTTP ${res.status} ` +
+            `Workday ${tenant}: HTTP ${res?.status ?? 0} ` +
             `on page ${page + 1}`,
           );
         }
