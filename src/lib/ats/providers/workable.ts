@@ -1,5 +1,6 @@
 
 import type { ProviderClient, FetchLike } from '../types';
+import { fetchRetrying } from '../fetchRetry';
 import { mapWorkArrangement, splitLocation } from '../util';
 
 interface WorkableLocation {
@@ -69,9 +70,11 @@ export function createWorkableClient(
         `https://www.workable.com/api/accounts/` +
         `${encodeURIComponent(token)}?details=false`;
 
-      const widgetResponse = await fetchImpl(
+      const widgetResponse = await fetchRetrying(
+        fetchImpl,
         widgetUrl,
         { signal },
+        `Workable ${token}`,
       );
 
       if (widgetResponse.ok) {
@@ -116,17 +119,28 @@ export function createWorkableClient(
           body.cursor = cursor;
         }
 
-        const res = await fetchImpl(endpoint, {
-          signal,
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            Accept: 'application/json',
+        const res = await fetchRetrying(
+          fetchImpl,
+          endpoint,
+          {
+            signal,
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              Accept: 'application/json',
+            },
+            body: JSON.stringify(body),
           },
-          body: JSON.stringify(body),
-        });
+          `Workable ${token}`,
+        );
 
         if (!res.ok) {
+          if (collected.length > 0) {
+            console.log(
+              `Workable ${token}: HTTP ${res.status}; keeping ${collected.length} jobs already read`,
+            );
+            break;
+          }
           throw new Error(
             `Workable ${token}: fallback HTTP ${res.status}`,
           );

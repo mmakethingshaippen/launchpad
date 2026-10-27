@@ -1,5 +1,6 @@
 
 import type { ProviderClient, FetchLike } from '../types';
+import { fetchRetrying } from '../fetchRetry';
 import { splitLocation } from '../util';
 
 interface WorkdayPosting {
@@ -63,12 +64,6 @@ export function parseWorkdayToken(
 const PAGE_SIZE = 20;
 const MAX_PAGES = 250;
 const BOARD_CAP = PAGE_SIZE * MAX_PAGES;
-const RETRYABLE_STATUS = new Set([429, 500, 502, 503, 504]);
-const RETRY_DELAYS_MS = [2000, 5000, 10000, 20000];
-
-function wait(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
 
 /** A board bigger than the page cap cannot be finished. An internship category that fits can. */
 function selectInternshipFacet(
@@ -127,58 +122,65 @@ export function createWorkdayClient(
       const seen = new Set<string>();
       let appliedFacets: Record<string, string[]> = {};
       let narrowed = false;
+      let total: number | null = null;
+      let reachedEnd = false;
+      const missed = new Set<number>();
 
-      for (
-        let page = 0;
-        page < MAX_PAGES;
-        page++
-      ) {
-        const offset = page * PAGE_SIZE;
-        let res: { ok: boolean; status: number; json: () => Promise<unknown> } | null = null;
+      const ingest = (data: WorkdayResponse) => {
+        for (const posting of data.jobPostings ?? []) {
+          if (!posting?.externalPath || seen.has(posting.externalPath)) continue;
+          seen.add(posting.externalPath);
+          collected.push({ ...posting, __coords: coords });
+        }
+      };
 
-        for (let attempt = 0; attempt <= RETRY_DELAYS_MS.length; attempt++) {
-          res = await fetchImpl(endpoint, {
-            method: 'POST',
-            signal,
-            headers: {
-              'Content-Type': 'application/json',
-              Accept: 'application/json',
+      const loadPage = async (offset: number): Promise<{ data: WorkdayResponse | null; status: number }> => {
+        if (signal?.aborted) return { data: null, status: 0 };
+        try {
+          const res = await fetchRetrying(
+            fetchImpl,
+            endpoint,
+            {
+              method: 'POST',
+              signal,
+              headers: {
+                'Content-Type': 'application/json',
+                Accept: 'application/json',
+              },
+              body: JSON.stringify({
+                appliedFacets,
+                limit: PAGE_SIZE,
+                offset,
+                searchText: '',
+              }),
             },
-            body: JSON.stringify({
-              appliedFacets,
-              limit: PAGE_SIZE,
-              offset,
-              searchText: '',
-            }),
-          });
-          if (res.ok || !RETRYABLE_STATUS.has(res.status) || attempt === RETRY_DELAYS_MS.length) break;
-          console.log(
-            `Workday ${tenant}: HTTP ${res.status} on page ${page + 1}; retrying`,
+            `Workday ${tenant} offset ${offset}`,
           );
-          await wait(RETRY_DELAYS_MS[attempt]);
+          if (!res.ok) return { data: null, status: res.status };
+          const data = (await res.json()) as WorkdayResponse;
+          if (!Array.isArray(data.jobPostings)) return { data: null, status: res.status };
+          return { data, status: res.status };
+        } catch (error) {
+          if (signal?.aborted) return { data: null, status: 0 };
+          throw error;
         }
+      };
 
-        if (!res?.ok) {
-          if (collected.length > 0) {
-            console.log(
-              `Workday ${tenant}: HTTP ${res?.status ?? 0} on page ${page + 1}; ` +
-              `keeping ${collected.length} jobs already read and leaving the rest open`,
-            );
-            break;
+      for (let page = 0; page < MAX_PAGES; page++) {
+        if (signal?.aborted) break;
+        const offset = page * PAGE_SIZE;
+        const loaded = await loadPage(offset);
+        const data = loaded.data;
+
+        if (!data) {
+          if (signal?.aborted) break;
+          if (total == null && collected.length === 0 && page === 0) {
+            throw new Error(`Workday ${tenant}: HTTP ${loaded.status} on the first page`);
           }
-          throw new Error(
-            `Workday ${tenant}: HTTP ${res?.status ?? 0} ` +
-            `on page ${page + 1}`,
-          );
-        }
-
-        const data =
-          (await res.json()) as WorkdayResponse;
-
-        if (!Array.isArray(data.jobPostings)) {
-          throw new Error(
-            `Workday ${tenant}: invalid jobs response`,
-          );
+          missed.add(offset);
+          console.log(`Workday ${tenant}: offset ${offset} failed; reading the following pages anyway`);
+          if (total != null && offset + PAGE_SIZE >= total) break;
+          continue;
         }
 
         if (
@@ -195,65 +197,42 @@ export function createWorkdayClient(
             );
             appliedFacets = { [pick.parameter]: [pick.id] };
             narrowed = true;
+            total = null;
             page = -1;
             continue;
           }
         }
 
-        let newItems = 0;
+        if (typeof data.total === 'number') total = data.total;
+        ingest(data);
 
-        for (const posting of data.jobPostings) {
-          if (!posting?.externalPath) {
-            continue;
-          }
-
-          if (seen.has(posting.externalPath)) {
-            continue;
-          }
-
-          seen.add(posting.externalPath);
-
-          collected.push({
-            ...posting,
-            __coords: coords,
-          });
-
-          newItems++;
-        }
-
-        if (data.jobPostings.length === 0) {
-          completeSnapshot = true;
+        const count = data.jobPostings!.length;
+        const covered = offset + count;
+        if ((total != null && covered >= total) || count === 0 || (total == null && count < PAGE_SIZE)) {
+          reachedEnd = true;
           break;
-        }
-
-        if (
-          typeof data.total === 'number' &&
-          offset + data.jobPostings.length >=
-            data.total
-        ) {
-          completeSnapshot = true;
-          break;
-        }
-
-        if (
-          data.jobPostings.length < PAGE_SIZE
-        ) {
-          completeSnapshot = true;
-          break;
-        }
-
-        if (newItems === 0) {
-          throw new Error(
-            `Workday ${tenant}: pagination ` +
-            `stopped making progress`,
-          );
         }
       }
 
-      // A filtered internship download refreshes those roles. It is not the
-      // whole board, so roles that were not in the filter stay up.
-      if (narrowed) completeSnapshot = false;
+      for (const offset of [...missed]) {
+        if (signal?.aborted) break;
+        const data = await loadPage(offset);
+        if (!data.data) continue;
+        missed.delete(offset);
+        ingest(data.data);
+      }
 
+      if (signal?.aborted) {
+        console.log(`Workday ${tenant}: time ran out; saving ${collected.length} jobs already read`);
+      } else if (missed.size > 0) {
+        console.log(
+          `Workday ${tenant}: saved ${collected.length} jobs; ${missed.size} pages were still down and were not dropped`,
+        );
+      } else {
+        console.log(`Workday ${tenant}: read ${collected.length} jobs`);
+      }
+
+      completeSnapshot = reachedEnd && missed.size === 0 && !signal?.aborted && !narrowed;
       return collected;
     },
 

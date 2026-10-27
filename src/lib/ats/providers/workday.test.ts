@@ -139,4 +139,45 @@ describe('Workday provider', () => {
     expect(raw).toHaveLength(2);
     expect(calls).toBeGreaterThan(1);
   });
+
+  it('keeps reading every later page when one page stays down', async () => {
+    const fetchImpl: FetchLike = async (_url, init) => {
+      const body = JSON.parse(init?.body ?? '{}') as { offset?: number };
+      const offset = body.offset ?? 0;
+      if (offset === 20) return { ok: false, status: 502, json: async () => ({}) };
+      if (offset === 0) {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            total: 41,
+            jobPostings: Array.from({ length: 20 }, (_, i) => ({
+              title: `Intern ${i}`,
+              externalPath: `/job/a_${i}`,
+              locationsText: 'Austin, TX',
+              bulletFields: [`A${i}`],
+            })),
+          }),
+        };
+      }
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          total: 41,
+          jobPostings: [{
+            title: 'Data Intern',
+            externalPath: '/job/b_B1',
+            locationsText: 'Seattle, WA',
+            bulletFields: ['B1'],
+          }],
+        }),
+      };
+    };
+    const client = createWorkdayClient(fetchImpl);
+    const raw = await client.fetchPostings('x.wd5.myworkdayjobs.com|x|Site');
+    expect(raw[0]?.title).toBe('Intern 0');
+    expect(raw.at(-1)?.title).toBe('Data Intern');
+    expect(client.isCompleteSnapshot?.()).toBe(false);
+  });
 });

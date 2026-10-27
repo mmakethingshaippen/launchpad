@@ -1,5 +1,6 @@
 
 import type { ProviderClient, FetchLike } from '../types';
+import { fetchRetrying } from '../fetchRetry';
 
 interface SrLocation {
   city?: string;
@@ -63,66 +64,68 @@ export function createSmartRecruitersClient(
 
       const collected: SrPosting[] = [];
       const seen = new Set<string>();
+      let total: number | null = null;
+      let reachedEnd = false;
+      const missed = new Set<number>();
+
+      const load = async (offset: number): Promise<{ data: SrResponse | null; status: number }> => {
+        if (signal?.aborted) return { data: null, status: 0 };
+        try {
+          const url =
+            `https://api.smartrecruiters.com/v1/companies/` +
+            `${encodeURIComponent(token)}/postings` +
+            `?limit=${PAGE_SIZE}&offset=${offset}`;
+          const res = await fetchRetrying(fetchImpl, url, { signal }, `SmartRecruiters ${token} offset ${offset}`);
+          if (!res.ok) return { data: null, status: res.status };
+          const data = (await res.json()) as SrResponse;
+          if (!Array.isArray(data.content)) return { data: null, status: res.status };
+          return { data, status: res.status };
+        } catch (error) {
+          if (signal?.aborted) return { data: null, status: 0 };
+          throw error;
+        }
+      };
 
       for (let page = 0; page < MAX_PAGES; page++) {
+        if (signal?.aborted) break;
         const offset = page * PAGE_SIZE;
-
-        const url =
-          `https://api.smartrecruiters.com/v1/companies/` +
-          `${encodeURIComponent(token)}/postings` +
-          `?limit=${PAGE_SIZE}&offset=${offset}`;
-
-        const res = await fetchImpl(url, { signal });
-
-        if (!res.ok) {
-          throw new Error(
-            `SmartRecruiters ${token}: HTTP ${res.status} at offset ${offset}`,
-          );
+        const loaded = await load(offset);
+        const data = loaded.data;
+        if (!data) {
+          if (signal?.aborted) break;
+          if (page === 0 && collected.length === 0) {
+            throw new Error(`SmartRecruiters ${token}: HTTP ${loaded.status} at offset 0`);
+          }
+          missed.add(offset);
+          if (total != null && offset + PAGE_SIZE >= total) break;
+          continue;
         }
-
-        const data = (await res.json()) as SrResponse;
-
-        if (!Array.isArray(data.content)) {
-          throw new Error(
-            `SmartRecruiters ${token}: invalid postings response`,
-          );
-        }
-
-        let newItems = 0;
-
-        for (const posting of data.content) {
+        if (typeof data.totalFound === 'number') total = data.totalFound;
+        for (const posting of data.content ?? []) {
           if (!posting?.id || seen.has(posting.id)) continue;
-
           seen.add(posting.id);
           collected.push(posting);
-          newItems++;
         }
-
-        if (data.content.length === 0) {
-          completeSnapshot = true;
+        const count = data.content?.length ?? 0;
+        if ((total != null && offset + count >= total) || count === 0 || (total == null && count < PAGE_SIZE)) {
+          reachedEnd = true;
           break;
-        }
-
-        if (
-          typeof data.totalFound === 'number' &&
-          offset + data.content.length >= data.totalFound
-        ) {
-          completeSnapshot = true;
-          break;
-        }
-
-        if (data.content.length < PAGE_SIZE) {
-          completeSnapshot = true;
-          break;
-        }
-
-        if (newItems === 0) {
-          throw new Error(
-            `SmartRecruiters ${token}: pagination stopped making progress`,
-          );
         }
       }
 
+      for (const offset of [...missed]) {
+        if (signal?.aborted) break;
+        const loaded = await load(offset);
+        if (!loaded.data) continue;
+        missed.delete(offset);
+        for (const posting of loaded.data.content ?? []) {
+          if (!posting?.id || seen.has(posting.id)) continue;
+          seen.add(posting.id);
+          collected.push(posting);
+        }
+      }
+
+      completeSnapshot = reachedEnd && missed.size === 0 && !signal?.aborted;
       return collected;
     },
 

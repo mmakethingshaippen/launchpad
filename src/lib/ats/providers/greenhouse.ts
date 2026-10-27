@@ -1,4 +1,5 @@
 import type { ProviderClient, FetchLike } from '../types';
+import { fetchRetrying } from '../fetchRetry';
 import { mapWorkArrangement, splitLocation } from '../util';
 
 // https://boards-api.greenhouse.io/v1/boards/{token}/jobs?content=true
@@ -39,7 +40,7 @@ export function createGreenhouseClient(fetchImpl: FetchLike = fetch): ProviderCl
       const url = `https://boards-api.greenhouse.io/v1/boards/${encodeURIComponent(
         token,
       )}/jobs?content=false`;
-      const res = await fetchImpl(url, { signal });
+      const res = await fetchRetrying(fetchImpl, url, { signal }, `Greenhouse ${token}`);
       if (!res.ok) throw new Error(`Greenhouse ${token}: HTTP ${res.status}`);
       const data = (await res.json()) as GreenhouseResponse;
       if (!Array.isArray(data.jobs)) throw new Error(`Greenhouse ${token}: invalid jobs response`);

@@ -1,4 +1,5 @@
 import type { NormalizedPosting, ProviderClient, FetchLike } from '../types';
+import { fetchRetrying } from '../fetchRetry';
 import { mapWorkArrangement, normalizePayPeriod, splitLocation } from '../util';
 
 // https://api.lever.co/v0/postings/{token}?mode=json
@@ -36,7 +37,7 @@ export function createLeverClient(fetchImpl: FetchLike = fetch): ProviderClient<
     provider: 'lever',
     async fetchPostings(token, signal) {
       const url = `https://api.lever.co/v0/postings/${encodeURIComponent(token)}?mode=json`;
-      const res = await fetchImpl(url, { signal });
+      const res = await fetchRetrying(fetchImpl, url, { signal }, `Lever ${token}`);
       if (!res.ok) throw new Error(`Lever ${token}: HTTP ${res.status}`);
       const data = (await res.json()) as LeverPosting[];
       if (!Array.isArray(data)) throw new Error(`Lever ${token}: invalid postings response`);

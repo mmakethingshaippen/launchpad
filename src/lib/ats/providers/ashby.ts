@@ -1,4 +1,5 @@
 import type { NormalizedPosting, ProviderClient, FetchLike } from '../types';
+import { fetchRetrying } from '../fetchRetry';
 import { mapWorkArrangement, normalizePayPeriod, splitLocation } from '../util';
 
 // https://api.ashbyhq.com/posting-api/job-board/{token}?includeCompensation=true
@@ -53,7 +54,7 @@ export function createAshbyClient(fetchImpl: FetchLike = fetch): ProviderClient<
       const url = `https://api.ashbyhq.com/posting-api/job-board/${encodeURIComponent(
         token,
       )}?includeCompensation=true`;
-      const res = await fetchImpl(url, { signal });
+      const res = await fetchRetrying(fetchImpl, url, { signal }, `Ashby ${token}`);
       if (!res.ok) throw new Error(`Ashby ${token}: HTTP ${res.status}`);
       const data = (await res.json()) as AshbyResponse;
       if (!Array.isArray(data.jobs)) throw new Error(`Ashby ${token}: invalid jobs response`);
