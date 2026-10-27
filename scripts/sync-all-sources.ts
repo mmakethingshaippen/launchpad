@@ -30,6 +30,19 @@ if (atsOnly && aggregatorsOnly) {
 
 const db = createServiceClient();
 
+function workdayDetailUrl(token: string, applyUrl: string): string | null {
+  const coords = parseWorkdayToken(token);
+  if (!coords) return null;
+  try {
+    const jobPath = new URL(applyUrl).pathname;
+    const jobAt = jobPath.indexOf('/job/');
+    if (jobAt < 0) return null;
+    return `https://${coords.host}/wday/cxs/${encodeURIComponent(coords.tenant)}/${encodeURIComponent(coords.site)}${jobPath.slice(jobAt)}`;
+  } catch {
+    return null;
+  }
+}
+
 const log = (message: string) =>
   console.log(`[${new Date().toISOString()}] ${message}`);
 
@@ -176,13 +189,13 @@ async function recheckMissedWorkday(): Promise<void> {
   const companyIds = [...tokens.keys()];
   if (!companyIds.length) return;
 
-  const stale: Array<{ id: string; external: string; token: string }> = [];
+  const stale: Array<{ id: string; url: string }> = [];
   for (let index = 0; index < companyIds.length; index += 40) {
     const ids = companyIds.slice(index, index + 40);
     let after = '';
     for (;;) {
       let query = db.from('roles')
-        .select('id,company_id,external_job_id')
+        .select('id,company_id,apply_url')
         .eq('listing_status', 'Active')
         .lt('last_verified_at', cutoff)
         .in('company_id', ids)
@@ -197,9 +210,10 @@ async function recheckMissedWorkday(): Promise<void> {
       const page = data ?? [];
       for (const row of page) {
         const token = tokens.get(String(row.company_id));
-        const external = row.external_job_id;
-        if (!token || typeof external !== 'string' || !external.startsWith('/job/')) continue;
-        stale.push({ id: String(row.id), external, token });
+        const applyUrl = typeof row.apply_url === 'string' ? row.apply_url : '';
+        const detail = token ? workdayDetailUrl(token, applyUrl) : null;
+        if (!detail) continue;
+        stale.push({ id: String(row.id), url: detail });
       }
       if (page.length < 1000) break;
       after = String(page[page.length - 1].id);
@@ -218,17 +232,8 @@ async function recheckMissedWorkday(): Promise<void> {
       cursor += 1;
       const item = stale[current];
       if (!item) return;
-      const coords = parseWorkdayToken(item.token);
-      if (!coords) {
-        unread += 1;
-        continue;
-      }
-      const url =
-        `https://${coords.host}/wday/cxs/` +
-        `${encodeURIComponent(coords.tenant)}/` +
-        `${encodeURIComponent(coords.site)}${item.external}`;
       try {
-        const response = await fetch(url, {
+        const response = await fetch(item.url, {
           headers: { Accept: 'application/json' },
           signal: AbortSignal.timeout(15000),
         });
