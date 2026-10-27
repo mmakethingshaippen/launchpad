@@ -18,6 +18,7 @@ import { createServiceClient, loadSyncableCompanies, SupabaseSink } from '../src
 import { syncAll } from '../src/lib/ats/sync';
 import { aggregatorRunSucceeded, ingestAggregators } from '../src/lib/ats/aggregators/ingest';
 import { planEmployerConfirmation, type ConfirmableRole } from '../src/lib/ats/employerConfirm';
+import { parseWorkdayToken } from '../src/lib/ats/providers/workday';
 
 const args = process.argv.slice(2);
 const atsOnly = args.includes('--ats-only');
@@ -157,12 +158,120 @@ async function runEmployerConfirmation(): Promise<boolean> {
   return true;
 }
 
+/** Roles the list download did not touch are checked on their own Workday page. */
+async function recheckMissedWorkday(): Promise<void> {
+  const cutoff = new Date(Date.now() - 45 * 60 * 1000).toISOString();
+  const { data: companies, error } = await db.from('companies')
+    .select('id,ats_board_token')
+    .eq('ats_provider', 'workday')
+    .not('ats_board_token', 'is', null);
+  if (error) {
+    log(`ERROR workday recheck: ${error.message}`);
+    return;
+  }
+  const tokens = new Map<string, string>();
+  for (const company of companies ?? []) {
+    if (typeof company.ats_board_token === 'string') tokens.set(String(company.id), company.ats_board_token);
+  }
+  const companyIds = [...tokens.keys()];
+  if (!companyIds.length) return;
+
+  const stale: Array<{ id: string; external: string; token: string }> = [];
+  for (let index = 0; index < companyIds.length; index += 40) {
+    const ids = companyIds.slice(index, index + 40);
+    let after = '';
+    for (;;) {
+      let query = db.from('roles')
+        .select('id,company_id,external_job_id')
+        .eq('listing_status', 'Active')
+        .lt('last_verified_at', cutoff)
+        .in('company_id', ids)
+        .order('id', { ascending: true })
+        .limit(1000);
+      if (after) query = query.gt('id', after);
+      const { data, error: roleError } = await query;
+      if (roleError) {
+        log(`ERROR workday recheck: ${roleError.message}`);
+        return;
+      }
+      const page = data ?? [];
+      for (const row of page) {
+        const token = tokens.get(String(row.company_id));
+        const external = row.external_job_id;
+        if (!token || typeof external !== 'string' || !external.startsWith('/job/')) continue;
+        stale.push({ id: String(row.id), external, token });
+      }
+      if (page.length < 1000) break;
+      after = String(page[page.length - 1].id);
+    }
+  }
+
+  log(`Workday roles the list did not refresh: ${stale.length}`);
+  let cursor = 0;
+  let confirmed = 0;
+  let closed = 0;
+  let unread = 0;
+
+  const workers = Array.from({ length: 8 }, async () => {
+    for (;;) {
+      const current = cursor;
+      cursor += 1;
+      const item = stale[current];
+      if (!item) return;
+      const coords = parseWorkdayToken(item.token);
+      if (!coords) {
+        unread += 1;
+        continue;
+      }
+      const url =
+        `https://${coords.host}/wday/cxs/` +
+        `${encodeURIComponent(coords.tenant)}/` +
+        `${encodeURIComponent(coords.site)}${item.external}`;
+      try {
+        const response = await fetch(url, {
+          headers: { Accept: 'application/json' },
+          signal: AbortSignal.timeout(15000),
+        });
+        if (response.status === 404 || response.status === 410) {
+          closed += 1;
+          const { error: closeError } = await db.from('roles')
+            .update({ listing_status: 'Closed' })
+            .eq('id', item.id)
+            .eq('listing_status', 'Active');
+          if (closeError) log(`ERROR workday close ${item.id}: ${closeError.message}`);
+          continue;
+        }
+        if (!response.ok) {
+          unread += 1;
+          continue;
+        }
+        const body = await response.json() as { jobPostingInfo?: unknown };
+        if (!body.jobPostingInfo) {
+          unread += 1;
+          continue;
+        }
+        confirmed += 1;
+        const { error: stampError } = await db.from('roles')
+          .update({ last_verified_at: new Date().toISOString() })
+          .eq('id', item.id)
+          .eq('listing_status', 'Active');
+        if (stampError) log(`ERROR workday stamp ${item.id}: ${stampError.message}`);
+      } catch {
+        unread += 1;
+      }
+    }
+  });
+  await Promise.all(workers);
+  log(`Workday page check: refreshed ${confirmed}; closed ${closed}; still unread ${unread}`);
+}
+
 async function main(): Promise<void> {
   const started = Date.now();
   let success = true;
 
   if (!aggregatorsOnly) {
     success = (await runAts()) && success;
+    await recheckMissedWorkday();
   }
 
   if (!atsOnly) {

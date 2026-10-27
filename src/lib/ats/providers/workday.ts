@@ -208,18 +208,32 @@ export function createWorkdayClient(
 
         const count = data.jobPostings!.length;
         const covered = offset + count;
-        if ((total != null && covered >= total) || count === 0 || (total == null && count < PAGE_SIZE)) {
+        if (total != null && covered >= total) {
+          reachedEnd = true;
+          break;
+        }
+        if (count === 0 || (total == null && count < PAGE_SIZE)) {
+          if (total != null && covered < total) {
+            missed.add(offset);
+            console.log(`Workday ${tenant}: offset ${offset} came back empty; reading the following pages anyway`);
+            continue;
+          }
           reachedEnd = true;
           break;
         }
       }
 
-      for (const offset of [...missed]) {
-        if (signal?.aborted) break;
-        const data = await loadPage(offset);
-        if (!data.data) continue;
-        missed.delete(offset);
-        ingest(data.data);
+      for (let round = 0; round < 4 && missed.size > 0 && !signal?.aborted; round++) {
+        if (round > 0 && !process.env.VITEST) {
+          await new Promise((resolve) => setTimeout(resolve, 2000));
+        }
+        for (const offset of [...missed]) {
+          if (signal?.aborted) break;
+          const data = await loadPage(offset);
+          if (!data.data || data.data.jobPostings?.length === 0) continue;
+          missed.delete(offset);
+          ingest(data.data);
+        }
       }
 
       if (signal?.aborted) {
