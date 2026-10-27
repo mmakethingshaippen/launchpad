@@ -122,7 +122,7 @@ describe('Workday provider', () => {
     };
     const client = createWorkdayClient(fetchImpl);
     const raw = await client.fetchPostings('cvshealth.wd1.myworkdayjobs.com|cvshealth|CVS_Health_Careers');
-    expect(client.isCompleteSnapshot?.()).toBe(true);
+    expect(client.isCompleteSnapshot?.()).toBe(false);
     expect(raw.map((posting) => posting.title)).toEqual(['Pharmacy Intern']);
     expect(client.toNormalized(raw[0])).toMatchObject({ city: 'Sterling Heights', state: 'MI' });
   });

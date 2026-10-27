@@ -229,6 +229,10 @@ export function createWorkdayClient(
         }
       }
 
+      // A filtered internship download refreshes those roles. It is not the
+      // whole board, so roles that were not in the filter stay up.
+      if (narrowed) completeSnapshot = false;
+
       return collected;
     },
 
