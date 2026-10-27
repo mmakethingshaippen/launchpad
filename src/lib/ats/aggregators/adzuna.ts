@@ -1,4 +1,5 @@
 import type { FetchLike } from '../types';
+import { fetchRetrying, TRANSIENT_HTTP } from '../fetchRetry';
 import type { AggregatedPosting, AggregatorClient } from './types';
 import { isEarlyCareerTitle } from '../classify';
 
@@ -93,6 +94,7 @@ export function createAdzunaClient(
       for (const pass of EMPLOYER_PASSES) {
         const label = pass.company ?? 'broad';
         let previousFirstId: string | undefined;
+        let skippedPages = 0;
         for (let page = 1; page <= MAX_PAGES; page++) {
           // `what` requires the intern keyword; `what_phrase` pins the employer name.
           const params = new URLSearchParams({
@@ -107,24 +109,32 @@ export function createAdzunaClient(
           const url = `https://api.adzuna.com/v1/api/jobs/us/search/${page}?${params.toString()}`;
           let res;
           try {
-            res = await fetchImpl(url, { signal });
+            res = await fetchRetrying(fetchImpl, url, { signal }, `Adzuna ${label} page ${page}`);
           } catch {
-            console.error(`Adzuna: stopped early on ${label} page ${page} after a network error`);
             stoppedEarly = true;
-            break;
+            skippedPages += 1;
+            if (skippedPages >= 3) break;
+            continue;
           }
           if (!res.ok) {
-            console.error(`Adzuna: stopped early on ${label} page ${page}: HTTP ${res.status}`);
             stoppedEarly = true;
-            break;
+            if (!TRANSIENT_HTTP.has(res.status) || skippedPages >= 2) {
+              console.error(`Adzuna: stopped on ${label} page ${page}: HTTP ${res.status}`);
+              break;
+            }
+            skippedPages += 1;
+            console.error(`Adzuna: HTTP ${res.status} on ${label} page ${page}; skipping that page`);
+            continue;
           }
+          skippedPages = 0;
           let data: AdzunaResponse;
           try {
             data = (await res.json()) as AdzunaResponse;
           } catch {
-            console.error(`Adzuna: stopped early on ${label} page ${page}: response was not JSON`);
             stoppedEarly = true;
-            break;
+            skippedPages += 1;
+            if (skippedPages >= 3) break;
+            continue;
           }
 
           const results = data.results ?? [];

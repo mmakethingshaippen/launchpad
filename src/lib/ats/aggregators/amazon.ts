@@ -1,4 +1,5 @@
 import type { FetchLike } from '../types';
+import { fetchRetrying, TRANSIENT_HTTP } from '../fetchRetry';
 import type { AggregatedPosting, AggregatorClient } from './types';
 import { isEarlyCareerTitle } from '../classify';
 
@@ -54,6 +55,7 @@ export function createAmazonClient(fetchImpl: FetchLike = fetch): AggregatorClie
     async fetchEarlyCareer(signal) {
       feedComplete = false;
       let stoppedEarly = false;
+      let skippedPages = 0;
       const out: AggregatedPosting[] = [];
       const seen = new Set<string>();
       let previousFirstId: string | undefined;
@@ -65,25 +67,38 @@ export function createAmazonClient(fetchImpl: FetchLike = fetch): AggregatorClie
           `&result_limit=${RESULT_LIMIT}&offset=${offset}`;
         let res;
         try {
-          res = await fetchImpl(url, { signal, headers: { 'User-Agent': 'launchpad-jobs' } });
+          res = await fetchRetrying(
+            fetchImpl,
+            url,
+            { signal, headers: { 'User-Agent': 'launchpad-jobs' } },
+            `Amazon offset ${offset}`,
+          );
         } catch {
-          console.error(`Amazon: stopped early at offset ${offset} after a network error`);
           stoppedEarly = true;
-          break;
+          skippedPages += 1;
+          if (skippedPages >= 3) break;
+          continue;
         }
         if (!res.ok) {
-          console.error(`Amazon: stopped early at offset ${offset}: HTTP ${res.status}`);
           stoppedEarly = true;
-          break;
+          if (!TRANSIENT_HTTP.has(res.status) || skippedPages >= 2) {
+            console.error(`Amazon: stopped at offset ${offset}: HTTP ${res.status}`);
+            break;
+          }
+          skippedPages += 1;
+          console.error(`Amazon: HTTP ${res.status} at offset ${offset}; skipping that page`);
+          continue;
         }
+        skippedPages = 0;
 
         let data: AmazonResponse;
         try {
           data = (await res.json()) as AmazonResponse;
         } catch {
-          console.error(`Amazon: stopped early at offset ${offset}: response was not JSON`);
           stoppedEarly = true;
-          break;
+          skippedPages += 1;
+          if (skippedPages >= 3) break;
+          continue;
         }
         const jobs = data.jobs ?? [];
         if (jobs.length === 0) break;

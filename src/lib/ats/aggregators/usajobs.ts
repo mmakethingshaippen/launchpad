@@ -1,4 +1,5 @@
 import type { FetchLike } from '../types';
+import { fetchRetrying, TRANSIENT_HTTP } from '../fetchRetry';
 import type { AggregatedPosting, AggregatorClient } from './types';
 
 /**
@@ -84,6 +85,7 @@ export function createUsaJobsClient(
       const out: AggregatedPosting[] = [];
       const seen = new Set<string>();
       let stoppedEarly = false;
+      let skippedPages = 0;
       let previousFirstId: string | undefined;
       const headers = {
         'Authorization-Key': apiKey!,
@@ -95,13 +97,19 @@ export function createUsaJobsClient(
         const url =
           `https://data.usajobs.gov/api/Search?HiringPath=student` +
           `&ResultsPerPage=${PAGE_SIZE}&Page=${page}`;
-        const res = await fetchImpl(url, { signal, headers });
+        const res = await fetchRetrying(fetchImpl, url, { signal, headers }, `USAJOBS page ${page}`);
         if (!res.ok) {
-          if (page === 1) throw new Error(`USAJOBS: HTTP ${res.status}`);
-          console.error(`USAJOBS: stopped early on page ${page}: HTTP ${res.status}`);
+          if (page === 1 && out.length === 0) throw new Error(`USAJOBS: HTTP ${res.status}`);
           stoppedEarly = true;
-          break;
+          if (!TRANSIENT_HTTP.has(res.status) || skippedPages >= 2) {
+            console.error(`USAJOBS: stopped on page ${page}: HTTP ${res.status}`);
+            break;
+          }
+          skippedPages += 1;
+          console.error(`USAJOBS: HTTP ${res.status} on page ${page}; skipping that page`);
+          continue;
         }
+        skippedPages = 0;
         const data = (await res.json()) as UsaJobsResponse;
         const items = data.SearchResult?.SearchResultItems ?? [];
         if (items.length === 0) break;

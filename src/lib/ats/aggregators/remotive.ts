@@ -1,4 +1,5 @@
 import type { FetchLike } from '../types';
+import { fetchRetrying } from '../fetchRetry';
 import type { AggregatedPosting, AggregatorClient } from './types';
 import { isEarlyCareerTitle } from '../classify';
 
@@ -28,7 +29,7 @@ export function createRemotiveClient(fetchImpl: FetchLike = fetch): AggregatorCl
     async fetchEarlyCareer(signal) {
       feedComplete = false;
       const url = 'https://remotive.com/api/remote-jobs';
-      const res = await fetchImpl(url, { signal });
+      const res = await fetchRetrying(fetchImpl, url, { signal }, 'Remotive');
       if (!res.ok) throw new Error(`Remotive: HTTP ${res.status}`);
       const data = (await res.json()) as RemotiveResponse;
 

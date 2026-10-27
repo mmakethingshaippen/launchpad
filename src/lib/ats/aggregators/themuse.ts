@@ -1,4 +1,5 @@
 import type { FetchLike } from '../types';
+import { fetchRetrying, TRANSIENT_HTTP } from '../fetchRetry';
 import type { AggregatedPosting, AggregatorClient } from './types';
 import { isEarlyCareerTitle } from '../classify';
 import { splitLocation } from '../util';
@@ -42,28 +43,37 @@ export function createTheMuseClient(fetchImpl: FetchLike = fetch): AggregatorCli
       const seen = new Set<string>(); // dedup across level/page queries
       for (const level of LEVELS) {
         let previousFirstId: number | undefined;
+        let skippedPages = 0;
         for (let page = 1; page <= MAX_PAGES_PER_LEVEL; page++) {
           const url = `https://www.themuse.com/api/public/jobs?level=${encodeURIComponent(level)}&page=${page}`;
           let res;
           try {
-            res = await fetchImpl(url, { signal });
+            res = await fetchRetrying(fetchImpl, url, { signal }, `The Muse ${level} page ${page}`);
           } catch {
-            console.error(`The Muse: stopped early on ${level} page ${page} after a network error`);
             stoppedEarly = true;
-            break;
+            skippedPages += 1;
+            if (skippedPages >= 3) break;
+            continue;
           }
           if (!res.ok) {
-            console.error(`The Muse: stopped early on ${level} page ${page}: HTTP ${res.status}`);
             stoppedEarly = true;
-            break;
+            if (!TRANSIENT_HTTP.has(res.status) || skippedPages >= 2) {
+              console.error(`The Muse: stopped on ${level} page ${page}: HTTP ${res.status}`);
+              break;
+            }
+            skippedPages += 1;
+            console.error(`The Muse: HTTP ${res.status} on ${level} page ${page}; skipping that page`);
+            continue;
           }
+          skippedPages = 0;
           let data: MuseResponse;
           try {
             data = (await res.json()) as MuseResponse;
           } catch {
-            console.error(`The Muse: stopped early on ${level} page ${page}: response was not JSON`);
             stoppedEarly = true;
-            break;
+            skippedPages += 1;
+            if (skippedPages >= 3) break;
+            continue;
           }
           const results = data.results ?? [];
           if (results.length === 0) break;
