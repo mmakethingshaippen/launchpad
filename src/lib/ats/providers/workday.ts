@@ -1,3 +1,4 @@
+
 import type { ProviderClient, FetchLike } from '../types';
 import { splitLocation } from '../util';
 
@@ -9,9 +10,21 @@ interface WorkdayPosting {
   bulletFields?: string[];
 }
 
+interface WorkdayFacetValue {
+  descriptor?: string;
+  id?: string;
+  count?: number;
+}
+
+interface WorkdayFacet {
+  facetParameter?: string;
+  values?: WorkdayFacetValue[];
+}
+
 interface WorkdayResponse {
   total?: number;
   jobPostings?: WorkdayPosting[];
+  facets?: WorkdayFacet[];
 }
 
 export interface WorkdayCoords {
@@ -49,6 +62,32 @@ export function parseWorkdayToken(
 
 const PAGE_SIZE = 20;
 const MAX_PAGES = 250;
+const BOARD_CAP = PAGE_SIZE * MAX_PAGES;
+
+/** A board bigger than the page cap cannot be finished. An internship category that fits can. */
+function selectInternshipFacet(
+  facets: WorkdayFacet[] | undefined,
+): { parameter: string; id: string; label: string; count: number } | null {
+  const matches: Array<{ parameter: string; id: string; label: string; count: number; rank: number }> = [];
+  for (const facet of facets ?? []) {
+    if (!facet.facetParameter) continue;
+    for (const value of facet.values ?? []) {
+      const label = value.descriptor?.trim() ?? '';
+      if (!value.id || !label || typeof value.count !== 'number') continue;
+      if (value.count < 1 || value.count > BOARD_CAP) continue;
+      if (!/intern|early career|university|campus|new grad|student/i.test(label)) continue;
+      matches.push({
+        parameter: facet.facetParameter,
+        id: value.id,
+        label,
+        count: value.count,
+        rank: /internship/i.test(label) ? 2 : 1,
+      });
+    }
+  }
+  matches.sort((a, b) => b.rank - a.rank || b.count - a.count);
+  return matches[0] ?? null;
+}
 
 export function createWorkdayClient(
   fetchImpl: FetchLike = fetch,
@@ -80,6 +119,8 @@ export function createWorkdayClient(
 
       const collected: WorkdayItem[] = [];
       const seen = new Set<string>();
+      let appliedFacets: Record<string, string[]> = {};
+      let narrowed = false;
 
       for (
         let page = 0;
@@ -96,7 +137,7 @@ export function createWorkdayClient(
             Accept: 'application/json',
           },
           body: JSON.stringify({
-            appliedFacets: {},
+            appliedFacets,
             limit: PAGE_SIZE,
             offset,
             searchText: '',
@@ -117,6 +158,25 @@ export function createWorkdayClient(
           throw new Error(
             `Workday ${tenant}: invalid jobs response`,
           );
+        }
+
+        if (
+          page === 0 &&
+          !narrowed &&
+          typeof data.total === 'number' &&
+          data.total > BOARD_CAP
+        ) {
+          const pick = selectInternshipFacet(data.facets);
+          if (pick) {
+            console.log(
+              `Workday ${tenant}: ${data.total} jobs on the board; ` +
+              `downloading ${pick.label} (${pick.count}) so the internship list can finish`,
+            );
+            appliedFacets = { [pick.parameter]: [pick.id] };
+            narrowed = true;
+            page = -1;
+            continue;
+          }
         }
 
         let newItems = 0;

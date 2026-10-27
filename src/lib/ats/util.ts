@@ -23,7 +23,11 @@ export function splitLocation(raw: string | null | undefined): {
     .map((s) => s.trim())
     .filter(Boolean);
   if (parts.length === 0) return {};
-  if (parts.length === 1) return { city: parts[0] };
+  if (parts.length === 1) {
+    const reversed = parts[0].match(/^([A-Za-z]{2})\s*[-–]\s*(.+)$/);
+    if (reversed) return { city: reversed[2].trim(), state: reversed[1].toUpperCase() };
+    return { city: parts[0] };
+  }
   if (parts.length === 2) return { city: parts[0], state: parts[1] };
   return { city: parts[0], state: parts[1], country: parts.slice(2).join(', ') };
 }

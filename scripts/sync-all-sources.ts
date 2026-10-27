@@ -157,6 +157,41 @@ async function runEmployerConfirmation(): Promise<boolean> {
   return true;
 }
 
+const STALE_AFTER_MS = 2 * 24 * 60 * 60 * 1000;
+
+/** Drop imported listings the daily run has not confirmed in two days. */
+async function closeUnverifiedRoles(): Promise<void> {
+  const cutoff = new Date(Date.now() - STALE_AFTER_MS).toISOString();
+  let closed = 0;
+
+  for (;;) {
+    const { data, error } = await db.from('roles')
+      .select('id')
+      .eq('listing_status', 'Active')
+      .in('source', ['ats', 'aggregator'])
+      .lt('last_verified_at', cutoff)
+      .limit(500);
+    if (error) {
+      log(`ERROR stale close: ${error.message}`);
+      return;
+    }
+    const ids = (data ?? []).map((row) => String(row.id));
+    if (!ids.length) break;
+    const { error: updateError } = await db.from('roles')
+      .update({ listing_status: 'Closed' })
+      .in('id', ids)
+      .eq('listing_status', 'Active');
+    if (updateError) {
+      log(`ERROR stale close: ${updateError.message}`);
+      return;
+    }
+    closed += ids.length;
+    if (ids.length < 500) break;
+  }
+
+  log(`Closed ${closed} listings not verified since ${cutoff}.`);
+}
+
 async function main(): Promise<void> {
   const started = Date.now();
   let success = true;
@@ -170,6 +205,7 @@ async function main(): Promise<void> {
   }
 
   success = (await runEmployerConfirmation()) && success;
+  await closeUnverifiedRoles();
 
   log(`Synchronization finished in ${((Date.now() - started) / 1000).toFixed(1)}s`);
 
