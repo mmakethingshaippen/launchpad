@@ -65,7 +65,7 @@ export function Pagination({ page, pageSize, total, noun, onPageChange }: Pagina
 
   return (
     <nav
-      className="sticky top-20 z-20 mb-4 flex flex-col gap-2 rounded-xl border border-slate-200 bg-white/95 p-3 shadow-md backdrop-blur"
+      className="relative z-10 mb-4 flex flex-col gap-2 rounded-xl border border-slate-200 bg-white p-3 shadow-sm"
       aria-label="Pagination"
     >
       <div className="flex flex-wrap items-center justify-between gap-3">

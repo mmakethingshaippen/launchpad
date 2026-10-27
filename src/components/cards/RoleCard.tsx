@@ -122,20 +122,22 @@ export function RoleCard({
       </div>
 
       <dl className="mt-3 space-y-1 text-sm text-slate-600">
-        <div className="flex items-center gap-1.5">
-          <MapPin className="h-4 w-4 text-slate-400 flex-shrink-0" aria-hidden="true" />
-          <span className="truncate">{locationLabel(role)}</span>
-        </div>
+        {locationLabel(role) !== 'Location N/A' && (
+          <div className="flex items-center gap-1.5">
+            <MapPin className="h-4 w-4 text-slate-400 flex-shrink-0" aria-hidden="true" />
+            <span className="truncate">{locationLabel(role)}</span>
+          </div>
+        )}
         <div className="flex flex-wrap items-center gap-x-1.5">
           {pay && <span className="font-medium text-slate-900">{pay}</span>}
         </div>
       </dl>
 
-      <div className="mt-auto flex items-center justify-between pt-4">
-        <span className={'text-xs ' + (stale ? 'text-amber-700' : 'text-slate-400')}>
+      <div className="mt-auto flex flex-col gap-3 pt-4">
+        <span className={'whitespace-nowrap text-xs ' + (stale ? 'text-amber-700' : 'text-slate-400')}>
           {checked}
         </span>
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
           {hasTrackingAction &&
             (tracked ? (
               <button

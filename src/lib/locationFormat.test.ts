@@ -87,6 +87,10 @@ describe('formatLocation', () => {
   it('cleans trailing punctuation and returns Location N/A when empty', () => {
     expect(formatLocation({ city: 'Austin,', state: 'TX;' })).toBe('Austin, TX');
     expect(formatLocation({})).toBe('Location N/A');
+    expect(formatLocation({ city: '06988 - North Carolina CVS Pharmacy, L.L.C.' })).toBe('NC');
+    expect(formatLocation({ city: '06139 - Ohio CVS Stores, L.L.C.' })).toBe('OH');
+    expect(formatLocation({ city: '01744 - German Dobson CVS, L.L.C.' })).toBe('Location N/A');
+    expect(formatLocation({ city: 'Lyman', state: 'SC' })).toBe('Lyman, SC');
   });
 });
 

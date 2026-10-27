@@ -161,6 +161,19 @@ export function formatLocation(loc: LocationInput): string {
   state = state.replace(/[;,]+$/, '').trim();
   country = country.replace(/[;,]+$/, '').trim();
 
+  const storeNumber = city.match(/^\d{3,}\s*-\s*(.+)$/);
+  if (storeNumber) city = storeNumber[1].trim();
+  if (/\bCVS\b/i.test(city) || /\bL\.?\s*L\.?\s*C\.?\b/i.test(city)) {
+    const lead = city.match(/^([A-Za-z][A-Za-z .]*?)\s+CVS\b/i);
+    const named = lead?.[1].trim().toLowerCase() ?? '';
+    if (named && US_STATE_NAMES[named]) {
+      if (!state) state = US_STATE_NAMES[named];
+      city = '';
+    } else {
+      city = '';
+    }
+  }
+
   // Normalize composite state strings from ATS like "CA USA", "CA, USA", "California USA"
   const stateUsaMatch = state.match(/^([A-Za-z\s]+?)[,;\s]+(?:USA|US|United States)$/i);
   if (stateUsaMatch) {
