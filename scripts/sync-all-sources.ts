@@ -18,6 +18,7 @@ import { createServiceClient, loadSyncableCompanies, SupabaseSink } from '../src
 import { syncAll } from '../src/lib/ats/sync';
 import { aggregatorRunSucceeded, ingestAggregators } from '../src/lib/ats/aggregators/ingest';
 import { planEmployerConfirmation, type ConfirmableRole } from '../src/lib/ats/employerConfirm';
+import { sweepStaleAggregatorRoles } from '../src/lib/ats/aggregators/staleSweep';
 import { parseWorkdayToken } from '../src/lib/ats/providers/workday';
 
 const args = process.argv.slice(2);
@@ -85,7 +86,10 @@ async function runAggregators(): Promise<boolean> {
   for (const result of results) {
     log(
       `${result.source}: fetched ${result.fetched}; processed ${result.processed}; ` +
-      `new ${result.rolesUpserted}; refreshed ${result.refreshed}; ` +
+      `new ${result.rolesUpserted}; refreshed ${result.refreshed}; closed ${result.closed}; ` +
+      `feedComplete ${result.feedComplete}` +
+      `${result.feedPages === null ? "" : `; pages read ${result.feedPages}`}; ` +
+      `stop reason: ${result.feedStopReason}; ` +
       `duplicates ${result.duplicatesSkipped}; invalid ${result.skippedInvalid}; ` +
       `expired ${result.skippedExpired}; companies ${result.companiesUpserted}; ` +
       `errors ${result.errors.length}; ${(result.durationMs / 1000).toFixed(1)}s`,
@@ -104,7 +108,7 @@ async function runAggregators(): Promise<boolean> {
   log(
     `Aggregator totals: new ${inserted}; refreshed ${refreshed}; ` +
     `sources with errors ${results.filter((result) => result.errors.length).length}. ` +
-    'Unobserved jobs were not closed or re-stamped.',
+    'Unobserved jobs were not closed or re-stamped here; the stale sweep handles them next.',
   );
 
   return aggregatorRunSucceeded(results);
@@ -284,6 +288,15 @@ async function main(): Promise<void> {
   }
 
   success = (await runEmployerConfirmation()) && success;
+
+  if (!atsOnly) {
+    try {
+      await sweepStaleAggregatorRoles(db, { log });
+    } catch (error) {
+      log(`ERROR stale aggregator sweep: ${errorMessage(error)}`);
+      success = false;
+    }
+  }
 
   log(`Synchronization finished in ${((Date.now() - started) / 1000).toFixed(1)}s`);
 

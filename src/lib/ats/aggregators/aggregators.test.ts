@@ -74,3 +74,36 @@ describe('Remotive aggregator', () => {
     expect(out.every((o) => o.workArrangement === 'Remote')).toBe(true);
   });
 });
+
+describe('The Muse feed completeness', () => {
+  const job = (id: number) => ({
+    id,
+    name: 'Data Analyst Intern',
+    refs: { landing_page: `https://example.com/jobs/${id}` },
+    company: { name: 'Acme Data' },
+    categories: [{ name: 'Data and Analytics' }],
+    levels: [{ name: 'Internship' }],
+  });
+
+  it('reports a complete feed and why paging stopped', async () => {
+    const client = createTheMuseClient(singleResponse({ results: [job(1)], page_count: 1 }));
+    await client.fetchEarlyCareer();
+    expect(client.feedWasComplete?.()).toBe(true);
+    expect(client.feedReport?.()).toMatchObject({ complete: true, pagesRead: 2 });
+    expect(client.feedReport?.().stopReason).toContain('last page');
+  });
+
+  it('reports an incomplete feed when a page keeps failing', async () => {
+    let calls = 0;
+    const fetchImpl: FetchLike = async () => {
+      calls += 1;
+      if (calls === 1) return { ok: true, status: 200, json: async () => ({ results: [job(1)], page_count: 5 }) };
+      return { ok: false, status: 500, json: async () => ({}) };
+    };
+    const client = createTheMuseClient(fetchImpl);
+    await client.fetchEarlyCareer();
+    expect(client.feedWasComplete?.()).toBe(false);
+    expect(client.feedReport?.().complete).toBe(false);
+    expect(client.feedReport?.().stopReason).toMatch(/HTTP 500/);
+  });
+});

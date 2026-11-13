@@ -436,3 +436,34 @@ describe('aggregator ingestion', () => {
     expect(fake.state.roles[0].listing_status).toBe('Active');
   });
 });
+
+
+describe('The Muse feed that stops early', () => {
+  it('does not close missing listings and reports why in the result', async () => {
+    const fake = createDb({
+      companies: [{ id: 'co-tiktok', slug: 'tiktok' }],
+      roles: [{
+        id: 'role-tiktok', company_id: 'co-tiktok', external_job_id: 'muse-22251632',
+        apply_url: 'https://www.themuse.com/jobs/tiktok/hr-intern', source: 'aggregator', listing_status: 'Active',
+      }],
+    });
+    let calls = 0;
+    const fetchImpl = (async () => {
+      calls += 1;
+      if (calls === 1) {
+        return new Response(JSON.stringify({ results: [], page_count: 3 }), { status: 200 });
+      }
+      return new Response('error', { status: 500 });
+    }) as unknown as typeof fetch;
+    const { createTheMuseClient } = await import('./themuse');
+    // Page 1 returns nothing for Internship (treated as end); Entry Level then fails with HTTP 500.
+    const results = await ingestAggregators(fake.db, {
+      now: NOW,
+      clients: [createTheMuseClient(fetchImpl as never)],
+    });
+    expect(results[0].feedComplete).toBe(false);
+    expect(results[0].feedStopReason).toMatch(/HTTP 500/);
+    expect(results[0].closed).toBe(0);
+    expect(fake.state.roles[0].listing_status).toBe('Active');
+  });
+});

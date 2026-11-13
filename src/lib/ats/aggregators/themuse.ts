@@ -1,6 +1,6 @@
 import type { FetchLike } from '../types';
 import { fetchRetrying, TRANSIENT_HTTP } from '../fetchRetry';
-import type { AggregatedPosting, AggregatorClient } from './types';
+import type { AggregatedPosting, AggregatorClient, FeedReport } from './types';
 import { isEarlyCareerTitle } from '../classify';
 import { splitLocation } from '../util';
 
@@ -33,12 +33,20 @@ const MAX_PAGES_PER_LEVEL = 100;
 
 export function createTheMuseClient(fetchImpl: FetchLike = fetch): AggregatorClient {
   let feedComplete = false;
+  let report: FeedReport = { complete: false, pagesRead: 0, stopReason: 'not fetched yet' };
   return {
     source: 'themuse',
     feedWasComplete: () => feedComplete,
+    feedReport: () => report,
     async fetchEarlyCareer(signal) {
       feedComplete = false;
       let stoppedEarly = false;
+      let pagesRead = 0;
+      const reasons: string[] = [];
+      const stop = (level: string, page: number, reason: string, incomplete: boolean) => {
+        reasons.push(`${level}: ${reason} at page ${page}`);
+        if (incomplete) stoppedEarly = true;
+      };
       const out: AggregatedPosting[] = [];
       const seen = new Set<string>(); // dedup across level/page queries
       for (const level of LEVELS) {
@@ -52,16 +60,22 @@ export function createTheMuseClient(fetchImpl: FetchLike = fetch): AggregatorCli
           } catch {
             stoppedEarly = true;
             skippedPages += 1;
-            if (skippedPages >= 3) break;
+            if (skippedPages >= 3) {
+              stop(level, page, 'stopped after 3 skipped pages (network errors)', true);
+              break;
+            }
+            reasons.push(`${level}: network error skipped page ${page}`);
             continue;
           }
           if (!res.ok) {
             stoppedEarly = true;
             if (!TRANSIENT_HTTP.has(res.status) || skippedPages >= 2) {
+              stop(level, page, `stopped on HTTP ${res.status}`, true);
               console.error(`The Muse: stopped on ${level} page ${page}: HTTP ${res.status}`);
               break;
             }
             skippedPages += 1;
+            reasons.push(`${level}: HTTP ${res.status} skipped page ${page}`);
             console.error(`The Muse: HTTP ${res.status} on ${level} page ${page}; skipping that page`);
             continue;
           }
@@ -72,13 +86,24 @@ export function createTheMuseClient(fetchImpl: FetchLike = fetch): AggregatorCli
           } catch {
             stoppedEarly = true;
             skippedPages += 1;
-            if (skippedPages >= 3) break;
+            if (skippedPages >= 3) {
+              stop(level, page, 'stopped after 3 skipped pages (unreadable JSON)', true);
+              break;
+            }
+            reasons.push(`${level}: unreadable JSON skipped page ${page}`);
             continue;
           }
+          pagesRead += 1;
           const results = data.results ?? [];
-          if (results.length === 0) break;
+          if (results.length === 0) {
+            stop(level, page, 'empty results page', false);
+            break;
+          }
           const firstId = results[0]?.id;
-          if (firstId !== undefined && firstId === previousFirstId) break;
+          if (firstId !== undefined && firstId === previousFirstId) {
+            stop(level, page, 'repeated first id (treated as end of feed)', false);
+            break;
+          }
           previousFirstId = firstId;
 
           for (const j of results) {
@@ -116,14 +141,23 @@ export function createTheMuseClient(fetchImpl: FetchLike = fetch): AggregatorCli
             });
           }
           const pageCount = data.page_count ?? 0;
-          if (pageCount <= page) break;
+          if (pageCount <= page) {
+            stop(level, page, `last page (page_count ${pageCount})`, false);
+            break;
+          }
           if (page === MAX_PAGES_PER_LEVEL) {
+            stop(level, page, 'safety cap reached; more results may remain', true);
             console.error(`The Muse: safety stop on ${level} at ${MAX_PAGES_PER_LEVEL} pages; more results may remain`);
             stoppedEarly = true;
           }
         }
       }
       feedComplete = !stoppedEarly;
+      report = {
+        complete: feedComplete,
+        pagesRead,
+        stopReason: reasons.join('; ') || 'no pages read',
+      };
       return out;
     },
   };

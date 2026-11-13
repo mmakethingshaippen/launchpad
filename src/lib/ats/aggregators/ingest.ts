@@ -29,6 +29,12 @@ export interface AggregatorResult {
   skippedExpired: number;
   /** Active rows from this source removed because a complete feed no longer lists them. */
   closed: number;
+  /** True only when the feed was fully read, so missing listings could be closed. */
+  feedComplete: boolean;
+  /** Pages read, when the source reports paging. */
+  feedPages: number | null;
+  /** Why the feed ended or why it counts as incomplete. */
+  feedStopReason: string;
   errors: string[];
   durationMs: number;
 }
@@ -136,6 +142,9 @@ export async function ingestAggregators(
       skippedInvalid: 0,
       skippedExpired: 0,
       closed: 0,
+      feedComplete: false,
+      feedPages: null,
+      feedStopReason: 'feed not fetched',
       errors: [],
       durationMs: 0,
     };
@@ -151,6 +160,11 @@ export async function ingestAggregators(
       continue;
     }
     result.fetched = postings.length;
+    result.feedComplete = client.feedWasComplete?.() === true;
+    const report = client.feedReport?.();
+    result.feedPages = report?.pagesRead ?? null;
+    result.feedStopReason = report?.stopReason ??
+      (client.feedWasComplete ? (result.feedComplete ? 'feed fully read' : 'feed reported incomplete') : 'source does not report completeness');
     console.log(`[${stamp()}] ${client.source}: ${postings.length} postings fetched`);
 
     let pending: RoleRow[] = [];
@@ -304,7 +318,7 @@ export async function ingestAggregators(
     }
     await flushWrites();
     await flushRefresh();
-    if (result.errors.length === 0 && client.feedWasComplete?.()) {
+    if (result.errors.length === 0 && result.feedComplete) {
       const prefix = SOURCE_PREFIX[client.source];
       const live = new Set(postings.map((posting) => posting.externalJobId));
       const stale = prefix ? index.staleIds(prefix, live) : [];
@@ -328,7 +342,7 @@ export async function ingestAggregators(
     result.durationMs = Date.now() - sourceStarted;
     console.log(
       `[${stamp()}] ${client.source}: complete in ${(result.durationMs / 1000).toFixed(1)}s; ` +
-      `fetched ${result.fetched}; new ${result.rolesUpserted}; refreshed ${result.refreshed}; ` +
+      `feedComplete ${result.feedComplete} (${result.feedStopReason}); fetched ${result.fetched}; new ${result.rolesUpserted}; refreshed ${result.refreshed}; ` +
       `duplicates ${result.duplicatesSkipped}; invalid ${result.skippedInvalid}; ` +
       `expired ${result.skippedExpired}; closed ${result.closed}; companies ${result.companiesUpserted}; errors ${result.errors.length}`,
     );
