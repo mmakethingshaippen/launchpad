@@ -14081,7 +14081,11 @@ function splitLocation(raw) {
   if (!raw) return {};
   const parts = raw.split(",").map((s) => s.trim()).filter(Boolean);
   if (parts.length === 0) return {};
-  if (parts.length === 1) return { city: parts[0] };
+  if (parts.length === 1) {
+    const reversed = parts[0].match(/^([A-Za-z]{2})\s*[-–]\s*(.+)$/);
+    if (reversed) return { city: reversed[2].trim(), state: reversed[1].toUpperCase() };
+    return { city: parts[0] };
+  }
   if (parts.length === 2) return { city: parts[0], state: parts[1] };
   return { city: parts[0], state: parts[1], country: parts.slice(2).join(", ") };
 }
@@ -14128,6 +14132,32 @@ function selectCandidates(postings, now = /* @__PURE__ */ new Date()) {
   return postings.filter(isEarlyCareer).map(enrich).filter((p) => !roleConcluded(p.seasons, p.cohortYear, now)).filter((p) => !isDeadlinePassed(p.deadline, now)).filter((p) => !isExpiredTerm(p.title, now)).filter((p) => isValidHttpUrl(p.applyUrl));
 }
 
+// src/lib/ats/fetchRetry.ts
+var TRANSIENT_HTTP = /* @__PURE__ */ new Set([408, 429, 500, 502, 503, 504]);
+var DELAYS_MS = process.env.VITEST ? [10, 10, 10] : [1e3, 2e3, 4e3];
+function wait(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+async function fetchRetrying(fetchImpl, input, init, label) {
+  let last = null;
+  for (let attempt = 0; attempt <= DELAYS_MS.length; attempt++) {
+    if (init?.signal?.aborted) {
+      throw new DOMException("This operation was aborted", "AbortError");
+    }
+    try {
+      const res = await fetchImpl(input, init);
+      if (res.ok || !TRANSIENT_HTTP.has(res.status) || attempt === DELAYS_MS.length) return res;
+      last = res;
+      console.log(`${label}: HTTP ${res.status}; retrying`);
+    } catch (error) {
+      if (init?.signal?.aborted || attempt === DELAYS_MS.length) throw error;
+      console.log(`${label}: network error; retrying`);
+    }
+    await wait(DELAYS_MS[attempt]);
+  }
+  return last ?? { ok: false, status: 0, json: async () => ({}) };
+}
+
 // src/lib/ats/providers/greenhouse.ts
 function decodeEntities(html) {
   return html.replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&amp;/g, "&");
@@ -14139,7 +14169,7 @@ function createGreenhouseClient(fetchImpl = fetch) {
       const url = `https://boards-api.greenhouse.io/v1/boards/${encodeURIComponent(
         token
       )}/jobs?content=false`;
-      const res = await fetchImpl(url, { signal });
+      const res = await fetchRetrying(fetchImpl, url, { signal }, `Greenhouse ${token}`);
       if (!res.ok) throw new Error(`Greenhouse ${token}: HTTP ${res.status}`);
       const data = await res.json();
       if (!Array.isArray(data.jobs)) throw new Error(`Greenhouse ${token}: invalid jobs response`);
@@ -14183,7 +14213,7 @@ function createAshbyClient(fetchImpl = fetch) {
       const url = `https://api.ashbyhq.com/posting-api/job-board/${encodeURIComponent(
         token
       )}?includeCompensation=true`;
-      const res = await fetchImpl(url, { signal });
+      const res = await fetchRetrying(fetchImpl, url, { signal }, `Ashby ${token}`);
       if (!res.ok) throw new Error(`Ashby ${token}: HTTP ${res.status}`);
       const data = await res.json();
       if (!Array.isArray(data.jobs)) throw new Error(`Ashby ${token}: invalid jobs response`);
@@ -14221,7 +14251,7 @@ function createLeverClient(fetchImpl = fetch) {
     provider: "lever",
     async fetchPostings(token, signal) {
       const url = `https://api.lever.co/v0/postings/${encodeURIComponent(token)}?mode=json`;
-      const res = await fetchImpl(url, { signal });
+      const res = await fetchRetrying(fetchImpl, url, { signal }, `Lever ${token}`);
       if (!res.ok) throw new Error(`Lever ${token}: HTTP ${res.status}`);
       const data = await res.json();
       if (!Array.isArray(data)) throw new Error(`Lever ${token}: invalid postings response`);
@@ -14275,46 +14305,61 @@ function createSmartRecruitersClient(fetchImpl = fetch) {
       completeSnapshot = false;
       const collected = [];
       const seen = /* @__PURE__ */ new Set();
+      let total = null;
+      let reachedEnd = false;
+      const missed = /* @__PURE__ */ new Set();
+      const load = async (offset) => {
+        if (signal?.aborted) return { data: null, status: 0 };
+        try {
+          const url = `https://api.smartrecruiters.com/v1/companies/${encodeURIComponent(token)}/postings?limit=${PAGE_SIZE}&offset=${offset}`;
+          const res = await fetchRetrying(fetchImpl, url, { signal }, `SmartRecruiters ${token} offset ${offset}`);
+          if (!res.ok) return { data: null, status: res.status };
+          const data = await res.json();
+          if (!Array.isArray(data.content)) return { data: null, status: res.status };
+          return { data, status: res.status };
+        } catch (error) {
+          if (signal?.aborted) return { data: null, status: 0 };
+          throw error;
+        }
+      };
       for (let page = 0; page < MAX_PAGES; page++) {
+        if (signal?.aborted) break;
         const offset = page * PAGE_SIZE;
-        const url = `https://api.smartrecruiters.com/v1/companies/${encodeURIComponent(token)}/postings?limit=${PAGE_SIZE}&offset=${offset}`;
-        const res = await fetchImpl(url, { signal });
-        if (!res.ok) {
-          throw new Error(
-            `SmartRecruiters ${token}: HTTP ${res.status} at offset ${offset}`
-          );
+        const loaded = await load(offset);
+        const data = loaded.data;
+        if (!data) {
+          if (signal?.aborted) break;
+          if (page === 0 && collected.length === 0) {
+            throw new Error(`SmartRecruiters ${token}: HTTP ${loaded.status} at offset 0`);
+          }
+          missed.add(offset);
+          if (total != null && offset + PAGE_SIZE >= total) break;
+          continue;
         }
-        const data = await res.json();
-        if (!Array.isArray(data.content)) {
-          throw new Error(
-            `SmartRecruiters ${token}: invalid postings response`
-          );
-        }
-        let newItems = 0;
-        for (const posting of data.content) {
+        if (typeof data.totalFound === "number") total = data.totalFound;
+        for (const posting of data.content ?? []) {
           if (!posting?.id || seen.has(posting.id)) continue;
           seen.add(posting.id);
           collected.push(posting);
-          newItems++;
         }
-        if (data.content.length === 0) {
-          completeSnapshot = true;
+        const count = data.content?.length ?? 0;
+        if (total != null && offset + count >= total || count === 0 || total == null && count < PAGE_SIZE) {
+          reachedEnd = true;
           break;
-        }
-        if (typeof data.totalFound === "number" && offset + data.content.length >= data.totalFound) {
-          completeSnapshot = true;
-          break;
-        }
-        if (data.content.length < PAGE_SIZE) {
-          completeSnapshot = true;
-          break;
-        }
-        if (newItems === 0) {
-          throw new Error(
-            `SmartRecruiters ${token}: pagination stopped making progress`
-          );
         }
       }
+      for (const offset of [...missed]) {
+        if (signal?.aborted) break;
+        const loaded = await load(offset);
+        if (!loaded.data) continue;
+        missed.delete(offset);
+        for (const posting of loaded.data.content ?? []) {
+          if (!posting?.id || seen.has(posting.id)) continue;
+          seen.add(posting.id);
+          collected.push(posting);
+        }
+      }
+      completeSnapshot = reachedEnd && missed.size === 0 && !signal?.aborted;
       return collected;
     },
     toNormalized(raw) {
@@ -14361,9 +14406,11 @@ function createWorkableClient(fetchImpl = fetch) {
     async fetchPostings(token, signal) {
       completeSnapshot = false;
       const widgetUrl = `https://www.workable.com/api/accounts/${encodeURIComponent(token)}?details=false`;
-      const widgetResponse = await fetchImpl(
+      const widgetResponse = await fetchRetrying(
+        fetchImpl,
         widgetUrl,
-        { signal }
+        { signal },
+        `Workable ${token}`
       );
       if (widgetResponse.ok) {
         const data = await widgetResponse.json();
@@ -14388,16 +14435,27 @@ function createWorkableClient(fetchImpl = fetch) {
         if (cursor) {
           body.cursor = cursor;
         }
-        const res = await fetchImpl(endpoint, {
-          signal,
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            Accept: "application/json"
+        const res = await fetchRetrying(
+          fetchImpl,
+          endpoint,
+          {
+            signal,
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              Accept: "application/json"
+            },
+            body: JSON.stringify(body)
           },
-          body: JSON.stringify(body)
-        });
+          `Workable ${token}`
+        );
         if (!res.ok) {
+          if (collected.length > 0) {
+            console.log(
+              `Workable ${token}: HTTP ${res.status}; keeping ${collected.length} jobs already read`
+            );
+            break;
+          }
           throw new Error(
             `Workable ${token}: fallback HTTP ${res.status}`
           );
@@ -14480,13 +14538,35 @@ function parseWorkdayToken(token) {
     return null;
   }
   const [host, tenant, site] = parts;
-  if (!/^[a-z0-9.-]+\.myworkdayjobs\.com$/i.test(host)) {
+  if (!/^[a-z0-9.-]+\.myworkday(?:jobs|site)\.com$/i.test(host)) {
     return null;
   }
   return { host, tenant, site };
 }
 var PAGE_SIZE2 = 20;
 var MAX_PAGES2 = 250;
+var BOARD_CAP = PAGE_SIZE2 * MAX_PAGES2;
+function selectInternshipFacet(facets) {
+  const matches = [];
+  for (const facet of facets ?? []) {
+    if (!facet.facetParameter) continue;
+    for (const value of facet.values ?? []) {
+      const label = value.descriptor?.trim() ?? "";
+      if (!value.id || !label || typeof value.count !== "number") continue;
+      if (value.count < 1 || value.count > BOARD_CAP) continue;
+      if (!/intern|early career|university|campus|new grad|student/i.test(label)) continue;
+      matches.push({
+        parameter: facet.facetParameter,
+        id: value.id,
+        label,
+        count: value.count,
+        rank: /internship/i.test(label) ? 2 : 1
+      });
+    }
+  }
+  matches.sort((a, b) => b.rank - a.rank || b.count - a.count);
+  return matches[0] ?? null;
+}
 function createWorkdayClient(fetchImpl = fetch) {
   let completeSnapshot = false;
   return {
@@ -14504,74 +14584,126 @@ function createWorkdayClient(fetchImpl = fetch) {
       const endpoint = `https://${host}/wday/cxs/${encodeURIComponent(tenant)}/${encodeURIComponent(site)}/jobs`;
       const collected = [];
       const seen = /* @__PURE__ */ new Set();
-      for (let page = 0; page < MAX_PAGES2; page++) {
-        const offset = page * PAGE_SIZE2;
-        const res = await fetchImpl(endpoint, {
-          method: "POST",
-          signal,
-          headers: {
-            "Content-Type": "application/json",
-            Accept: "application/json"
-          },
-          body: JSON.stringify({
-            appliedFacets: {},
-            limit: PAGE_SIZE2,
-            offset,
-            searchText: ""
-          })
-        });
-        if (!res.ok) {
-          throw new Error(
-            `Workday ${tenant}: HTTP ${res.status} on page ${page + 1}`
-          );
-        }
-        const data = await res.json();
-        if (!Array.isArray(data.jobPostings)) {
-          throw new Error(
-            `Workday ${tenant}: invalid jobs response`
-          );
-        }
-        let newItems = 0;
-        for (const posting of data.jobPostings) {
-          if (!posting?.externalPath) {
-            continue;
-          }
-          if (seen.has(posting.externalPath)) {
-            continue;
-          }
+      let appliedFacets = {};
+      let narrowed = false;
+      let total = null;
+      let reachedEnd = false;
+      const missed = /* @__PURE__ */ new Set();
+      const ingest = (data) => {
+        for (const posting of data.jobPostings ?? []) {
+          if (!posting?.externalPath || seen.has(posting.externalPath)) continue;
           seen.add(posting.externalPath);
-          collected.push({
-            ...posting,
-            __coords: coords
-          });
-          newItems++;
+          collected.push({ ...posting, __coords: coords });
         }
-        if (data.jobPostings.length === 0) {
-          completeSnapshot = true;
-          break;
-        }
-        if (typeof data.total === "number" && offset + data.jobPostings.length >= data.total) {
-          completeSnapshot = true;
-          break;
-        }
-        if (data.jobPostings.length < PAGE_SIZE2) {
-          completeSnapshot = true;
-          break;
-        }
-        if (newItems === 0) {
-          throw new Error(
-            `Workday ${tenant}: pagination stopped making progress`
+      };
+      const loadPage = async (offset) => {
+        if (signal?.aborted) return { data: null, status: 0 };
+        try {
+          const res = await fetchRetrying(
+            fetchImpl,
+            endpoint,
+            {
+              method: "POST",
+              signal,
+              headers: {
+                "Content-Type": "application/json",
+                Accept: "application/json"
+              },
+              body: JSON.stringify({
+                appliedFacets,
+                limit: PAGE_SIZE2,
+                offset,
+                searchText: ""
+              })
+            },
+            `Workday ${tenant} offset ${offset}`
           );
+          if (!res.ok) return { data: null, status: res.status };
+          const data = await res.json();
+          if (!Array.isArray(data.jobPostings)) return { data: null, status: res.status };
+          return { data, status: res.status };
+        } catch (error) {
+          if (signal?.aborted) return { data: null, status: 0 };
+          throw error;
+        }
+      };
+      for (let page = 0; page < MAX_PAGES2; page++) {
+        if (signal?.aborted) break;
+        const offset = page * PAGE_SIZE2;
+        const loaded = await loadPage(offset);
+        const data = loaded.data;
+        if (!data) {
+          if (signal?.aborted) break;
+          if (total == null && collected.length === 0 && page === 0) {
+            throw new Error(`Workday ${tenant}: HTTP ${loaded.status} on the first page`);
+          }
+          missed.add(offset);
+          console.log(`Workday ${tenant}: offset ${offset} failed; reading the following pages anyway`);
+          if (total != null && offset + PAGE_SIZE2 >= total) break;
+          continue;
+        }
+        if (page === 0 && !narrowed && typeof data.total === "number" && data.total > BOARD_CAP) {
+          const pick = selectInternshipFacet(data.facets);
+          if (pick) {
+            console.log(
+              `Workday ${tenant}: ${data.total} jobs on the board; downloading ${pick.label} (${pick.count}) so the internship list can finish`
+            );
+            appliedFacets = { [pick.parameter]: [pick.id] };
+            narrowed = true;
+            total = null;
+            page = -1;
+            continue;
+          }
+        }
+        if (typeof data.total === "number") total = data.total;
+        ingest(data);
+        const count = data.jobPostings.length;
+        const covered = offset + count;
+        if (total != null && covered >= total) {
+          reachedEnd = true;
+          break;
+        }
+        if (count === 0 || total == null && count < PAGE_SIZE2) {
+          if (total != null && covered < total) {
+            missed.add(offset);
+            console.log(`Workday ${tenant}: offset ${offset} came back empty; reading the following pages anyway`);
+            continue;
+          }
+          reachedEnd = true;
+          break;
         }
       }
+      for (let round = 0; round < 4 && missed.size > 0 && !signal?.aborted; round++) {
+        if (round > 0 && !process.env.VITEST) {
+          await new Promise((resolve) => setTimeout(resolve, 2e3));
+        }
+        for (const offset of [...missed]) {
+          if (signal?.aborted) break;
+          const data = await loadPage(offset);
+          if (!data.data || data.data.jobPostings?.length === 0) continue;
+          missed.delete(offset);
+          ingest(data.data);
+        }
+      }
+      if (signal?.aborted) {
+        console.log(`Workday ${tenant}: time ran out; saving ${collected.length} jobs already read`);
+      } else if (missed.size > 0) {
+        console.log(
+          `Workday ${tenant}: saved ${collected.length} jobs; ${missed.size} pages were still down and were not dropped`
+        );
+      } else {
+        console.log(`Workday ${tenant}: read ${collected.length} jobs`);
+      }
+      completeSnapshot = reachedEnd && missed.size === 0 && !signal?.aborted && !narrowed;
       return collected;
     },
     toNormalized(raw) {
       if (!raw?.title || !raw.externalPath) {
         return null;
       }
-      const { host, site } = raw.__coords;
-      const applyUrl = `https://${host}/en-US/${encodeURIComponent(site)}${raw.externalPath}`;
+      const { host, tenant, site } = raw.__coords;
+      const onRecruitingSite = host.toLowerCase().endsWith(".myworkdaysite.com");
+      const applyUrl = onRecruitingSite ? `https://${host}/recruiting/${encodeURIComponent(tenant)}/${encodeURIComponent(site)}${raw.externalPath}` : `https://${host}/en-US/${encodeURIComponent(site)}${raw.externalPath}`;
       const externalJobId = raw.bulletFields?.[0] ?? raw.externalPath.split("_").pop() ?? raw.externalPath;
       const locationText = (raw.locationsText ?? "").trim();
       const remote = /remote/i.test(locationText);
