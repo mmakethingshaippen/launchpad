@@ -9,6 +9,7 @@ import { Link, useSearchParams } from 'react-router-dom';
 import { useAdapter } from '../hooks/useAdapter';
 import { useRoleFilters } from '../hooks/useRoleFilters';
 import { LoadingBlock } from '../components/ui/Spinner';
+import { FreshnessNote } from '../components/ui/FreshnessNote';
 import { SeasonBadge } from '../components/ui/Badge';
 import { SPECIFIC_SEASONS, type Season } from '../lib/adapter/types';
 import { normalizeLongitude } from '../lib/ats/cityCoords';
@@ -352,6 +353,7 @@ export function MapPage() {
       <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
         <div className="flex flex-wrap items-center gap-3">
           <h1 className="text-2xl font-bold text-navy">Explore by location</h1>
+          <FreshnessNote />
           <span className="inline-flex items-center gap-1.5 rounded-full bg-emerald-50 px-2.5 py-0.5 text-xs font-medium text-emerald-700 ring-1 ring-emerald-600/20">
             <span className="h-1.5 w-1.5 rounded-full bg-emerald-500 animate-pulse" aria-hidden="true" />
             Live ATS feeds · Updated daily

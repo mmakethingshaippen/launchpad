@@ -11,6 +11,7 @@ import { Button } from '../components/ui/Button';
 import { CompanyLogo } from '../components/ui/CompanyLogo';
 import { TrackedRoleCard as RoleCard } from '../components/cards/TrackedRoleCard';
 import { EmptyState } from '../components/ui/EmptyState';
+import { FreshnessNote } from '../components/ui/FreshnessNote';
 import { CompanyProfileSkeleton } from '../components/ui/Skeleton';
 import { SPECIFIC_SEASONS, type Season } from '../lib/adapter/types';
 import { uniqueCompanyFields, visibleCompanyDescription } from '../lib/companyDisplay';
@@ -129,6 +130,7 @@ export function CompanyProfile() {
               {season !== 'all' ? ` for ${season}` : ''})
             </h2>
             <p className="text-sm text-slate-500">Active postings, deduplicated by role title and location.</p>
+            <FreshnessNote className="mt-1" />
           </div>
 
           <div className="flex flex-wrap gap-1">

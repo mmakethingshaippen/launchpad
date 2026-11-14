@@ -11,6 +11,7 @@ import type {
 import { SEED_COMPANIES, type SeedCompany } from '../../data/seed-companies';
 import type { SyncSink, UpsertRoleData } from '../ats/sync';
 import { roleConcluded } from '../ats/seasons';
+import { isFreshlyVerified } from '../freshness';
 import { classifyField } from '../ats/classify';
 import { resolveRoleCoords, isRemoteLocation } from '../ats/cityCoords';
 import type { WorkArrangement } from './types';
@@ -197,6 +198,8 @@ export class LocalStore implements SyncSink {
     if (r.applicationDeadline && new Date(r.applicationDeadline) < new Date(now.toDateString()))
       return false;
     if (roleConcluded(r.seasons, r.cohortYear, now)) return false;
+    // Same seven-day freshness rule as the public_roles view (migration 0009).
+    if (!isFreshlyVerified(r.lastVerifiedAt, now)) return false;
     return true;
   }
 

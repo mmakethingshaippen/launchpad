@@ -12,6 +12,7 @@ import { EmptyState } from '../components/ui/EmptyState';
 import { RelativeTime } from '../components/ui/RelativeTime';
 import { sanitizeHtml } from '../lib/sanitize';
 import { formatLocation } from '../lib/locationFormat';
+import { AWAITING_VERIFICATION_MESSAGE, isAwaitingVerification } from '../lib/freshness';
 
 export function RoleDetail() {
   const { slug = '' } = useParams();
@@ -36,6 +37,28 @@ export function RoleDetail() {
           </Link>
         }
       />
+    );
+
+  // Active but not successfully verified in the last 7 days: hidden from public
+  // listings (public_roles), so the direct link does not show it either. This is
+  // not a claim that it expired; background verification keeps checking it.
+  if (isAwaitingVerification(role))
+    return (
+      <>
+        <Helmet>
+          <title>Listing temporarily unavailable — Launchpad</title>
+          <meta name="robots" content="noindex" />
+        </Helmet>
+        <EmptyState
+          title={AWAITING_VERIFICATION_MESSAGE}
+          description="It will be listed again once we confirm it on the employer's site."
+          action={
+            <Link to="/browse">
+              <Button variant="outline">Back to Browse</Button>
+            </Link>
+          }
+        />
+      </>
     );
 
   const isClosed = role.listingStatus !== 'Active';

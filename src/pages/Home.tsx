@@ -5,6 +5,7 @@ import { useQuery } from '@tanstack/react-query';
 import { Search, MapPin, Map as MapIcon, Target, Send, Bookmark } from 'lucide-react';
 import { useAdapter } from '../hooks/useAdapter';
 import { Button } from '../components/ui/Button';
+import { FreshnessNote } from '../components/ui/FreshnessNote';
 import { TrackedRoleCard as RoleCard } from '../components/cards/TrackedRoleCard';
 import { CompanyCard } from '../components/cards/CompanyCard';
 import { RoleCardSkeleton } from '../components/ui/Skeleton';
@@ -143,6 +144,9 @@ export function Home() {
           </div>
         ))}
       </section>
+      <div className="mt-2 text-center">
+        <FreshnessNote />
+      </div>
 
       {/* How it works */}
       <section className="mt-12">

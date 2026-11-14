@@ -13,6 +13,7 @@ import { CompanyCard } from '../components/cards/CompanyCard';
 import { Drawer } from '../components/ui/Drawer';
 import { Button } from '../components/ui/Button';
 import { EmptyState } from '../components/ui/EmptyState';
+import { FreshnessNote } from '../components/ui/FreshnessNote';
 import { LoadingBlock } from '../components/ui/Spinner';
 import { RoleCardSkeleton } from '../components/ui/Skeleton';
 import { interleaveByCompany } from '../lib/roleQuery';
@@ -130,6 +131,7 @@ export function Browse() {
             <ActiveChips filters={filters} onChange={setFilters} onClearAll={clearAll} />
           </div>
 
+          <FreshnessNote className="mb-1" />
           <p className="mb-4 text-sm text-slate-500" aria-live="polite">
             {loading ? 'Searching…' : `${total.toLocaleString()} matching ${isCompanies ? 'companies' : 'active opportunities'}`}
           </p>
