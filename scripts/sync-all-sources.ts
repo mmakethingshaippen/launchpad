@@ -8,17 +8,32 @@
  *   npx tsx --env-file=.env scripts/sync-all-sources.ts --ats-only
  *   npx tsx --env-file=.env scripts/sync-all-sources.ts
  *
+ * Two independent groups:
+ *   aggregators  feed ingestion, then fallback page verification of active
+ *                aggregator roles the feeds did not observe.
+ *   ats          company boards, Workday recheck, employer-board confirmation.
+ *
+ * CI runs the groups as separate jobs. In one process (no flag) every stage is
+ * isolated and aggregators run first, so an ATS exception or timeout cannot stop
+ * aggregator verification.
+ *
  * Aggregator feeds are downloaded once inside ingestAggregators. That pass
  * inserts new rows and refreshes verification timestamps for listings it
- * actually saw. It does not fetch the feeds again.
+ * actually saw. It does not fetch the feeds again. Roles it did not see are
+ * checked on their own page by sweepStaleAggregatorRoles (24h target interval).
+ *
+ * Optional environment:
+ *   AGGREGATOR_VERIFY_BUDGET_MINUTES  time budget for fallback verification (default 45)
  *
  * Do not expose SUPABASE_SERVICE_ROLE_KEY to the browser or commit it.
  */
+import { appendFileSync } from 'node:fs';
 import { createServiceClient, loadSyncableCompanies, SupabaseSink } from '../src/lib/ats/supabaseSink';
 import { syncAll } from '../src/lib/ats/sync';
 import { aggregatorRunSucceeded, ingestAggregators } from '../src/lib/ats/aggregators/ingest';
 import { planEmployerConfirmation, type ConfirmableRole } from '../src/lib/ats/employerConfirm';
-import { sweepStaleAggregatorRoles } from '../src/lib/ats/aggregators/staleSweep';
+import { sweepStaleAggregatorRoles, type StaleSweepResult } from '../src/lib/ats/aggregators/staleSweep';
+import { runStages, type PipelineStage, type StageOutcome } from '../src/lib/ats/pipeline';
 import { parseWorkdayToken } from '../src/lib/ats/providers/workday';
 
 const args = process.argv.slice(2);
@@ -30,6 +45,12 @@ if (atsOnly && aggregatorsOnly) {
 }
 
 const db = createServiceClient();
+
+const MINUTE = 60_000;
+const verifyBudgetMs = (() => {
+  const minutes = Number(process.env.AGGREGATOR_VERIFY_BUDGET_MINUTES);
+  return Number.isFinite(minutes) && minutes > 0 ? minutes * MINUTE : 45 * MINUTE;
+})();
 
 function workdayDetailUrl(token: string, applyUrl: string): string | null {
   const coords = parseWorkdayToken(token);
@@ -78,7 +99,7 @@ async function runAts(): Promise<boolean> {
   return failures === 0;
 }
 
-async function runAggregators(): Promise<boolean> {
+async function runAggregatorIngest(): Promise<boolean> {
   log('Importing and refreshing aggregator postings from a single fetch per source');
 
   const results = await ingestAggregators(db);
@@ -87,8 +108,8 @@ async function runAggregators(): Promise<boolean> {
     log(
       `${result.source}: fetched ${result.fetched}; processed ${result.processed}; ` +
       `new ${result.rolesUpserted}; refreshed ${result.refreshed}; closed ${result.closed}; ` +
-      `feedComplete ${result.feedComplete}` +
-      `${result.feedPages === null ? "" : `; pages read ${result.feedPages}`}; ` +
+      `feedComplete ${result.feedComplete}; closeMissingEligible ${result.closeMissingEligible}` +
+      `${result.feedPages === null ? '' : `; pages read ${result.feedPages}`}; ` +
       `stop reason: ${result.feedStopReason}; ` +
       `duplicates ${result.duplicatesSkipped}; invalid ${result.skippedInvalid}; ` +
       `expired ${result.skippedExpired}; companies ${result.companiesUpserted}; ` +
@@ -108,10 +129,20 @@ async function runAggregators(): Promise<boolean> {
   log(
     `Aggregator totals: new ${inserted}; refreshed ${refreshed}; ` +
     `sources with errors ${results.filter((result) => result.errors.length).length}. ` +
-    'Unobserved jobs were not closed or re-stamped here; the stale sweep handles them next.',
+    'Unobserved jobs were not closed or re-stamped here; fallback verification handles them next.',
   );
 
   return aggregatorRunSucceeded(results);
+}
+
+let sweepResult: StaleSweepResult | null = null;
+
+async function runAggregatorVerification(): Promise<boolean> {
+  log('Fallback verification of active aggregator roles the feeds did not observe');
+  sweepResult = await sweepStaleAggregatorRoles(db, { log, budgetMs: verifyBudgetMs });
+  // Unreadable pages and failed fetches are recorded and retried; they do not fail the run.
+  // An incomplete cycle (deferred roles, incomplete pagination) or lost writes do.
+  return sweepResult.cycleComplete && sweepResult.writeFailures === 0;
 }
 
 async function runEmployerConfirmation(): Promise<boolean> {
@@ -132,6 +163,8 @@ async function runEmployerConfirmation(): Promise<boolean> {
       return false;
     }
     const page = data ?? [];
+    // Only an empty page ends the scan; a server row cap below 1000 returns short pages.
+    if (page.length === 0) break;
     for (const row of page) {
       const company = Array.isArray(row.companies) ? row.companies[0] : row.companies;
       roles.push({
@@ -143,7 +176,6 @@ async function runEmployerConfirmation(): Promise<boolean> {
         } : null,
       });
     }
-    if (page.length < 1000) break;
     after = String(page[page.length - 1].id);
   }
 
@@ -176,7 +208,7 @@ async function runEmployerConfirmation(): Promise<boolean> {
 }
 
 /** Roles the list download did not touch are checked on their own Workday page. */
-async function recheckMissedWorkday(): Promise<void> {
+async function recheckMissedWorkday(): Promise<boolean> {
   const cutoff = new Date(Date.now() - 45 * 60 * 1000).toISOString();
   const { data: companies, error } = await db.from('companies')
     .select('id,ats_board_token')
@@ -184,14 +216,14 @@ async function recheckMissedWorkday(): Promise<void> {
     .not('ats_board_token', 'is', null);
   if (error) {
     log(`ERROR workday recheck: ${error.message}`);
-    return;
+    return false;
   }
   const tokens = new Map<string, string>();
   for (const company of companies ?? []) {
     if (typeof company.ats_board_token === 'string') tokens.set(String(company.id), company.ats_board_token);
   }
   const companyIds = [...tokens.keys()];
-  if (!companyIds.length) return;
+  if (!companyIds.length) return true;
 
   const stale: Array<{ id: string; url: string }> = [];
   for (let index = 0; index < companyIds.length; index += 40) {
@@ -209,9 +241,10 @@ async function recheckMissedWorkday(): Promise<void> {
       const { data, error: roleError } = await query;
       if (roleError) {
         log(`ERROR workday recheck: ${roleError.message}`);
-        return;
+        return false;
       }
       const page = data ?? [];
+      if (page.length === 0) break;
       for (const row of page) {
         const token = tokens.get(String(row.company_id));
         const applyUrl = typeof row.apply_url === 'string' ? row.apply_url : '';
@@ -219,7 +252,6 @@ async function recheckMissedWorkday(): Promise<void> {
         if (!detail) continue;
         stale.push({ id: String(row.id), url: detail });
       }
-      if (page.length < 1000) break;
       after = String(page[page.length - 1].id);
     }
   }
@@ -272,45 +304,73 @@ async function recheckMissedWorkday(): Promise<void> {
   });
   await Promise.all(workers);
   log(`Workday page check: refreshed ${confirmed}; closed ${closed}; still unread ${unread}`);
+  return true;
+}
+
+function writeStepSummary(outcomes: StageOutcome[]): void {
+  const path = process.env.GITHUB_STEP_SUMMARY;
+  if (!path) return;
+  const lines = ['## Launchpad sync', '', '| Stage | Group | Status | Seconds |', '| --- | --- | --- | --- |'];
+  for (const o of outcomes) {
+    lines.push(`| ${o.name} | ${o.group} | ${o.status}${o.error ? `: ${o.error.replace(/\|/g, '/')}` : ''} | ${(o.durationMs / 1000).toFixed(1)} |`);
+  }
+  if (sweepResult) {
+    const s = sweepResult;
+    lines.push(
+      '', '### Aggregator verification', '',
+      '| Eligible | Attempted | Verified | Closed | Unreadable | Failed | Deferred | Backlog | Waiting on retry | Cycle complete |',
+      '| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |',
+      `| ${s.eligible} | ${s.attempted} | ${s.verified} | ${s.closed} | ${s.unreadable} | ${s.failed} | ${s.deferred} | ${s.backlog} | ${s.waitingRetry} | ${s.cycleComplete ? 'yes' : 'NO'} |`,
+      '', `Pagination: ${s.pagination.pages} page(s), ${s.pagination.complete ? 'complete' : 'INCOMPLETE'} (${s.pagination.stopReason}).`,
+    );
+  }
+  try {
+    appendFileSync(path, `${lines.join('\n')}\n`);
+  } catch (error) {
+    log(`Could not write job summary: ${errorMessage(error)}`);
+  }
 }
 
 async function main(): Promise<void> {
   const started = Date.now();
-  let success = true;
 
+  // Aggregators first and isolated: ingestion and verification are separate stages, so
+  // a failed feed run still gets fallback verification, and nothing in the ATS group
+  // (or its failure) can precede or block either.
+  const stages: PipelineStage[] = [];
+  if (!atsOnly) {
+    stages.push(
+      { name: 'aggregator-ingest', group: 'aggregators', run: runAggregatorIngest, timeoutMs: 40 * MINUTE },
+      { name: 'aggregator-verify', group: 'aggregators', run: runAggregatorVerification, timeoutMs: verifyBudgetMs + 10 * MINUTE },
+    );
+  }
   if (!aggregatorsOnly) {
-    success = (await runAts()) && success;
-    await recheckMissedWorkday();
+    stages.push(
+      { name: 'ats-sync', group: 'ats', run: runAts, timeoutMs: 45 * MINUTE },
+      { name: 'workday-recheck', group: 'ats', run: recheckMissedWorkday, timeoutMs: 20 * MINUTE },
+      { name: 'employer-confirm', group: 'ats', run: runEmployerConfirmation, timeoutMs: 15 * MINUTE },
+    );
   }
 
-  if (!atsOnly) {
-    success = (await runAggregators()) && success;
-  }
-
-  success = (await runEmployerConfirmation()) && success;
-
-  if (!atsOnly) {
-    try {
-      await sweepStaleAggregatorRoles(db, { log });
-    } catch (error) {
-      log(`ERROR stale aggregator sweep: ${errorMessage(error)}`);
-      success = false;
-    }
-  }
-
+  const outcomes = await runStages(stages, log);
+  writeStepSummary(outcomes);
   log(`Synchronization finished in ${((Date.now() - started) / 1000).toFixed(1)}s`);
 
-  if (!success) {
-    log('Some sources failed. Inspect logs; skipped jobs are not verified.');
+  const failed = outcomes.filter((o) => !o.ok);
+  if (failed.length) {
+    log(`Stages not clean: ${failed.map((o) => `${o.name} (${o.status})`).join(', ')}. Skipped jobs are not verified.`);
     process.exitCode = 1;
   } else {
-    log(
-      'Requested stages completed. Only jobs observed in current feeds were refreshed.',
-    );
+    log('Requested stages completed. Only jobs with evidence were refreshed.');
   }
 }
 
-main().catch((error: unknown) => {
-  console.error(errorMessage(error));
-  process.exitCode = 1;
-});
+main()
+  .catch((error: unknown) => {
+    console.error(errorMessage(error));
+    process.exitCode = 1;
+  })
+  .finally(() => {
+    // An abandoned (timed-out) stage may still hold sockets open; do not wait for it.
+    process.exit(process.exitCode ?? 0);
+  });

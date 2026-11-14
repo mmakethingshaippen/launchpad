@@ -31,6 +31,8 @@ export interface AggregatorResult {
   closed: number;
   /** True only when the feed was fully read, so missing listings could be closed. */
   feedComplete: boolean;
+  /** True only for sources whose complete feed is an exhaustive inventory; others never close by absence. */
+  closeMissingEligible: boolean;
   /** Pages read, when the source reports paging. */
   feedPages: number | null;
   /** Why the feed ended or why it counts as incomplete. */
@@ -143,6 +145,7 @@ export async function ingestAggregators(
       skippedExpired: 0,
       closed: 0,
       feedComplete: false,
+      closeMissingEligible: false,
       feedPages: null,
       feedStopReason: 'feed not fetched',
       errors: [],
@@ -318,7 +321,11 @@ export async function ingestAggregators(
     }
     await flushWrites();
     await flushRefresh();
-    if (result.errors.length === 0 && result.feedComplete) {
+    result.closeMissingEligible = client.exhaustiveInventory === true;
+    if (result.feedComplete && !result.closeMissingEligible) {
+      result.feedStopReason += '; filtered/query feed: absence never closes, fallback verification decides';
+    }
+    if (result.errors.length === 0 && result.feedComplete && result.closeMissingEligible) {
       const prefix = SOURCE_PREFIX[client.source];
       const live = new Set(postings.map((posting) => posting.externalJobId));
       const stale = prefix ? index.staleIds(prefix, live) : [];

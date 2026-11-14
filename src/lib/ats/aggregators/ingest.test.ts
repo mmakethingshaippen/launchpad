@@ -26,9 +26,11 @@ function client(
   source: AggregatorSource,
   postings: AggregatedPosting[] | Error,
   complete = false,
+  exhaustive = false,
 ): AggregatorClient {
   return {
     source,
+    exhaustiveInventory: exhaustive,
     feedWasComplete: () => complete,
     fetchEarlyCareer: vi.fn(async () => {
       if (postings instanceof Error) throw postings;
@@ -411,13 +413,30 @@ describe('aggregator ingestion', () => {
         companyName: 'Amazon',
         externalJobId: 'amazon-1',
         applyUrl: 'https://www.amazon.jobs/live',
-      })], true)],
+      })], true, true)],
     });
     expect(results[0].closed).toBe(1);
     expect(results[0].errors).toEqual([]);
     expect(fake.state.roles.find((role) => role.id === 'role-old')?.listing_status).toBe('Closed');
     expect(fake.state.roles.find((role) => role.id === 'role-live')?.listing_status).toBe('Active');
     expect(fake.state.roles.find((role) => role.id === 'role-muse')?.listing_status).toBe('Active');
+  });
+
+  it('never closes from a filtered or query feed, even when it was read to the end', async () => {
+    const fake = createDb({
+      companies: [{ id: 'co-b', slug: 'acme-labs' }],
+      roles: [{
+        id: 'role-old', company_id: 'co-b', external_job_id: 'amazon-9',
+        apply_url: 'https://www.amazon.jobs/old', source: 'aggregator', listing_status: 'Active',
+      }],
+    });
+    const results = await ingestAggregators(fake.db, {
+      now: NOW,
+      clients: [client('amazon', [], true, false)],
+    });
+    expect(results[0]).toMatchObject({ feedComplete: true, closeMissingEligible: false, closed: 0 });
+    expect(results[0].feedStopReason).toMatch(/filtered\/query feed/);
+    expect(fake.state.roles[0].listing_status).toBe('Active');
   });
 
   it('does not close listings when the feed stopped early', async () => {

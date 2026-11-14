@@ -67,6 +67,9 @@ export function createSimplifyClient(fetchImpl: FetchLike = fetch): AggregatorCl
   let feedComplete = false;
   return {
     source: 'simplify',
+    // The listings files carry an explicit active/visible flag per posting, so a
+    // fully read file is the authoritative open set for this source.
+    exhaustiveInventory: true,
     feedWasComplete: () => feedComplete,
     async fetchEarlyCareer(signal) {
       feedComplete = false;

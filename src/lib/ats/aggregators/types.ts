@@ -32,6 +32,14 @@ export interface AggregatorClient {
   fetchEarlyCareer(signal?: AbortSignal): Promise<AggregatedPosting[]>;
   /** True only when the last fetch read the whole feed. Absent or false must not close older rows. */
   feedWasComplete?(): boolean;
+  /**
+   * True only for a source whose feed is the employer-neutral inventory of every
+   * open listing, where absence really means closed. Keyword searches, category
+   * or level facets and result-capped APIs are filtered views: a listing can drop
+   * out of them and still be open. Absent or false means absence never closes a row;
+   * the fallback page verification decides instead.
+   */
+  readonly exhaustiveInventory?: boolean;
   /** Optional detail behind feedWasComplete for logging. */
   feedReport?(): FeedReport;
 }
