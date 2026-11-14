@@ -14552,6 +14552,97 @@ function createWorkableClient(fetchImpl = fetch) {
   };
 }
 
+// src/lib/ats/accessChallenge.ts
+var CF_CHALLENGE_BODY_RE = /<title>\s*Just a moment\.\.\.\s*<\/title>|\/cdn-cgi\/challenge-platform\/|cf-chl-|cf_chl_opt/i;
+var AKAMAI_BODY_RE = /<title>\s*Access Denied\s*<\/title>[\s\S]{0,2000}errors\.edgesuite\.net/i;
+function detectAccessChallenge(status, headers, body = "") {
+  const header = (name) => (headers?.get(name) ?? "").toLowerCase();
+  if (header("cf-mitigated") === "challenge") {
+    return { vendor: "cloudflare", evidence: `cf-mitigated=challenge (HTTP ${status})` };
+  }
+  const waf = header("x-amzn-waf-action");
+  if (waf === "challenge" || waf === "captcha") {
+    return { vendor: "aws-waf", evidence: `x-amzn-waf-action=${waf} (HTTP ${status})` };
+  }
+  if (status === 403 || status === 429 || status === 503) {
+    if (header("server").includes("cloudflare") && CF_CHALLENGE_BODY_RE.test(body)) {
+      return { vendor: "cloudflare", evidence: `Cloudflare challenge page (HTTP ${status})` };
+    }
+    if (status === 403 && header("server").includes("akamai") && AKAMAI_BODY_RE.test(body)) {
+      return { vendor: "akamai", evidence: `Akamai access denied page (HTTP ${status})` };
+    }
+  }
+  return null;
+}
+var BLOCKED_REASON_PREFIX = "blocked:";
+function blockedReason(challenge) {
+  return `${BLOCKED_REASON_PREFIX}${challenge.vendor}-challenge`;
+}
+
+// src/lib/ats/jsonResponse.ts
+var MAINTENANCE_RE = /maintenance|unavailable|outage|downtime/i;
+var PEEK_CHARS = 2e4;
+function hostAndPath(url) {
+  try {
+    const u = new URL(url);
+    return `${u.hostname.toLowerCase()}${u.pathname.replace(/\/+$/, "")}`;
+  } catch {
+    return "";
+  }
+}
+function titleOf(html) {
+  return ((/<title[^>]*>([^<]{0,120})/i.exec(html) ?? [])[1] ?? "").trim();
+}
+async function readJsonResponse(res, requestedUrl) {
+  const status = res.status;
+  const contentType = (res.headers?.get("content-type") ?? "").toLowerCase();
+  const finalUrl = res.url || requestedUrl;
+  const redirected = Boolean(res.url) && hostAndPath(finalUrl) !== hostAndPath(requestedUrl);
+  const where = redirected ? ` (redirected to ${hostAndPath(finalUrl).slice(0, 120)})` : "";
+  const peek = async () => res.text ? (await res.text().catch(() => "")).slice(0, PEEK_CHARS) : "";
+  if (!res.ok) {
+    const body = status === 403 || status === 429 || status === 503 ? await peek() : "";
+    const challenge2 = detectAccessChallenge(status, res.headers, body);
+    if (challenge2) return { ok: false, kind: "access-challenge", status, reason: blockedReason(challenge2) };
+    if (TRANSIENT_HTTP.has(status)) return { ok: false, kind: "transient", status, reason: `http-${status}${where}` };
+    if (status === 404 || status === 410 || status === 422) {
+      return { ok: false, kind: "incorrect-endpoint", status, reason: `http-${status}${where}` };
+    }
+    return { ok: false, kind: "http-error", status, reason: `http-${status}${where}` };
+  }
+  const challenge = detectAccessChallenge(status, res.headers);
+  if (challenge) return { ok: false, kind: "access-challenge", status, reason: blockedReason(challenge) };
+  if (contentType && !contentType.includes("json")) {
+    const body = await peek();
+    const title = titleOf(body);
+    if (MAINTENANCE_RE.test(finalUrl) || MAINTENANCE_RE.test(title)) {
+      return { ok: false, kind: "maintenance", status, reason: `maintenance${where}` };
+    }
+    return { ok: false, kind: "unexpected-html", status, reason: `unexpected ${contentType.split(";")[0] || "content"}${where}` };
+  }
+  if (res.text) {
+    const text = await res.text().catch(() => null);
+    if (text === null) return { ok: false, kind: "invalid-json", status, reason: "unreadable body" };
+    try {
+      return { ok: true, data: JSON.parse(text) };
+    } catch {
+      const looksHtml = /^\s*</.test(text);
+      if (looksHtml && (MAINTENANCE_RE.test(finalUrl) || MAINTENANCE_RE.test(titleOf(text.slice(0, PEEK_CHARS))))) {
+        return { ok: false, kind: "maintenance", status, reason: `maintenance${where}` };
+      }
+      return looksHtml ? { ok: false, kind: "unexpected-html", status, reason: `unexpected html${where}` } : { ok: false, kind: "invalid-json", status, reason: `invalid json${where}` };
+    }
+  }
+  try {
+    return { ok: true, data: await res.json() };
+  } catch {
+    return { ok: false, kind: "invalid-json", status, reason: `invalid json${where}` };
+  }
+}
+function describeJsonFailure(failure) {
+  return `${failure.kind}: ${failure.reason}`;
+}
+
 // src/lib/ats/providers/workday.ts
 function parseWorkdayToken(token) {
   const parts = token.split("|");
@@ -14639,10 +14730,12 @@ function createWorkdayClient(fetchImpl = fetch) {
             },
             `Workday ${tenant} offset ${offset}`
           );
-          if (!res.ok) return { data: null, status: res.status };
-          const data = await res.json();
-          if (!Array.isArray(data.jobPostings)) return { data: null, status: res.status };
-          return { data, status: res.status };
+          const read = await readJsonResponse(res, endpoint);
+          if (!read.ok) return { data: null, status: res.status, failure: describeJsonFailure(read) };
+          if (!read.data || !Array.isArray(read.data.jobPostings)) {
+            return { data: null, status: res.status, failure: "unexpected-response: no jobPostings array" };
+          }
+          return { data: read.data, status: res.status };
         } catch (error) {
           if (signal?.aborted) return { data: null, status: 0 };
           throw error;
@@ -14656,10 +14749,10 @@ function createWorkdayClient(fetchImpl = fetch) {
         if (!data) {
           if (signal?.aborted) break;
           if (total == null && collected.length === 0 && page === 0) {
-            throw new Error(`Workday ${tenant}: HTTP ${loaded.status} on the first page`);
+            throw new Error(`Workday ${tenant}: ${loaded.failure ?? `HTTP ${loaded.status}`} on the first page`);
           }
           missed.add(offset);
-          console.log(`Workday ${tenant}: offset ${offset} failed; reading the following pages anyway`);
+          console.log(`Workday ${tenant}: offset ${offset} failed (${loaded.failure ?? `HTTP ${loaded.status}`}); reading the following pages anyway`);
           if (total != null && offset + PAGE_SIZE2 >= total) break;
           continue;
         }

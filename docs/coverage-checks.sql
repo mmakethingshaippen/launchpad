@@ -45,3 +45,17 @@ select c.slug, c.name, c.source, c.ats_provider, c.ats_board_token, c.moderation
 from public.companies c
 where c.slug in ('sharkninja', 'astranis', 'the-new-york-times', 'astera-labs', 'base-power', 'shield-ai')
    or c.name ilike any (array['%sharkninja%', '%astranis%', '%new york times%', '%astera%', '%base power%', '%shield ai%']);
+-- C9. Why the c4690c5 Workday recheck found zero candidates. It required: Active, a company with
+-- ats_provider = 'workday', last_verified_at NOT NULL and older than 45 minutes before the recheck,
+-- and an apply URL containing /job/ (unmappable rows were dropped before counting). The recheck in
+-- run 43616572523 attempt 2 started between 22:05 and 22:10 UTC, so 21:20 UTC is used as the cutoff.
+select r.source,
+       case when r.last_verified_at is null then 'NULL (never matched lt)'
+            when r.last_verified_at >= timestamptz '2026-11-14 21:20:00+00' then 'verified within 45 min (excluded)'
+            else 'older (would be a candidate)' end as verified_bucket,
+       (r.apply_url like '%/job/%') as mappable_url,
+       count(*) as active_jobs,
+       min(r.last_verified_at) as oldest, max(r.last_verified_at) as newest
+from public.roles r join public.companies c on c.id = r.company_id
+where r.listing_status = 'Active' and c.ats_provider = 'workday' and c.ats_board_token is not null
+group by 1, 2, 3 order by 1, 2, 3;

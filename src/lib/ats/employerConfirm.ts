@@ -1,5 +1,6 @@
 import type { FetchLike } from './types';
 import { fetchRetrying } from './fetchRetry';
+import { describeJsonFailure, readJsonResponse } from './jsonResponse';
 
 export type EmployerProvider = 'greenhouse' | 'lever' | 'ashby';
 
@@ -113,14 +114,6 @@ function boardKey(target: Pick<EmployerTarget, 'provider' | 'token' | 'region'>)
   return `${target.provider}:${target.region ?? 'global'}:${target.token.toLowerCase()}`;
 }
 
-async function readJson(res: { json: () => Promise<unknown> }): Promise<unknown> {
-  try {
-    return await res.json();
-  } catch {
-    return null;
-  }
-}
-
 export type BoardRead = { open: Set<string>; reason?: undefined } | { open: null; reason: string };
 
 /**
@@ -139,9 +132,11 @@ export async function readBoard(
     const name = error instanceof Error ? error.name : '';
     return { open: null, reason: name === 'TimeoutError' || name === 'AbortError' ? 'timeout' : 'network-error' };
   }
-  if (!res.ok) return { open: null, reason: `http-${res.status}` };
-  const data = await readJson(res);
-  if (!data || typeof data !== 'object') return { open: null, reason: 'unreadable-json' };
+  // Validate before parsing: challenges, maintenance pages and other HTML are named, not parsed.
+  const read = await readJsonResponse(res, boardUrl(target));
+  if (!read.ok) return { open: null, reason: describeJsonFailure(read) };
+  const data = read.data;
+  if (!data || typeof data !== 'object') return { open: null, reason: 'unexpected-response' };
 
   if (target.provider === 'lever') {
     if (!Array.isArray(data)) return { open: null, reason: 'unexpected-response' };

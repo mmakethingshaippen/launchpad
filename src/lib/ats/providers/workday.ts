@@ -2,6 +2,7 @@
 import type { ProviderClient, FetchLike } from '../types';
 import { fetchRetrying } from '../fetchRetry';
 import { splitLocation } from '../util';
+import { describeJsonFailure, readJsonResponse } from '../jsonResponse';
 
 interface WorkdayPosting {
   title: string;
@@ -134,7 +135,7 @@ export function createWorkdayClient(
         }
       };
 
-      const loadPage = async (offset: number): Promise<{ data: WorkdayResponse | null; status: number }> => {
+      const loadPage = async (offset: number): Promise<{ data: WorkdayResponse | null; status: number; failure?: string }> => {
         if (signal?.aborted) return { data: null, status: 0 };
         try {
           const res = await fetchRetrying(
@@ -156,10 +157,13 @@ export function createWorkdayClient(
             },
             `Workday ${tenant} offset ${offset}`,
           );
-          if (!res.ok) return { data: null, status: res.status };
-          const data = (await res.json()) as WorkdayResponse;
-          if (!Array.isArray(data.jobPostings)) return { data: null, status: res.status };
-          return { data, status: res.status };
+          // Validate before parsing: a tenant under maintenance answers 200 with an HTML page.
+          const read = await readJsonResponse<WorkdayResponse>(res, endpoint);
+          if (!read.ok) return { data: null, status: res.status, failure: describeJsonFailure(read) };
+          if (!read.data || !Array.isArray(read.data.jobPostings)) {
+            return { data: null, status: res.status, failure: 'unexpected-response: no jobPostings array' };
+          }
+          return { data: read.data, status: res.status };
         } catch (error) {
           if (signal?.aborted) return { data: null, status: 0 };
           throw error;
@@ -175,10 +179,10 @@ export function createWorkdayClient(
         if (!data) {
           if (signal?.aborted) break;
           if (total == null && collected.length === 0 && page === 0) {
-            throw new Error(`Workday ${tenant}: HTTP ${loaded.status} on the first page`);
+            throw new Error(`Workday ${tenant}: ${loaded.failure ?? `HTTP ${loaded.status}`} on the first page`);
           }
           missed.add(offset);
-          console.log(`Workday ${tenant}: offset ${offset} failed; reading the following pages anyway`);
+          console.log(`Workday ${tenant}: offset ${offset} failed (${loaded.failure ?? `HTTP ${loaded.status}`}); reading the following pages anyway`);
           if (total != null && offset + PAGE_SIZE >= total) break;
           continue;
         }

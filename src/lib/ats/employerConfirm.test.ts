@@ -114,7 +114,7 @@ describe('employer board coverage fixes', () => {
     expect(plan).toMatchObject({
       skippedUnsupported: 3, skippedBoardFailed: 1, skipped: 4, boardsFailed: 1, closeIds: [], confirmIds: [],
     });
-    expect(plan.failedBoards).toEqual([{ provider: 'greenhouse', token: 'renamed', reason: 'http-404', roles: 1 }]);
+    expect(plan.failedBoards).toEqual([{ provider: 'greenhouse', token: 'renamed', reason: 'incorrect-endpoint: http-404', roles: 1 }]);
     expect(plan.unsupportedHosts[0]).toEqual({ host: 'cvshealth.wd1.myworkdayjobs.com', roles: 2 });
   });
 

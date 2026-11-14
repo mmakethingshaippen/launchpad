@@ -82,7 +82,7 @@ describe('Workday provider', () => {
     const client = createWorkdayClient(fakeFetch({}, 404));
     await expect(
       client.fetchPostings('x.wd5.myworkdayjobs.com|x|Site'),
-    ).rejects.toThrow(/HTTP 404/);
+    ).rejects.toThrow(/incorrect-endpoint: http-404 on the first page/);
   });
 
   it('downloads the internship category when the full board cannot finish', async () => {

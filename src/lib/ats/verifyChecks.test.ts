@@ -383,3 +383,47 @@ describe('employer confirmation clears earlier failure state', () => {
     });
   });
 });
+describe('maintenance pages are failures, never evidence', () => {
+  const maintenance = () => {
+    const res = new Response('<!DOCTYPE html><html><head><title>Workday is currently unavailable.</title></head></html>', {
+      status: 200, headers: { 'content-type': 'text/html; charset=UTF-8' },
+    });
+    Object.defineProperty(res, 'url', { value: 'https://community.workday.com/maintenance-page' });
+    return res;
+  };
+
+  it('records a Workday detail maintenance redirect as a failure and keeps the date and status', async () => {
+    const company = { id: 'co-cvs', ats_provider: 'workday', ats_board_token: TOKEN };
+    const roles = [wdRole('R1')];
+    const fake = createDb({ companies: [company], roles });
+    const result = await recheckWorkdayRoles(fake.db, {
+      refreshedSince: RUN_START, now: NOW, fetchImpl: (async () => maintenance()) as unknown as FetchLike,
+    });
+    expect(result).toMatchObject({ failed: 1, verified: 0, closed: 0, unreadable: 0 });
+    expect(Object.keys(result.failureReasons)).toEqual(['maintenance: maintenance (redirected to community.workday.com/maintenance-page)']);
+    expect(roles[0]).toMatchObject({ last_verified_at: OLD, listing_status: 'Active' });
+  });
+
+  it('names failed employer boards with reasons and logs the skipped breakdown', async () => {
+    const roles = [
+      { id: 'gh1', company_id: 'co-gh', apply_url: 'https://boards.greenhouse.io/acme/jobs/100', title: 'Data Intern', listing_status: 'Active', source: 'ats', last_verified_at: OLD },
+      { id: 'wd1', company_id: 'co-gh', apply_url: 'https://target.wd5.myworkdayjobs.com/en-US/targetcareers/job/X_R1', title: 'Intern', listing_status: 'Active', source: 'ats', last_verified_at: OLD },
+    ];
+    const fake = createDb({ companies: [{ id: 'co-gh', ats_provider: 'greenhouse', ats_board_token: 'acme' }], roles });
+    const logs: string[] = [];
+    const result = await confirmEmployerRoles(fake.db, {
+      now: NOW, log: (m) => logs.push(m),
+      fetchImpl: (async () => {
+        const res = new Response('<html><head><title>Scheduled maintenance</title></head></html>', { status: 200, headers: { 'content-type': 'text/html' } });
+        return res;
+      }) as unknown as FetchLike,
+    });
+    expect(result).toMatchObject({ boardsFailed: 1, skippedBoardFailed: 1, skippedUnsupported: 1, confirmed: 0, closed: 0 });
+    expect(result.failedBoards).toEqual([{ provider: 'greenhouse', token: 'acme', reason: 'maintenance: maintenance', roles: 1 }]);
+    expect(logs.some((m) => m.includes('skipped 2 (unsupported URL 1, on unreadable boards 1)'))).toBe(true);
+    expect(logs.some((m) => m.includes('failed board greenhouse acme: maintenance: maintenance; 1 job(s) not checked'))).toBe(true);
+    expect(logs.some((m) => m.includes('target.wd5.myworkdayjobs.com 1'))).toBe(true);
+    expect(roles.map((r) => r.listing_status)).toEqual(['Active', 'Active']);
+    expect(roles.map((r) => r.last_verified_at)).toEqual([OLD, OLD]);
+  });
+});

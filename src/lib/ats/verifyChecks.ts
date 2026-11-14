@@ -18,6 +18,7 @@ import { planEmployerConfirmation, type ConfirmableRole, type FailedBoard } from
 import { parseWorkdayToken } from './providers/workday';
 import { blockedReason, detectAccessChallenge, type HeaderSource } from './accessChallenge';
 import { fetchRetrying } from './fetchRetry';
+import { describeJsonFailure, readJsonResponse, type JsonRead } from './jsonResponse';
 import { titleMatches } from './aggregators/pageEvidence';
 import { HOST_BLOCK_THRESHOLD, nextBlockedRetryAt, nextRetryAt } from './aggregators/staleSweep';
 
@@ -255,6 +256,7 @@ export async function recheckWorkdayRoles(
       let status = 0;
       let body: WorkdayDetail | null = null;
       let challenge: ReturnType<typeof detectAccessChallenge> = null;
+      let invalid: Exclude<JsonRead<WorkdayDetail>, { ok: true }> | null = null;
       try {
         const response = await fetchRetrying(
           fetchImpl, item.url,
@@ -263,7 +265,12 @@ export async function recheckWorkdayRoles(
         );
         status = response.status;
         challenge = detectAccessChallenge(status, (response as { headers?: HeaderSource }).headers);
-        if (response.ok) body = (await response.json().catch(() => null)) as WorkdayDetail | null;
+        if (response.ok && !challenge) {
+          // Validate before parsing: maintenance pages and other HTML answer 200.
+          const read = await readJsonResponse<WorkdayDetail>(response, item.url);
+          if (read.ok) body = read.data;
+          else invalid = read;
+        }
       } catch (error) {
         const name = error instanceof Error ? error.name : '';
         result.failed += 1;
@@ -283,6 +290,12 @@ export async function recheckWorkdayRoles(
         continue;
       }
       streaks.set(item.host, 0);
+      if (invalid) {
+        // Maintenance, unexpected HTML or unparseable JSON: nothing was learned about the job.
+        result.failed += 1;
+        await recordFailure(item, describeJsonFailure(invalid));
+        continue;
+      }
       if (status === 404 || status === 410) {
         // Workday answers an unknown job id on a reachable tenant with an explicit 404.
         if (await write(item.id, { listing_status: 'Closed', ...(recordAttempts ? { last_verification_attempt_at: now.toISOString(), next_verification_at: null } : {}) })) result.closed += 1;
