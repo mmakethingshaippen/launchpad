@@ -71,3 +71,59 @@ describe('planEmployerConfirmation', () => {
     expect(plan.closeIds).toEqual(['gone']);
   });
 });
+
+describe('employer board coverage fixes', () => {
+  it('reads EU Lever boards from the EU API instead of skipping them', async () => {
+    const target = identifyEmployerJob('https://jobs.eu.lever.co/cirrus/33333333-3333-3333-3333-333333333333');
+    expect(target).toEqual({ provider: 'lever', token: 'cirrus', jobId: '33333333-3333-3333-3333-333333333333', region: 'eu' });
+    const urls: string[] = [];
+    const plan = await planEmployerConfirmation(
+      [{ id: 'eu-open', applyUrl: 'https://jobs.eu.lever.co/cirrus/33333333-3333-3333-3333-333333333333' }],
+      (async (url: string) => {
+        urls.push(url);
+        return { ok: true, status: 200, json: async () => [{ id: '33333333-3333-3333-3333-333333333333' }] };
+      }) as FetchLike,
+    );
+    expect(urls).toEqual(['https://api.eu.lever.co/v0/postings/cirrus?mode=json']);
+    expect(plan.confirmIds).toEqual(['eu-open']);
+    expect(plan.skippedUnsupported).toBe(0);
+  });
+
+  it('retries a transient Cloudflare 521 before giving up on a board', async () => {
+    let calls = 0;
+    const plan = await planEmployerConfirmation(
+      [{ id: 'r1', applyUrl: 'https://boards.greenhouse.io/acme/jobs/100' }],
+      (async () => {
+        calls += 1;
+        return calls === 1
+          ? { ok: false, status: 521, json: async () => ({}) }
+          : { ok: true, status: 200, json: async () => ({ jobs: [{ id: 100 }] }) };
+      }) as FetchLike,
+    );
+    expect(calls).toBe(2);
+    expect(plan).toMatchObject({ boardsFailed: 0, confirmIds: ['r1'], closeIds: [] });
+  });
+
+  it('separates unsupported URLs from jobs on unreadable boards and records why each board failed', async () => {
+    const plan = await planEmployerConfirmation([
+      { id: 'wd', applyUrl: 'https://cvshealth.wd1.myworkdayjobs.com/en-US/CVS/job/X_R1' },
+      { id: 'wd2', applyUrl: 'https://cvshealth.wd1.myworkdayjobs.com/en-US/CVS/job/X_R2' },
+      { id: 'gone-board', applyUrl: 'https://boards.greenhouse.io/renamed/jobs/7' },
+      { id: 'none', applyUrl: null },
+    ], boardFetch({ '/boards/renamed/': { status: 404, body: {} } }));
+    expect(plan).toMatchObject({
+      skippedUnsupported: 3, skippedBoardFailed: 1, skipped: 4, boardsFailed: 1, closeIds: [], confirmIds: [],
+    });
+    expect(plan.failedBoards).toEqual([{ provider: 'greenhouse', token: 'renamed', reason: 'http-404', roles: 1 }]);
+    expect(plan.unsupportedHosts[0]).toEqual({ host: 'cvshealth.wd1.myworkdayjobs.com', roles: 2 });
+  });
+
+  it('never closes from an unexpected response shape', async () => {
+    const plan = await planEmployerConfirmation(
+      [{ id: 'keep', applyUrl: 'https://jobs.ashbyhq.com/acme/44444444-4444-4444-4444-444444444444' }],
+      boardFetch({ '/job-board/acme': { body: { message: 'maintenance' } } }),
+    );
+    expect(plan).toMatchObject({ closeIds: [], confirmIds: [], boardsFailed: 1 });
+    expect(plan.failedBoards[0].reason).toBe('unexpected-response');
+  });
+});

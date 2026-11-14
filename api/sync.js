@@ -14106,6 +14106,27 @@ function isValidHttpUrl(url) {
     return false;
   }
 }
+var TRACKING_PARAM_RE = /^(utm_|gh_|ref$|source$|src$|campaign$|fbclid$|gclid$|mc_)/i;
+function normalizeApplyUrl(url) {
+  if (!url) return "";
+  try {
+    const u = new URL(url.trim());
+    u.hash = "";
+    u.hostname = u.hostname.toLowerCase();
+    const keep = [];
+    for (const [k, v] of u.searchParams) {
+      if (!TRACKING_PARAM_RE.test(k)) keep.push([k, v]);
+    }
+    keep.sort(([a], [b]) => a.localeCompare(b));
+    u.search = "";
+    for (const [k, v] of keep) u.searchParams.append(k, v);
+    let out = u.toString();
+    out = out.replace(/\/(?=(\?|$))/, (m, _o, s) => s.length <= 1 ? m : "");
+    return out.replace(/\/$/, "");
+  } catch {
+    return url.trim();
+  }
+}
 
 // src/lib/ats/normalize.ts
 function isDeadlinePassed(deadline, now = /* @__PURE__ */ new Date()) {
@@ -14133,7 +14154,7 @@ function selectCandidates(postings, now = /* @__PURE__ */ new Date()) {
 }
 
 // src/lib/ats/fetchRetry.ts
-var TRANSIENT_HTTP = /* @__PURE__ */ new Set([408, 429, 500, 502, 503, 504]);
+var TRANSIENT_HTTP = /* @__PURE__ */ new Set([408, 429, 500, 502, 503, 504, 520, 521, 522, 523, 524]);
 var DELAYS_MS = process.env.VITEST ? [10, 10, 10] : [1e3, 2e3, 4e3];
 function wait(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -23587,6 +23608,45 @@ function resolveRoleCoords(location2) {
 // src/lib/ats/companyMatch.ts
 var INTERNSHIP_ONLY_SLUGS = /* @__PURE__ */ new Set(["google", "amazon", "tesla", "spacex"]);
 
+// src/lib/ats/employerConfirm.ts
+function companyToken(company, provider) {
+  if (!company?.atsBoardToken) return "";
+  return company.atsProvider === provider ? company.atsBoardToken.trim() : "";
+}
+function identifyEmployerJob(applyUrl, company) {
+  let url;
+  try {
+    url = new URL(applyUrl);
+  } catch {
+    return null;
+  }
+  const host = url.hostname.toLowerCase().replace(/^www\./, "");
+  const parts = url.pathname.split("/").filter(Boolean);
+  if (host.endsWith("greenhouse.io")) {
+    const jobsAt = parts.indexOf("jobs");
+    const tokenFromPath = jobsAt > 0 ? parts[jobsAt - 1] : "";
+    const idFromPath = jobsAt >= 0 ? parts[jobsAt + 1] ?? "" : "";
+    const ghJid2 = url.searchParams.get("gh_jid") ?? "";
+    const jobId = /^\d+$/.test(idFromPath) ? idFromPath : /^\d+$/.test(ghJid2) ? ghJid2 : "";
+    const token = tokenFromPath || companyToken(company, "greenhouse");
+    if (token && jobId) return { provider: "greenhouse", token, jobId };
+    return null;
+  }
+  const ghJid = url.searchParams.get("gh_jid") ?? "";
+  if (/^\d+$/.test(ghJid)) {
+    const token = companyToken(company, "greenhouse");
+    if (token) return { provider: "greenhouse", token, jobId: ghJid };
+    return null;
+  }
+  if ((host === "jobs.lever.co" || host === "jobs.eu.lever.co") && parts.length >= 2 && /^[0-9a-f-]{10,}$/i.test(parts[1])) {
+    return host === "jobs.eu.lever.co" ? { provider: "lever", token: parts[0], jobId: parts[1], region: "eu" } : { provider: "lever", token: parts[0], jobId: parts[1] };
+  }
+  if (host === "jobs.ashbyhq.com" && parts.length >= 2 && parts[1] !== "jobs") {
+    return { provider: "ashby", token: parts[0], jobId: parts[1] };
+  }
+  return null;
+}
+
 // src/lib/ats/supabaseSink.ts
 function isUsableCity(city) {
   if (!city) return false;
@@ -23670,17 +23730,23 @@ function toRoleRow(data) {
   };
   return row;
 }
+function jobIdentity(applyUrl) {
+  if (!applyUrl) return "";
+  const target = identifyEmployerJob(applyUrl);
+  if (target) return `${target.provider}:${target.token.toLowerCase()}:${target.jobId.toLowerCase()}`;
+  return normalizeApplyUrl(applyUrl);
+}
 var SupabaseSink = class {
   constructor(db) {
     this.db = db;
   }
   db;
-  existingIds = /* @__PURE__ */ new Map();
+  existing = /* @__PURE__ */ new Map();
   async readRoleIds(companyId, activeOnly = false) {
     const rows = [];
     let cursor;
     for (; ; ) {
-      let query = this.db.from("roles").select("id,external_job_id").eq("company_id", companyId).order("id", { ascending: true }).limit(1e3);
+      let query = this.db.from("roles").select("id,external_job_id,apply_url,source,listing_status").eq("company_id", companyId).order("id", { ascending: true }).limit(1e3);
       if (activeOnly) query = query.eq("source", "ats").eq("listing_status", "Active");
       if (cursor) query = query.gt("id", cursor);
       const { data, error } = await query;
@@ -23693,20 +23759,37 @@ var SupabaseSink = class {
       cursor = next;
     }
   }
-  roleIds(companyId) {
-    let ids = this.existingIds.get(companyId);
-    if (!ids) {
-      ids = this.readRoleIds(companyId).then((rows) => new Set(
-        rows.flatMap((row) => row.external_job_id ? [row.external_job_id] : [])
-      ));
-      this.existingIds.set(companyId, ids);
+  roleIndex(companyId) {
+    let index = this.existing.get(companyId);
+    if (!index) {
+      index = this.readRoleIds(companyId).then((rows) => {
+        const externalIds = /* @__PURE__ */ new Set();
+        const aggregatorByIdentity = /* @__PURE__ */ new Map();
+        for (const row of rows) {
+          if (row.external_job_id) externalIds.add(row.external_job_id);
+          if (row.source === "aggregator" && row.listing_status === "Active") {
+            const key = jobIdentity(row.apply_url);
+            if (key && !aggregatorByIdentity.has(key)) aggregatorByIdentity.set(key, row.id);
+          }
+        }
+        return { externalIds, aggregatorByIdentity };
+      });
+      this.existing.set(companyId, index);
     }
-    return ids;
+    return index;
   }
   async upsertRole(data) {
     const counts = await this.upsertRoles([data]);
     return counts.imported ? "imported" : "updated";
   }
+  /**
+   * Insert or refresh ATS rows. A posting that is new to this company but is the
+   * same job as an Active aggregator row (same Greenhouse/Lever/Ashby job id, or
+   * the same normalised URL) is not inserted again: the employer's own board
+   * listing that job is evidence for the existing row, so that row is refreshed
+   * instead. This keeps one row per job when an employer's board is added after
+   * an aggregator already imported its listings.
+   */
   async upsertRoles(data) {
     const unique = [...new Map(data.map((row) => [
       `${row.companyId}\0${row.externalJobId}`,
@@ -23715,25 +23798,48 @@ var SupabaseSink = class {
     if (!unique.length) return { imported: 0, updated: 0 };
     const known = /* @__PURE__ */ new Map();
     for (const companyId of new Set(unique.map((row) => row.companyId))) {
-      known.set(companyId, await this.roleIds(companyId));
+      known.set(companyId, await this.roleIndex(companyId));
     }
-    const rows = unique.map(toRoleRow);
-    let { error } = await this.db.from("roles").upsert(rows, { onConflict: "company_id,external_job_id" });
-    if (error && /latitude|longitude/.test(error.message) && /column/i.test(error.message)) {
-      const withoutCoordinates = rows.map(({ latitude: _lat, longitude: _lng, ...rest }) => {
-        void _lat;
-        void _lng;
-        return rest;
-      });
-      ({ error } = await this.db.from("roles").upsert(withoutCoordinates, { onConflict: "company_id,external_job_id" }));
-    }
-    if (error) throw new Error(`upsert roles: ${error.message}`);
-    const counts = { imported: 0, updated: 0 };
+    const toWrite = [];
+    const aggregatorIds = /* @__PURE__ */ new Set();
     for (const row of unique) {
-      const ids = known.get(row.companyId);
-      if (ids.has(row.externalJobId)) counts.updated++;
-      else counts.imported++;
-      ids.add(row.externalJobId);
+      const index = known.get(row.companyId);
+      if (!index.externalIds.has(row.externalJobId)) {
+        const match = index.aggregatorByIdentity.get(jobIdentity(row.applyUrl));
+        if (match) {
+          aggregatorIds.add(match);
+          continue;
+        }
+      }
+      toWrite.push(row);
+    }
+    const counts = { imported: 0, updated: 0 };
+    if (toWrite.length) {
+      const rows = toWrite.map(toRoleRow);
+      let { error } = await this.db.from("roles").upsert(rows, { onConflict: "company_id,external_job_id" });
+      if (error && /latitude|longitude/.test(error.message) && /column/i.test(error.message)) {
+        const withoutCoordinates = rows.map(({ latitude: _lat, longitude: _lng, ...rest }) => {
+          void _lat;
+          void _lng;
+          return rest;
+        });
+        ({ error } = await this.db.from("roles").upsert(withoutCoordinates, { onConflict: "company_id,external_job_id" }));
+      }
+      if (error) throw new Error(`upsert roles: ${error.message}`);
+      for (const row of toWrite) {
+        const ids = known.get(row.companyId).externalIds;
+        if (ids.has(row.externalJobId)) counts.updated++;
+        else counts.imported++;
+        ids.add(row.externalJobId);
+      }
+    }
+    if (aggregatorIds.size) {
+      const ids = [...aggregatorIds];
+      const { data: changed, error } = await this.db.from("roles").update({ last_verified_at: (/* @__PURE__ */ new Date()).toISOString() }).in("id", ids).eq("source", "aggregator").eq("listing_status", "Active").select("id");
+      if (error) throw new Error(`refresh matching aggregator roles: ${error.message}`);
+      const n = Array.isArray(changed) ? changed.length : 0;
+      if (n < ids.length) throw new Error(`refresh matching aggregator roles: ${ids.length - n} row(s) changed before the write`);
+      counts.updated += n;
     }
     return counts;
   }

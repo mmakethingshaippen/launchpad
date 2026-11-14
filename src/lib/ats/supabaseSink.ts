@@ -16,6 +16,8 @@ import type { FieldType } from '../adapter/types';
 import { classifyField } from './classify';
 import { resolveRoleCoords, isRemoteLocation } from './cityCoords';
 import { INTERNSHIP_ONLY_SLUGS } from './companyMatch';
+import { identifyEmployerJob } from './employerConfirm';
+import { normalizeApplyUrl } from './util';
 
 /**
  * A role "city" is only usable as a display location when it names a real place.
@@ -126,10 +128,31 @@ function toRoleRow(data: UpsertRoleData) {
 interface StoredRoleId {
   id: string;
   external_job_id: string | null;
+  apply_url?: string | null;
+  source?: string | null;
+  listing_status?: string | null;
+}
+
+/**
+ * Identity of a job from its apply URL. Greenhouse, Lever and Ashby links reduce
+ * to provider + board + job id, so boards.greenhouse.io and job-boards.greenhouse.io
+ * links for the same job match. Anything else uses the normalised URL.
+ */
+export function jobIdentity(applyUrl: string | null | undefined): string {
+  if (!applyUrl) return '';
+  const target = identifyEmployerJob(applyUrl);
+  if (target) return `${target.provider}:${target.token.toLowerCase()}:${target.jobId.toLowerCase()}`;
+  return normalizeApplyUrl(applyUrl);
+}
+
+interface CompanyRoleIndex {
+  externalIds: Set<string>;
+  /** Active aggregator rows of this company by job identity. */
+  aggregatorByIdentity: Map<string, string>;
 }
 
 export class SupabaseSink implements SyncSink {
-  private existingIds = new Map<string, Promise<Set<string>>>();
+  private existing = new Map<string, Promise<CompanyRoleIndex>>();
 
   constructor(private db: SupabaseClient) {}
 
@@ -137,7 +160,7 @@ export class SupabaseSink implements SyncSink {
     const rows: StoredRoleId[] = [];
     let cursor: string | undefined;
     for (;;) {
-      let query = this.db.from('roles').select('id,external_job_id')
+      let query = this.db.from('roles').select('id,external_job_id,apply_url,source,listing_status')
         .eq('company_id', companyId).order('id', { ascending: true }).limit(1000);
       if (activeOnly) query = query.eq('source', 'ats').eq('listing_status', 'Active');
       if (cursor) query = query.gt('id', cursor);
@@ -153,15 +176,24 @@ export class SupabaseSink implements SyncSink {
     }
   }
 
-  private roleIds(companyId: string): Promise<Set<string>> {
-    let ids = this.existingIds.get(companyId);
-    if (!ids) {
-      ids = this.readRoleIds(companyId).then((rows) => new Set(
-        rows.flatMap((row) => row.external_job_id ? [row.external_job_id] : []),
-      ));
-      this.existingIds.set(companyId, ids);
+  private roleIndex(companyId: string): Promise<CompanyRoleIndex> {
+    let index = this.existing.get(companyId);
+    if (!index) {
+      index = this.readRoleIds(companyId).then((rows) => {
+        const externalIds = new Set<string>();
+        const aggregatorByIdentity = new Map<string, string>();
+        for (const row of rows) {
+          if (row.external_job_id) externalIds.add(row.external_job_id);
+          if (row.source === 'aggregator' && row.listing_status === 'Active') {
+            const key = jobIdentity(row.apply_url);
+            if (key && !aggregatorByIdentity.has(key)) aggregatorByIdentity.set(key, row.id);
+          }
+        }
+        return { externalIds, aggregatorByIdentity };
+      });
+      this.existing.set(companyId, index);
     }
-    return ids;
+    return index;
   }
 
   async upsertRole(data: UpsertRoleData): Promise<'imported' | 'updated'> {
@@ -169,37 +201,74 @@ export class SupabaseSink implements SyncSink {
     return counts.imported ? 'imported' : 'updated';
   }
 
+  /**
+   * Insert or refresh ATS rows. A posting that is new to this company but is the
+   * same job as an Active aggregator row (same Greenhouse/Lever/Ashby job id, or
+   * the same normalised URL) is not inserted again: the employer's own board
+   * listing that job is evidence for the existing row, so that row is refreshed
+   * instead. This keeps one row per job when an employer's board is added after
+   * an aggregator already imported its listings.
+   */
   async upsertRoles(data: UpsertRoleData[]): Promise<{ imported: number; updated: number }> {
     const unique = [...new Map(data.map((row) => [
       `${row.companyId}\u0000${row.externalJobId}`, row,
     ])).values()];
     if (!unique.length) return { imported: 0, updated: 0 };
-    const known = new Map<string, Set<string>>();
+    const known = new Map<string, CompanyRoleIndex>();
     for (const companyId of new Set(unique.map((row) => row.companyId))) {
-      known.set(companyId, await this.roleIds(companyId));
+      known.set(companyId, await this.roleIndex(companyId));
     }
-    const rows = unique.map(toRoleRow);
-    let { error } = await this.db.from('roles').upsert(rows, { onConflict: 'company_id,external_job_id' });
-    // Older databases may not yet have migration 0003's coordinate columns.
-    if (error && /latitude|longitude/.test(error.message) && /column/i.test(error.message)) {
-      const withoutCoordinates = rows.map(({ latitude: _lat, longitude: _lng, ...rest }) => {
-        void _lat;
-        void _lng;
-        return rest;
-      });
-      ({ error } = await this.db.from('roles').upsert(withoutCoordinates, { onConflict: 'company_id,external_job_id' }));
-    }
-    if (error) throw new Error(`upsert roles: ${error.message}`);
-    const counts = { imported: 0, updated: 0 };
+
+    const toWrite: UpsertRoleData[] = [];
+    const aggregatorIds = new Set<string>();
     for (const row of unique) {
-      const ids = known.get(row.companyId)!;
-      if (ids.has(row.externalJobId)) counts.updated++;
-      else counts.imported++;
-      ids.add(row.externalJobId);
+      const index = known.get(row.companyId)!;
+      if (!index.externalIds.has(row.externalJobId)) {
+        const match = index.aggregatorByIdentity.get(jobIdentity(row.applyUrl));
+        if (match) {
+          aggregatorIds.add(match);
+          continue;
+        }
+      }
+      toWrite.push(row);
+    }
+
+    const counts = { imported: 0, updated: 0 };
+    if (toWrite.length) {
+      const rows = toWrite.map(toRoleRow);
+      let { error } = await this.db.from('roles').upsert(rows, { onConflict: 'company_id,external_job_id' });
+      // Older databases may not yet have migration 0003's coordinate columns.
+      if (error && /latitude|longitude/.test(error.message) && /column/i.test(error.message)) {
+        const withoutCoordinates = rows.map(({ latitude: _lat, longitude: _lng, ...rest }) => {
+          void _lat;
+          void _lng;
+          return rest;
+        });
+        ({ error } = await this.db.from('roles').upsert(withoutCoordinates, { onConflict: 'company_id,external_job_id' }));
+      }
+      if (error) throw new Error(`upsert roles: ${error.message}`);
+      for (const row of toWrite) {
+        const ids = known.get(row.companyId)!.externalIds;
+        if (ids.has(row.externalJobId)) counts.updated++;
+        else counts.imported++;
+        ids.add(row.externalJobId);
+      }
+    }
+
+    if (aggregatorIds.size) {
+      const ids = [...aggregatorIds];
+      const { data: changed, error } = await this.db.from('roles')
+        .update({ last_verified_at: new Date().toISOString() })
+        .in('id', ids).eq('source', 'aggregator').eq('listing_status', 'Active')
+        .select('id');
+      if (error) throw new Error(`refresh matching aggregator roles: ${error.message}`);
+      const n = Array.isArray(changed) ? changed.length : 0;
+      // A refresh that did not land must not be reported, and close-missing must not run after it.
+      if (n < ids.length) throw new Error(`refresh matching aggregator roles: ${ids.length - n} row(s) changed before the write`);
+      counts.updated += n;
     }
     return counts;
   }
-
   async closeMissing(companyId: string, liveIds: string[]): Promise<number> {
     const live = new Set(liveIds);
     const rows = await this.readRoleIds(companyId, true);

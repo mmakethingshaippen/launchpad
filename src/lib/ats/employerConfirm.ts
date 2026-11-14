@@ -1,4 +1,5 @@
 import type { FetchLike } from './types';
+import { fetchRetrying } from './fetchRetry';
 
 export type EmployerProvider = 'greenhouse' | 'lever' | 'ashby';
 
@@ -6,6 +7,8 @@ export interface EmployerTarget {
   provider: EmployerProvider;
   token: string;
   jobId: string;
+  /** Lever hosts EU boards (jobs.eu.lever.co) on a separate API. */
+  region?: 'eu';
 }
 
 export interface EmployerCompany {
@@ -19,15 +22,34 @@ export interface ConfirmableRole {
   company?: EmployerCompany | null;
 }
 
+export interface FailedBoard {
+  provider: EmployerProvider;
+  token: string;
+  region?: 'eu';
+  /** e.g. 'http-404', 'http-521', 'network-error', 'unexpected-response'. */
+  reason: string;
+  /** Jobs that could not be confirmed or closed because this board was unreadable. */
+  roles: number;
+}
+
 export interface EmployerConfirmPlan {
   closeIds: string[];
   confirmIds: string[];
+  /** skippedUnsupported + skippedBoardFailed. Kept for existing callers. */
   skipped: number;
+  /** Expected: the apply URL is not a Greenhouse, Lever or Ashby job link (Workday, custom sites, aggregators). */
+  skippedUnsupported: number;
+  /** Jobs on boards that could not be read. Nothing on those boards is confirmed or closed. */
+  skippedBoardFailed: number;
+  /** Unsupported apply-URL hosts and how many jobs each has, largest first. */
+  unsupportedHosts: Array<{ host: string; roles: number }>;
   boardsChecked: number;
   boardsFailed: number;
+  failedBoards: FailedBoard[];
 }
 
 const FETCH_TIMEOUT_MS = 20_000;
+const BOARD_CONCURRENCY = 4;
 
 function companyToken(company: EmployerCompany | null | undefined, provider: EmployerProvider): string {
   if (!company?.atsBoardToken) return '';
@@ -45,6 +67,8 @@ export function identifyEmployerJob(applyUrl: string, company?: EmployerCompany 
   const host = url.hostname.toLowerCase().replace(/^www\./, '');
   const parts = url.pathname.split('/').filter(Boolean);
 
+  // boards.greenhouse.io, job-boards.greenhouse.io and the regional job-boards.eu/anz
+  // hosts are all served by boards-api.greenhouse.io (checked against live boards).
   if (host.endsWith('greenhouse.io')) {
     const jobsAt = parts.indexOf('jobs');
     const tokenFromPath = jobsAt > 0 ? parts[jobsAt - 1] : '';
@@ -63,8 +87,10 @@ export function identifyEmployerJob(applyUrl: string, company?: EmployerCompany 
     return null;
   }
 
-  if (host === 'jobs.lever.co' && parts.length >= 2 && /^[0-9a-f-]{10,}$/i.test(parts[1])) {
-    return { provider: 'lever', token: parts[0], jobId: parts[1] };
+  if ((host === 'jobs.lever.co' || host === 'jobs.eu.lever.co') && parts.length >= 2 && /^[0-9a-f-]{10,}$/i.test(parts[1])) {
+    return host === 'jobs.eu.lever.co'
+      ? { provider: 'lever', token: parts[0], jobId: parts[1], region: 'eu' }
+      : { provider: 'lever', token: parts[0], jobId: parts[1] };
   }
 
   if (host === 'jobs.ashbyhq.com' && parts.length >= 2 && parts[1] !== 'jobs') {
@@ -72,6 +98,19 @@ export function identifyEmployerJob(applyUrl: string, company?: EmployerCompany 
   }
 
   return null;
+}
+
+export function boardUrl(target: Pick<EmployerTarget, 'provider' | 'token' | 'region'>): string {
+  const token = encodeURIComponent(target.token);
+  if (target.provider === 'greenhouse') return `https://boards-api.greenhouse.io/v1/boards/${token}/jobs?content=false`;
+  if (target.provider === 'lever') {
+    return `https://api${target.region === 'eu' ? '.eu' : ''}.lever.co/v0/postings/${token}?mode=json`;
+  }
+  return `https://api.ashbyhq.com/posting-api/job-board/${token}`;
+}
+
+function boardKey(target: Pick<EmployerTarget, 'provider' | 'token' | 'region'>): string {
+  return `${target.provider}:${target.region ?? 'global'}:${target.token.toLowerCase()}`;
 }
 
 async function readJson(res: { json: () => Promise<unknown> }): Promise<unknown> {
@@ -82,37 +121,53 @@ async function readJson(res: { json: () => Promise<unknown> }): Promise<unknown>
   }
 }
 
-/** Open job ids for one board. Null means the board could not be read, so nothing from it may be closed. */
+export type BoardRead = { open: Set<string>; reason?: undefined } | { open: null; reason: string };
+
+/**
+ * Open job ids for one board, with retries for transient failures. A null set
+ * means the board could not be read, so nothing from it may be confirmed or closed.
+ */
+export async function readBoard(
+  target: Pick<EmployerTarget, 'provider' | 'token' | 'region'>,
+  fetchImpl: FetchLike,
+  signal?: AbortSignal,
+): Promise<BoardRead> {
+  let res;
+  try {
+    res = await fetchRetrying(fetchImpl, boardUrl(target), { signal }, `${target.provider} board ${target.token}`);
+  } catch (error) {
+    const name = error instanceof Error ? error.name : '';
+    return { open: null, reason: name === 'TimeoutError' || name === 'AbortError' ? 'timeout' : 'network-error' };
+  }
+  if (!res.ok) return { open: null, reason: `http-${res.status}` };
+  const data = await readJson(res);
+  if (!data || typeof data !== 'object') return { open: null, reason: 'unreadable-json' };
+
+  if (target.provider === 'lever') {
+    if (!Array.isArray(data)) return { open: null, reason: 'unexpected-response' };
+    return { open: new Set(data.map((job) => String((job as { id?: string }).id ?? '')).filter(Boolean)) };
+  }
+
+  const jobs = (data as { jobs?: unknown }).jobs;
+  if (!Array.isArray(jobs)) return { open: null, reason: 'unexpected-response' };
+  return { open: new Set(jobs.map((job) => String((job as { id?: string | number }).id ?? '')).filter(Boolean)) };
+}
+
+/** Kept for existing callers. */
 export async function fetchOpenJobIds(
   target: EmployerTarget,
   fetchImpl: FetchLike,
   signal?: AbortSignal,
 ): Promise<Set<string> | null> {
-  const token = encodeURIComponent(target.token);
-  const url = target.provider === 'greenhouse'
-    ? `https://boards-api.greenhouse.io/v1/boards/${token}/jobs?content=false`
-    : target.provider === 'lever'
-      ? `https://api.lever.co/v0/postings/${token}?mode=json`
-      : `https://api.ashbyhq.com/posting-api/job-board/${token}`;
+  return (await readBoard(target, fetchImpl, signal)).open;
+}
 
-  let res;
+function hostOf(applyUrl: string): string {
   try {
-    res = await fetchImpl(url, { signal });
+    return new URL(applyUrl).hostname.toLowerCase().replace(/^www\./, '');
   } catch {
-    return null;
+    return 'invalid-url';
   }
-  if (!res.ok) return null;
-  const data = await readJson(res);
-  if (!data || typeof data !== 'object') return null;
-
-  if (target.provider === 'lever') {
-    if (!Array.isArray(data)) return null;
-    return new Set(data.map((job) => String((job as { id?: string }).id ?? '')).filter(Boolean));
-  }
-
-  const jobs = (data as { jobs?: unknown }).jobs;
-  if (!Array.isArray(jobs)) return null;
-  return new Set(jobs.map((job) => String((job as { id?: string | number }).id ?? '')).filter(Boolean));
 }
 
 export async function planEmployerConfirmation(
@@ -121,59 +176,66 @@ export async function planEmployerConfirmation(
 ): Promise<EmployerConfirmPlan> {
   const closeIds: string[] = [];
   const confirmIds: string[] = [];
-  let skipped = 0;
+  let skippedUnsupported = 0;
+  let skippedBoardFailed = 0;
+  const unsupported = new Map<string, number>();
   const groups = new Map<string, { target: EmployerTarget; roles: Array<{ id: string; jobId: string }> }>();
 
   for (const role of roles) {
-    if (!role.applyUrl) {
-      skipped++;
-      continue;
-    }
-    const target = identifyEmployerJob(role.applyUrl, role.company);
+    const target = role.applyUrl ? identifyEmployerJob(role.applyUrl, role.company) : null;
     if (!target) {
-      skipped++;
+      skippedUnsupported++;
+      const host = role.applyUrl ? hostOf(role.applyUrl) : 'no-url';
+      unsupported.set(host, (unsupported.get(host) ?? 0) + 1);
       continue;
     }
-    const key = `${target.provider}:${target.token.toLowerCase()}`;
+    const key = boardKey(target);
     const group = groups.get(key) ?? { target, roles: [] };
     group.roles.push({ id: role.id, jobId: target.jobId });
     groups.set(key, group);
   }
 
-  let boardsFailed = 0;
   const entries = [...groups.values()];
-  const openByBoard = new Map<string, Set<string> | null>();
+  const reads = new Map<string, BoardRead>();
   let cursor = 0;
-  await Promise.all(Array.from({ length: Math.min(4, entries.length) }, async () => {
+  // One slow or failing board only occupies one worker; every other board is still read.
+  await Promise.all(Array.from({ length: Math.min(BOARD_CONCURRENCY, entries.length) }, async () => {
     while (cursor < entries.length) {
-      const index = cursor++;
-      const entry = entries[index];
-      const key = `${entry.target.provider}:${entry.target.token.toLowerCase()}`;
-      const signal = AbortSignal.timeout(FETCH_TIMEOUT_MS);
-      const open = await fetchOpenJobIds(entry.target, fetchImpl, signal);
-      openByBoard.set(key, open);
+      const entry = entries[cursor++];
+      reads.set(boardKey(entry.target), await readBoard(entry.target, fetchImpl, AbortSignal.timeout(FETCH_TIMEOUT_MS)));
     }
   }));
 
+  const failedBoards: FailedBoard[] = [];
   for (const entry of entries) {
-    const key = `${entry.target.provider}:${entry.target.token.toLowerCase()}`;
-    const open = openByBoard.get(key);
-    if (!open) {
-      boardsFailed++;
-      skipped += entry.roles.length;
+    const read = reads.get(boardKey(entry.target))!;
+    if (!read.open) {
+      skippedBoardFailed += entry.roles.length;
+      failedBoards.push({
+        provider: entry.target.provider,
+        token: entry.target.token,
+        ...(entry.target.region ? { region: entry.target.region } : {}),
+        reason: read.reason,
+        roles: entry.roles.length,
+      });
       continue;
     }
     for (const role of entry.roles) {
-      if (open.has(role.jobId)) confirmIds.push(role.id);
+      if (read.open.has(role.jobId)) confirmIds.push(role.id);
       else closeIds.push(role.id);
     }
   }
 
+  failedBoards.sort((a, b) => b.roles - a.roles);
   return {
     closeIds,
     confirmIds,
-    skipped,
-    boardsChecked: entries.length - boardsFailed,
-    boardsFailed,
+    skipped: skippedUnsupported + skippedBoardFailed,
+    skippedUnsupported,
+    skippedBoardFailed,
+    unsupportedHosts: [...unsupported.entries()].map(([host, n]) => ({ host, roles: n })).sort((a, b) => b.roles - a.roles),
+    boardsChecked: entries.length - failedBoards.length,
+    boardsFailed: failedBoards.length,
+    failedBoards,
   };
 }

@@ -14,9 +14,12 @@ import type { SupabaseClient } from '@supabase/supabase-js';
 import type { FetchLike } from './types';
 import { loadAllPages, type PagedLoad } from './dbPaging';
 import { ELIGIBILITY_COLUMNS, verificationBlocker } from './verifyEligibility';
-import { planEmployerConfirmation, type ConfirmableRole } from './employerConfirm';
+import { planEmployerConfirmation, type ConfirmableRole, type FailedBoard } from './employerConfirm';
 import { parseWorkdayToken } from './providers/workday';
 import { blockedReason, detectAccessChallenge, type HeaderSource } from './accessChallenge';
+import { fetchRetrying } from './fetchRetry';
+import { titleMatches } from './aggregators/pageEvidence';
+import { HOST_BLOCK_THRESHOLD, nextBlockedRetryAt, nextRetryAt } from './aggregators/staleSweep';
 
 const DEFAULT_PAGE_SIZE = 1000;
 const WRITE_BATCH = 100;
@@ -48,31 +51,62 @@ async function updateReturningCount(
 export interface WorkdayRecheckResult {
   /** Active Workday roles not refreshed by this run's list download (NULL timestamps included). */
   candidates: number;
-  /** Candidates whose apply URL could not be turned into a detail-API URL. */
+  /** Candidates whose apply URL is not a job link on this company's Workday tenant. */
   unmapped: number;
   /** Candidates the pipeline's own rules treat as concluded/expired: not fetched, not stamped. */
   ineligible: number;
+  /** Candidates whose next_verification_at is still in the future (earlier failure or challenge). */
+  waitingRetry: number;
   attempted: number;
   verified: number;
   closed: number;
-  /** Detail page reachable but without job data. */
+  /** Job data returned but not usable as evidence (no data, not accepting applications, title mismatch). */
   unreadable: number;
-  /** Transport errors and plain 403/429/5xx. */
+  /** Transport errors and plain 403/429/5xx after retries. */
   failed: number;
   /** Explicit access challenges (see accessChallenge.ts). Not included in failed. */
   blocked: number;
+  /** Not attempted because their host kept serving challenges earlier in this run. */
+  hostBlockedSkipped: number;
+  /** Not attempted before the time budget ended. Their attempt time is unchanged, so they lead the next run. */
+  deferred: number;
   /** Writes that errored or matched no row. */
   writeFailures: number;
+  /** Count of each stored failure reason this run, e.g. { 'http-521': 12, timeout: 3 }. */
+  failureReasons: Record<string, number>;
+  blockedHosts: string[];
   coverage: CoverageReport;
-  /** True when the candidate list was read completely and every write landed. */
+  /** True when the candidate list was read completely, every ready role was attempted and every write landed. */
   clean: boolean;
 }
 
+/** Tenant of a Workday apply URL: first host label on myworkdayjobs.com, or /recruiting/{tenant}/ on myworkdaysite.com. */
+function workdayTenantOf(url: URL): string | null {
+  const host = url.hostname.toLowerCase();
+  if (host.endsWith('.myworkdayjobs.com')) return host.split('.')[0];
+  if (host.endsWith('.myworkdaysite.com')) {
+    const parts = url.pathname.split('/').filter(Boolean);
+    const at = parts.indexOf('recruiting');
+    return at >= 0 && parts[at + 1] ? parts[at + 1].toLowerCase() : null;
+  }
+  return null;
+}
+
+/**
+ * Detail-API URL for one job. Workday resolves the job by the id at the end of
+ * the path, whichever career site name is used (checked against a live tenant),
+ * but only within one tenant. A link to another tenant (for example an
+ * aggregator row matched to the wrong company) is not mapped, because its 404
+ * would say nothing about this company's job.
+ */
 export function workdayDetailUrl(token: string, applyUrl: string): string | null {
   const coords = parseWorkdayToken(token);
   if (!coords) return null;
   try {
-    const jobPath = new URL(applyUrl).pathname;
+    const url = new URL(applyUrl);
+    const tenant = workdayTenantOf(url);
+    if (!tenant || tenant !== coords.tenant.toLowerCase()) return null;
+    const jobPath = url.pathname;
     const jobAt = jobPath.indexOf('/job/');
     if (jobAt < 0) return null;
     return `https://${coords.host}/wday/cxs/${encodeURIComponent(coords.tenant)}/${encodeURIComponent(coords.site)}${jobPath.slice(jobAt)}`;
@@ -90,7 +124,11 @@ type WorkdayRow = {
   cohort_year?: unknown;
   application_deadline?: string | null;
   verification_failure_count?: number | null;
+  last_verification_attempt_at?: string | null;
+  next_verification_at?: string | null;
 };
+
+type WorkdayDetail = { jobPostingInfo?: { title?: unknown; canApply?: unknown } | null };
 
 export async function recheckWorkdayRoles(
   db: SupabaseClient,
@@ -101,6 +139,10 @@ export async function recheckWorkdayRoles(
     fetchImpl?: FetchLike;
     pageSize?: number;
     concurrency?: number;
+    /** Time budget for detail requests. Unreached roles are deferred, not failed. */
+    budgetMs?: number;
+    /** Millisecond clock for the budget. Injectable for tests. */
+    clock?: () => number;
     /** Record failed attempts in the 0007 columns. Defaults to true. */
     recordAttempts?: boolean;
     log?: Log;
@@ -111,9 +153,12 @@ export async function recheckWorkdayRoles(
   const fetchImpl = opts.fetchImpl ?? (fetch as unknown as FetchLike);
   const pageSize = opts.pageSize ?? DEFAULT_PAGE_SIZE;
   const recordAttempts = opts.recordAttempts ?? true;
+  const clock = opts.clock ?? Date.now;
+  const deadline = clock() + (opts.budgetMs ?? 20 * 60 * 1000);
   const result: WorkdayRecheckResult = {
-    candidates: 0, unmapped: 0, ineligible: 0, attempted: 0, verified: 0, closed: 0,
-    unreadable: 0, failed: 0, blocked: 0, writeFailures: 0,
+    candidates: 0, unmapped: 0, ineligible: 0, waitingRetry: 0, attempted: 0, verified: 0, closed: 0,
+    unreadable: 0, failed: 0, blocked: 0, hostBlockedSkipped: 0, deferred: 0, writeFailures: 0,
+    failureReasons: {}, blockedHosts: [],
     coverage: { pages: 0, complete: false, stopReason: 'not started' },
     clean: false,
   };
@@ -136,13 +181,13 @@ export async function recheckWorkdayRoles(
   const companyIds = [...tokens.keys()];
 
   const cutoff = opts.refreshedSince.toISOString();
-  const candidates: Array<WorkdayRow & { url: string }> = [];
+  const candidates: Array<WorkdayRow & { url: string; host: string }> = [];
   let pages = 0;
   for (let index = 0; index < companyIds.length; index += 40) {
     const ids = companyIds.slice(index, index + 40);
     const load = await loadAllPages<WorkdayRow>((after) => {
       let q = db.from('roles')
-        .select(`id,company_id,apply_url,${ELIGIBILITY_COLUMNS}`)
+        .select(`id,company_id,apply_url,${ELIGIBILITY_COLUMNS},verification_failure_count,last_verification_attempt_at,next_verification_at`)
         .eq('listing_status', 'Active')
         .or(`last_verified_at.is.null,last_verified_at.lt.${cutoff}`)
         .in('company_id', ids)
@@ -162,10 +207,15 @@ export async function recheckWorkdayRoles(
       const url = token && row.apply_url ? workdayDetailUrl(token, row.apply_url) : null;
       if (!url) { result.unmapped += 1; continue; }
       if (verificationBlocker(row, now)) { result.ineligible += 1; continue; }
-      candidates.push({ ...row, url });
+      if (row.next_verification_at && Date.parse(row.next_verification_at) > now.getTime()) { result.waitingRetry += 1; continue; }
+      candidates.push({ ...row, url, host: new URL(url).hostname });
     }
   }
   result.coverage = { pages, complete: true, stopReason: 'empty page reached' };
+
+  // Fair progress: never-attempted first, then least recently attempted.
+  const attemptKey = (r: WorkdayRow) => (r.last_verification_attempt_at ? Date.parse(r.last_verification_attempt_at) : Number.NEGATIVE_INFINITY);
+  candidates.sort((a, b) => attemptKey(a) - attemptKey(b) || a.id.localeCompare(b.id));
 
   async function write(id: string, patch: Record<string, unknown>): Promise<boolean> {
     const { updated, error } = await updateReturningCount(() =>
@@ -177,44 +227,65 @@ export async function recheckWorkdayRoles(
     return true;
   }
 
-  async function recordFailure(row: WorkdayRow, reason: string): Promise<void> {
+  async function recordFailure(row: WorkdayRow, reason: string, blocked = false): Promise<void> {
+    result.failureReasons[reason] = (result.failureReasons[reason] ?? 0) + 1;
     if (!recordAttempts) return;
     const at = now.toISOString();
+    const count = (row.verification_failure_count ?? 0) + 1;
+    // last_verified_at and listing_status are never part of a failure write.
     await write(row.id, {
       last_verification_attempt_at: at,
       last_verification_failure_at: at,
       last_verification_failure_reason: reason.slice(0, MAX_REASON_CHARS),
-      verification_failure_count: (row.verification_failure_count ?? 0) + 1,
+      verification_failure_count: count,
+      next_verification_at: (blocked ? nextBlockedRetryAt(now, count) : nextRetryAt(now, count)).toISOString(),
     });
   }
 
+  const streaks = new Map<string, number>();
+  const blockedHosts = new Set<string>();
   let cursor = 0;
-  await Promise.all(Array.from({ length: Math.max(1, opts.concurrency ?? 8) }, async () => {
+  await Promise.all(Array.from({ length: Math.max(1, opts.concurrency ?? 6) }, async () => {
     for (;;) {
       const item = candidates[cursor++];
       if (!item) return;
+      if (blockedHosts.has(item.host)) { result.hostBlockedSkipped += 1; continue; }
+      if (clock() > deadline) { result.deferred += 1; continue; }
       result.attempted += 1;
       let status = 0;
-      let body: { jobPostingInfo?: unknown } | null = null;
+      let body: WorkdayDetail | null = null;
       let challenge: ReturnType<typeof detectAccessChallenge> = null;
       try {
-        const response = await fetchImpl(item.url, { headers: { Accept: 'application/json' }, signal: AbortSignal.timeout(15_000) });
+        const response = await fetchRetrying(
+          fetchImpl, item.url,
+          { headers: { Accept: 'application/json' }, signal: AbortSignal.timeout(30_000) },
+          `Workday detail ${item.id}`,
+        );
         status = response.status;
         challenge = detectAccessChallenge(status, (response as { headers?: HeaderSource }).headers);
-        if (response.ok) body = (await response.json().catch(() => null)) as { jobPostingInfo?: unknown } | null;
-      } catch {
+        if (response.ok) body = (await response.json().catch(() => null)) as WorkdayDetail | null;
+      } catch (error) {
+        const name = error instanceof Error ? error.name : '';
         result.failed += 1;
-        await recordFailure(item, 'network-error');
+        await recordFailure(item, name === 'TimeoutError' || name === 'AbortError' ? 'timeout' : 'network-error');
         continue;
       }
       if (challenge) {
-        // Never open or closed evidence. Only the attempt is recorded.
+        // Never open or closed evidence. Only the attempt is recorded, with the long backoff.
         result.blocked += 1;
-        await recordFailure(item, blockedReason(challenge));
+        const streak = (streaks.get(item.host) ?? 0) + 1;
+        streaks.set(item.host, streak);
+        if (streak >= HOST_BLOCK_THRESHOLD && !blockedHosts.has(item.host)) {
+          blockedHosts.add(item.host);
+          log(`Workday host ${item.host}: ${streak} consecutive access challenges; skipping its remaining roles this run`);
+        }
+        await recordFailure(item, blockedReason(challenge), true);
         continue;
       }
+      streaks.set(item.host, 0);
       if (status === 404 || status === 410) {
-        if (await write(item.id, { listing_status: 'Closed', ...(recordAttempts ? { last_verification_attempt_at: now.toISOString() } : {}) })) result.closed += 1;
+        // Workday answers an unknown job id on a reachable tenant with an explicit 404.
+        if (await write(item.id, { listing_status: 'Closed', ...(recordAttempts ? { last_verification_attempt_at: now.toISOString(), next_verification_at: null } : {}) })) result.closed += 1;
         else result.failed += 1;
         continue;
       }
@@ -223,38 +294,62 @@ export async function recheckWorkdayRoles(
         await recordFailure(item, `http-${status}`);
         continue;
       }
-      if (!body || !body.jobPostingInfo) {
+      const info = body?.jobPostingInfo;
+      if (!info || typeof info !== 'object') {
         result.unreadable += 1;
         await recordFailure(item, status >= 200 && status < 300 ? 'no-job-data' : `http-${status}`);
         continue;
       }
+      if (info.canApply === false) {
+        // The posting exists but says it is not taking applications. Not closed from this; not verified either.
+        result.unreadable += 1;
+        await recordFailure(item, 'not-accepting-applications');
+        continue;
+      }
+      if (item.title && typeof info.title === 'string' && !titleMatches(item.title, info.title)) {
+        result.unreadable += 1;
+        await recordFailure(item, 'title-mismatch');
+        continue;
+      }
       const at = now.toISOString();
       const ok = await write(item.id, recordAttempts
-        ? { last_verified_at: at, last_verification_attempt_at: at, last_verification_failure_at: null, last_verification_failure_reason: null, verification_failure_count: 0 }
+        ? {
+          last_verified_at: at, last_verification_attempt_at: at, last_verification_failure_at: null,
+          last_verification_failure_reason: null, verification_failure_count: 0, next_verification_at: null,
+        }
         : { last_verified_at: at });
       if (ok) result.verified += 1;
       else result.failed += 1;
     }
   }));
 
-  result.clean = result.coverage.complete && result.writeFailures === 0;
+  result.blockedHosts = [...blockedHosts].sort();
+  result.clean = result.coverage.complete && result.writeFailures === 0 && result.deferred === 0 && result.hostBlockedSkipped === 0;
+  const reasons = Object.entries(result.failureReasons).sort((a, b) => b[1] - a[1]).map(([r, n]) => `${r} ${n}`).join(', ');
   log(
     `Workday page check: candidates ${result.candidates} (NULL timestamps included); unmapped ${result.unmapped}; ` +
-    `ineligible ${result.ineligible}; attempted ${result.attempted}; verified ${result.verified}; closed ${result.closed}; ` +
-    `unreadable ${result.unreadable}; failed ${result.failed}; blocked ${result.blocked}; write failures ${result.writeFailures}; ` +
-    `pages ${result.coverage.pages} (${result.coverage.stopReason})`,
+    `ineligible ${result.ineligible}; waiting on retry ${result.waitingRetry}; attempted ${result.attempted}; ` +
+    `verified ${result.verified}; closed ${result.closed}; unreadable ${result.unreadable}; failed ${result.failed}; ` +
+    `blocked ${result.blocked}; host-blocked skipped ${result.hostBlockedSkipped}; deferred ${result.deferred}; ` +
+    `write failures ${result.writeFailures}; reasons [${reasons}]; pages ${result.coverage.pages} (${result.coverage.stopReason})`,
   );
   return result;
 }
-
 // ---------------------------------------------------------------- Employer boards
 
 export interface EmployerConfirmResult {
   rolesScanned: number;
   boardsChecked: number;
   boardsFailed: number;
-  /** Roles on boards that could not be read, plus roles whose URL maps to no supported board. */
+  /** skippedUnsupported + skippedBoardFailed. */
   skipped: number;
+  /** Expected: the apply URL is not a Greenhouse, Lever or Ashby job link. Checked by other stages or not at all. */
+  skippedUnsupported: number;
+  /** Jobs on boards that could not be read: neither confirmed nor closed. */
+  skippedBoardFailed: number;
+  failedBoards: FailedBoard[];
+  /** Largest unsupported apply-URL hosts. */
+  unsupportedHosts: Array<{ host: string; roles: number }>;
   /** On a readable board but concluded/expired by the pipeline's own rules: not stamped. */
   ineligible: number;
   /** Rows the database actually stamped / closed. */
@@ -285,7 +380,8 @@ export async function confirmEmployerRoles(
   const now = opts.now ?? new Date();
   const pageSize = opts.pageSize ?? DEFAULT_PAGE_SIZE;
   const result: EmployerConfirmResult = {
-    rolesScanned: 0, boardsChecked: 0, boardsFailed: 0, skipped: 0, ineligible: 0,
+    rolesScanned: 0, boardsChecked: 0, boardsFailed: 0, skipped: 0, skippedUnsupported: 0, skippedBoardFailed: 0,
+    failedBoards: [], unsupportedHosts: [], ineligible: 0,
     confirmed: 0, closed: 0, writeFailures: 0,
     coverage: { pages: 0, complete: false, stopReason: 'not started' }, clean: false,
   };
@@ -322,6 +418,10 @@ export async function confirmEmployerRoles(
   result.boardsChecked = plan.boardsChecked;
   result.boardsFailed = plan.boardsFailed;
   result.skipped = plan.skipped;
+  result.skippedUnsupported = plan.skippedUnsupported;
+  result.skippedBoardFailed = plan.skippedBoardFailed;
+  result.failedBoards = plan.failedBoards;
+  result.unsupportedHosts = plan.unsupportedHosts.slice(0, 10);
   // Absent from a readable board still closes: the listing is gone either way.
   // Present on the board does not override the pipeline's own expiry rules.
   const confirmIds = plan.confirmIds.filter((id) => !blocked.has(id));
@@ -340,7 +440,11 @@ export async function confirmEmployerRoles(
   for (let offset = 0; offset < confirmIds.length; offset += WRITE_BATCH) {
     const ids = confirmIds.slice(offset, offset + WRITE_BATCH);
     const { updated, error } = await updateReturningCount(() =>
-      db.from('roles').update({ last_verified_at: stamp }).in('id', ids).eq('listing_status', 'Active').select('id') as unknown as
+      // The job id is on the employer's own board: role-specific evidence. Clear any earlier failure state.
+      db.from('roles').update({
+        last_verified_at: stamp, last_verification_attempt_at: stamp, last_verification_failure_at: null,
+        last_verification_failure_reason: null, verification_failure_count: 0, next_verification_at: null,
+      }).in('id', ids).eq('listing_status', 'Active').select('id') as unknown as
         PromiseLike<{ data: unknown[] | null; error: { message: string } | null }>);
     if (error) log(`ERROR employer confirm: ${error}`);
     result.confirmed += updated;
@@ -350,8 +454,13 @@ export async function confirmEmployerRoles(
   result.clean = result.coverage.complete && result.boardsFailed === 0 && result.writeFailures === 0;
   log(
     `Employer check: roles scanned ${result.rolesScanned}; boards ${result.boardsChecked}; failed boards ${result.boardsFailed}; ` +
-    `confirmed ${result.confirmed}; closed ${result.closed}; ineligible ${result.ineligible}; skipped ${result.skipped}; ` +
+    `confirmed ${result.confirmed}; closed ${result.closed}; ineligible ${result.ineligible}; ` +
+    `skipped ${result.skipped} (unsupported URL ${result.skippedUnsupported}, on unreadable boards ${result.skippedBoardFailed}); ` +
     `write failures ${result.writeFailures}; pages ${result.coverage.pages} (${result.coverage.stopReason})`,
   );
+  for (const board of result.failedBoards) {
+    log(`  failed board ${board.provider}${board.region ? ' (' + board.region + ')' : ''} ${board.token}: ${board.reason}; ${board.roles} job(s) not checked`);
+  }
+  log(`  unsupported apply-URL hosts (expected; checked elsewhere or not at all): ${result.unsupportedHosts.map((h) => h.host + ' ' + h.roles).join(', ')}`);
   return result;
 }

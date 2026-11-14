@@ -264,3 +264,122 @@ describe('Workday recheck access challenges', () => {
     expect(roles[1]).toMatchObject({ last_verified_at: OLD, listing_status: 'Active', last_verification_failure_reason: 'http-403' });
   });
 });
+describe('Workday recheck: retries, evidence, backoff and fair progress', () => {
+  const company = { id: 'co-cvs', ats_provider: 'workday', ats_board_token: TOKEN };
+  const sequenceFetch = (byId: Record<string, FakeResponse[]>, seen: string[] = []): FetchLike =>
+    (async (url: string) => {
+      const id = String(url).split('_').pop()!;
+      seen.push(id);
+      const queue = byId[id];
+      return queue && queue.length ? queue.shift()! : respond(200, { jobPostingInfo: { title: 'Analyst Intern', canApply: true } });
+    }) as unknown as FetchLike;
+
+  it('retries a transient 521 and verifies the job when the tenant answers', async () => {
+    const roles = [wdRole('R1')];
+    const fake = createDb({ companies: [company], roles });
+    const result = await recheckWorkdayRoles(fake.db, {
+      refreshedSince: RUN_START, now: NOW, fetchImpl: sequenceFetch({ R1: [respond(521)] }),
+    });
+    expect(result).toMatchObject({ attempted: 1, verified: 1, failed: 0 });
+    expect(roles[0].last_verified_at).toBe(NOW.toISOString());
+  });
+
+  it('records a reason and a retry time when the tenant keeps failing, and never changes the date', async () => {
+    const roles = [wdRole('R1')];
+    const fake = createDb({ companies: [company], roles });
+    const result = await recheckWorkdayRoles(fake.db, {
+      refreshedSince: RUN_START, now: NOW, fetchImpl: sequenceFetch({ R1: [respond(521), respond(521), respond(521), respond(521)] }),
+    });
+    expect(result).toMatchObject({ failed: 1, verified: 0, closed: 0, failureReasons: { 'http-521': 1 } });
+    expect(roles[0]).toMatchObject({ last_verified_at: OLD, listing_status: 'Active', last_verification_failure_reason: 'http-521' });
+    expect(Date.parse(String(roles[0].next_verification_at))).toBeGreaterThan(NOW.getTime());
+  });
+
+  it('does not verify a posting that is not accepting applications, or one whose title does not match', async () => {
+    const roles = [wdRole('R1'), wdRole('R2')];
+    const fake = createDb({ companies: [company], roles });
+    const result = await recheckWorkdayRoles(fake.db, {
+      refreshedSince: RUN_START, now: NOW,
+      fetchImpl: sequenceFetch({
+        R1: [respond(200, { jobPostingInfo: { title: 'Analyst Intern', canApply: false } })],
+        R2: [respond(200, { jobPostingInfo: { title: 'Senior Director of Finance', canApply: true } })],
+      }),
+    });
+    expect(result).toMatchObject({ verified: 0, closed: 0, unreadable: 2 });
+    expect(result.failureReasons).toEqual({ 'not-accepting-applications': 1, 'title-mismatch': 1 });
+    expect(roles.every((r) => r.last_verified_at === OLD && r.listing_status === 'Active')).toBe(true);
+  });
+
+  it('does not map a link on a different Workday tenant, so its 404 cannot close this company\'s job', async () => {
+    const roles = [wdRole('R1', { apply_url: 'https://othertenant.wd1.myworkdayjobs.com/en-US/External/job/X/Analyst-Intern_R1' })];
+    const fake = createDb({ companies: [company], roles });
+    const seen: string[] = [];
+    const result = await recheckWorkdayRoles(fake.db, {
+      refreshedSince: RUN_START, now: NOW, fetchImpl: sequenceFetch({ R1: [respond(404)] }, seen),
+    });
+    expect(seen).toEqual([]);
+    expect(result).toMatchObject({ unmapped: 1, closed: 0 });
+    expect(roles[0].listing_status).toBe('Active');
+  });
+
+  it('waits for a scheduled retry time instead of requesting the job again', async () => {
+    const roles = [wdRole('R1', { next_verification_at: new Date(NOW.getTime() + 3_600_000).toISOString() })];
+    const fake = createDb({ companies: [company], roles });
+    const seen: string[] = [];
+    const result = await recheckWorkdayRoles(fake.db, { refreshedSince: RUN_START, now: NOW, fetchImpl: sequenceFetch({}, seen) });
+    expect(seen).toEqual([]);
+    expect(result).toMatchObject({ waitingRetry: 1, attempted: 0 });
+  });
+
+  it('checks the least recently attempted jobs first and defers the rest when the budget ends', async () => {
+    const roles = [
+      wdRole('R1', { last_verification_attempt_at: '2026-11-13T10:00:00.000Z' }),
+      wdRole('R2', { last_verification_attempt_at: null }),
+      wdRole('R3', { last_verification_attempt_at: '2026-11-12T10:00:00.000Z' }),
+    ];
+    const fake = createDb({ companies: [company], roles });
+    const seen: string[] = [];
+    let ticks = 0;
+    const result = await recheckWorkdayRoles(fake.db, {
+      refreshedSince: RUN_START, now: NOW, concurrency: 1, budgetMs: 15, clock: () => (ticks += 10),
+      fetchImpl: sequenceFetch({}, seen),
+    });
+    expect(seen).toEqual(['R2']);
+    expect(result).toMatchObject({ attempted: 1, deferred: 2, clean: false });
+    // Deferred jobs were not written: their attempt time is unchanged, so they lead the next run.
+    expect(roles.find((r) => r.id === 'R3')!.last_verification_attempt_at).toBe('2026-11-12T10:00:00.000Z');
+  });
+
+  it('stops requesting a host after repeated access challenges', async () => {
+    const roles = Array.from({ length: 6 }, (_, i) => wdRole(`R${i}`));
+    const fake = createDb({ companies: [company], roles });
+    const challenged = () => ({ ...respond(403), headers: new Headers({ 'cf-mitigated': 'challenge' }) });
+    const seen: string[] = [];
+    const result = await recheckWorkdayRoles(fake.db, {
+      refreshedSince: RUN_START, now: NOW, concurrency: 1,
+      fetchImpl: (async (url: string) => { seen.push(String(url)); return challenged(); }) as unknown as FetchLike,
+    });
+    expect(seen).toHaveLength(3);
+    expect(result).toMatchObject({ blocked: 3, hostBlockedSkipped: 3, verified: 0, closed: 0, clean: false });
+    expect(roles.every((r) => r.last_verified_at === OLD && r.listing_status === 'Active')).toBe(true);
+  });
+});
+
+describe('employer confirmation clears earlier failure state', () => {
+  it('resets failure columns when the job is on the employer board', async () => {
+    const roles = [{
+      id: 'gh1', company_id: 'co-gh', apply_url: 'https://boards.greenhouse.io/acme/jobs/100', title: 'Data Intern',
+      listing_status: 'Active', source: 'aggregator', last_verified_at: OLD,
+      last_verification_failure_reason: 'timeout', verification_failure_count: 2, next_verification_at: '2026-11-20T00:00:00.000Z',
+    }];
+    const fake = createDb({ companies: [{ id: 'co-gh', ats_provider: 'greenhouse', ats_board_token: 'acme' }], roles });
+    const result = await confirmEmployerRoles(fake.db, {
+      now: NOW,
+      fetchImpl: (async () => ({ ok: true, status: 200, json: async () => ({ jobs: [{ id: 100 }] }) })) as unknown as FetchLike,
+    });
+    expect(result.confirmed).toBe(1);
+    expect(roles[0]).toMatchObject({
+      last_verified_at: NOW.toISOString(), last_verification_failure_reason: null, verification_failure_count: 0, next_verification_at: null,
+    });
+  });
+});

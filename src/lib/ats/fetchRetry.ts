@@ -1,7 +1,12 @@
 import type { FetchLike } from './types';
 
-/** Statuses that usually clear on a second try. A 400 or 404 is a real answer. */
-export const TRANSIENT_HTTP = new Set([408, 429, 500, 502, 503, 504]);
+/**
+ * Statuses that usually clear on a second try. A 400 or 404 is a real answer.
+ * 520-524 are Cloudflare edge errors meaning the origin was unreachable or slow
+ * (Workday boards for HP, Mastercard and Autodesk returned 521 in production and
+ * 200 when re-checked). They say nothing about whether a job exists.
+ */
+export const TRANSIENT_HTTP = new Set([408, 429, 500, 502, 503, 504, 520, 521, 522, 523, 524]);
 
 const DELAYS_MS = process.env.VITEST ? [10, 10, 10] : [1000, 2000, 4000];
 

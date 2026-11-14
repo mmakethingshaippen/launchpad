@@ -45,3 +45,23 @@ describe('seed companies — Waymo, PayPal, Applied Materials (Req 1)', () => {
     }
   });
 });
+
+describe('coverage configuration (Nov 2026)', () => {
+  const bySlug = (slug: string) => SEED_COMPANIES.find((c) => c.slug === slug);
+  it('points Shield AI at its live Ashby board instead of the empty Lever board', () => {
+    expect(bySlug('shield-ai')).toMatchObject({ atsProvider: 'ashby', atsBoardToken: 'shield' });
+  });
+  it.each([
+    ['sharkninja', 'greenhouse', 'sharkninjaoperatingllc'],
+    ['astranis', 'greenhouse', 'astranis'],
+    ['the-new-york-times', 'greenhouse', 'thenewyorktimes'],
+    ['astera-labs', 'greenhouse', 'asteraearlycareer2027'],
+    ['base-power', 'ashby', 'base-power'],
+  ])('adds %s on %s board %s without unverified stage, size or founding year', (slug, provider, token) => {
+    const c = bySlug(slug);
+    expect(c).toMatchObject({ atsProvider: provider, atsBoardToken: token });
+    expect(c!.startupStage).toBeUndefined();
+    expect(c!.employeeCountRange).toBeUndefined();
+    expect(c!.foundingYear).toBeUndefined();
+  });
+});

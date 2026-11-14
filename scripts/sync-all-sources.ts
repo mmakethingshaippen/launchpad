@@ -180,7 +180,7 @@ async function runEmployerConfirmation(): Promise<boolean> {
 async function recheckMissedWorkday(): Promise<boolean> {
   // Small margin for clock skew between this runner and the database.
   const since = new Date((atsStartedAt ?? new Date(Date.now() - 45 * MINUTE)).getTime() - 5 * MINUTE);
-  workdayResult = await recheckWorkdayRoles(db, { refreshedSince: since, log });
+  workdayResult = await recheckWorkdayRoles(db, { refreshedSince: since, log, budgetMs: 15 * MINUTE });
   return workdayResult.clean;
 }
 function writeStepSummary(outcomes: StageOutcome[]): void {
@@ -198,23 +198,26 @@ function writeStepSummary(outcomes: StageOutcome[]): void {
   }
   if (workdayResult) {
     const w = workdayResult;
+    const reasons = Object.entries(w.failureReasons).sort((a, b) => b[1] - a[1]).map(([r, n]) => `${r} ${n}`).join(', ');
     lines.push(
       '', '### Workday page check', '',
-      '| Candidates | Unmapped | Ineligible | Attempted | Verified | Closed | Unreadable | Failed | Blocked | Write failures | Coverage |',
-      '| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |',
-      `| ${w.candidates} | ${w.unmapped} | ${w.ineligible} | ${w.attempted} | ${w.verified} | ${w.closed} | ${w.unreadable} | ${w.failed} | ${w.blocked} | ${w.writeFailures} | ${w.coverage.complete ? 'complete' : `INCOMPLETE (${w.coverage.stopReason.replace(/\|/g, '/')})`} |`,
+      '| Candidates | Unmapped | Ineligible | Waiting on retry | Attempted | Verified | Closed | Unreadable | Failed | Blocked | Host-blocked skipped | Deferred | Write failures | Coverage |',
+      '| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |',
+      `| ${w.candidates} | ${w.unmapped} | ${w.ineligible} | ${w.waitingRetry} | ${w.attempted} | ${w.verified} | ${w.closed} | ${w.unreadable} | ${w.failed} | ${w.blocked} | ${w.hostBlockedSkipped} | ${w.deferred} | ${w.writeFailures} | ${w.coverage.complete ? 'complete' : `INCOMPLETE (${w.coverage.stopReason.replace(/\|/g, '/')})`} |`,
+      '', `Failure reasons: ${reasons || 'none'}. Blocked hosts: ${w.blockedHosts.join(', ') || 'none'}.`,
     );
   }
   if (employerResult) {
     const e = employerResult;
     lines.push(
       '', '### Employer board confirmation', '',
-      '| Roles scanned | Boards read | Boards failed | Confirmed | Closed | Ineligible | Skipped | Write failures | Coverage |',
-      '| --- | --- | --- | --- | --- | --- | --- | --- | --- |',
-      `| ${e.rolesScanned} | ${e.boardsChecked} | ${e.boardsFailed} | ${e.confirmed} | ${e.closed} | ${e.ineligible} | ${e.skipped} | ${e.writeFailures} | ${e.coverage.complete ? 'complete' : `INCOMPLETE (${e.coverage.stopReason.replace(/\|/g, '/')})`} |`,
+      '| Roles scanned | Boards read | Boards failed | Confirmed | Closed | Ineligible | Skipped: unsupported URL | Skipped: unreadable board | Write failures | Coverage |',
+      '| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |',
+      `| ${e.rolesScanned} | ${e.boardsChecked} | ${e.boardsFailed} | ${e.confirmed} | ${e.closed} | ${e.ineligible} | ${e.skippedUnsupported} | ${e.skippedBoardFailed} | ${e.writeFailures} | ${e.coverage.complete ? 'complete' : `INCOMPLETE (${e.coverage.stopReason.replace(/\|/g, '/')})`} |`,
+      '', `Failed boards: ${e.failedBoards.map((b) => `${b.provider}${b.region ? `(${b.region})` : ''} ${b.token} ${b.reason} (${b.roles} jobs)`).join('; ') || 'none'}.`,
+      `Largest unsupported hosts (expected): ${e.unsupportedHosts.map((h) => `${h.host} ${h.roles}`).join(', ') || 'none'}.`,
     );
-  }
-  if (sweepResult) {
+  }  if (sweepResult) {
     const s = sweepResult;
     lines.push(
       '', '### Aggregator verification', '',
