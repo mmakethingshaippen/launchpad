@@ -20,7 +20,13 @@
  * Aggregator feeds are downloaded once inside ingestAggregators. That pass
  * inserts new rows and refreshes verification timestamps for listings it
  * actually saw. It does not fetch the feeds again. Roles it did not see are
- * checked on their own page by sweepStaleAggregatorRoles (24h target interval).
+ * checked on their own page by sweepStaleAggregatorRoles: every active role not
+ * verified since the start of the current UTC day (daily cohort, so schedule
+ * drift cannot push a role to the following day).
+ *
+ * Exit status is non-zero when coverage was incomplete: a feed cut short, a
+ * board that could not be read, deferred or unpaged roles, or a database write
+ * that did not land. Unreadable pages are reported and retried, not fatal.
  *
  * Optional environment:
  *   AGGREGATOR_VERIFY_BUDGET_MINUTES  time budget for fallback verification (default 45)
@@ -30,11 +36,16 @@
 import { appendFileSync } from 'node:fs';
 import { createServiceClient, loadSyncableCompanies, SupabaseSink } from '../src/lib/ats/supabaseSink';
 import { syncAll } from '../src/lib/ats/sync';
-import { aggregatorRunSucceeded, ingestAggregators } from '../src/lib/ats/aggregators/ingest';
-import { planEmployerConfirmation, type ConfirmableRole } from '../src/lib/ats/employerConfirm';
+import { aggregatorRunSucceeded, ingestAggregators, type AggregatorResult } from '../src/lib/ats/aggregators/ingest';
+import {
+  confirmEmployerRoles,
+  recheckWorkdayRoles,
+  type EmployerConfirmResult,
+  type WorkdayRecheckResult,
+} from '../src/lib/ats/verifyChecks';
 import { sweepStaleAggregatorRoles, type StaleSweepResult } from '../src/lib/ats/aggregators/staleSweep';
 import { runStages, type PipelineStage, type StageOutcome } from '../src/lib/ats/pipeline';
-import { parseWorkdayToken } from '../src/lib/ats/providers/workday';
+
 
 const args = process.argv.slice(2);
 const atsOnly = args.includes('--ats-only');
@@ -52,18 +63,7 @@ const verifyBudgetMs = (() => {
   return Number.isFinite(minutes) && minutes > 0 ? minutes * MINUTE : 45 * MINUTE;
 })();
 
-function workdayDetailUrl(token: string, applyUrl: string): string | null {
-  const coords = parseWorkdayToken(token);
-  if (!coords) return null;
-  try {
-    const jobPath = new URL(applyUrl).pathname;
-    const jobAt = jobPath.indexOf('/job/');
-    if (jobAt < 0) return null;
-    return `https://${coords.host}/wday/cxs/${encodeURIComponent(coords.tenant)}/${encodeURIComponent(coords.site)}${jobPath.slice(jobAt)}`;
-  } catch {
-    return null;
-  }
-}
+
 
 const log = (message: string) =>
   console.log(`[${new Date().toISOString()}] ${message}`);
@@ -72,6 +72,7 @@ const errorMessage = (error: unknown) =>
   error instanceof Error ? error.message : String(error);
 
 async function runAts(): Promise<boolean> {
+  atsStartedAt = new Date();
   const companies = await loadSyncableCompanies(db);
 
   log(`Configured ATS companies: ${companies.length}`);
@@ -99,16 +100,19 @@ async function runAts(): Promise<boolean> {
   return failures === 0;
 }
 
+let ingestResults: AggregatorResult[] = [];
+
 async function runAggregatorIngest(): Promise<boolean> {
   log('Importing and refreshing aggregator postings from a single fetch per source');
 
   const results = await ingestAggregators(db);
+  ingestResults = results;
 
   for (const result of results) {
     log(
       `${result.source}: fetched ${result.fetched}; processed ${result.processed}; ` +
       `new ${result.rolesUpserted}; refreshed ${result.refreshed}; closed ${result.closed}; ` +
-      `feedComplete ${result.feedComplete}; closeMissingEligible ${result.closeMissingEligible}` +
+      `coverage ${result.coverage}; feedComplete ${result.feedComplete}; closeMissingEligible ${result.closeMissingEligible}` +
       `${result.feedPages === null ? '' : `; pages read ${result.feedPages}`}; ` +
       `stop reason: ${result.feedStopReason}; ` +
       `duplicates ${result.duplicatesSkipped}; invalid ${result.skippedInvalid}; ` +
@@ -131,6 +135,16 @@ async function runAggregatorIngest(): Promise<boolean> {
     `sources with errors ${results.filter((result) => result.errors.length).length}. ` +
     'Unobserved jobs were not closed or re-stamped here; fallback verification handles them next.',
   );
+  const partial = results.filter((r) => r.coverage === 'partial' || r.coverage === 'failed' || r.coverage === 'blocked');
+  for (const r of results.filter((x) => x.coverage === 'blocked')) {
+    log(`BLOCKED ${r.source}: ${r.accessChallenge?.evidence ?? 'access challenge'}. Its listings were neither refreshed nor closed; fallback checks will back off.`);
+  }
+  if (partial.length) {
+    log(
+      `Feeds NOT fully read: ${partial.map((r) => `${r.source} (${r.coverage}: ${r.feedStopReason})`).join('; ')}. ` +
+      'Postings that were read were saved; jobs beyond the cut-off were neither refreshed nor closed.',
+    );
+  }
 
   return aggregatorRunSucceeded(results);
 }
@@ -139,174 +153,36 @@ let sweepResult: StaleSweepResult | null = null;
 
 async function runAggregatorVerification(): Promise<boolean> {
   log('Fallback verification of active aggregator roles the feeds did not observe');
-  sweepResult = await sweepStaleAggregatorRoles(db, { log, budgetMs: verifyBudgetMs });
+  const feeds = ingestResults.map((r) => ({
+    source: r.source, coverage: r.coverage, fetched: r.fetched, refreshed: r.refreshed,
+    stopReason: r.feedStopReason.slice(0, 300), accessChallenge: r.accessChallenge ?? null,
+  }));
+  sweepResult = await sweepStaleAggregatorRoles(db, { log, budgetMs: verifyBudgetMs, feeds });
   // Unreadable pages and failed fetches are recorded and retried; they do not fail the run.
   // An incomplete cycle (deferred roles, incomplete pagination) or lost writes do.
   return sweepResult.cycleComplete && sweepResult.writeFailures === 0;
 }
 
+let workdayResult: WorkdayRecheckResult | null = null;
+let employerResult: EmployerConfirmResult | null = null;
+// Set when the ATS stage starts; roles the board download stamped are at or after this.
+let atsStartedAt: Date | null = null;
+
 async function runEmployerConfirmation(): Promise<boolean> {
   log('Checking Greenhouse, Lever, and Ashby boards for closed jobs');
-  const roles: ConfirmableRole[] = [];
-  let after = '';
-
-  for (;;) {
-    let query = db.from('roles')
-      .select('id,apply_url,companies(ats_provider,ats_board_token)')
-      .eq('listing_status', 'Active')
-      .order('id', { ascending: true })
-      .limit(1000);
-    if (after) query = query.gt('id', after);
-    const { data, error } = await query;
-    if (error) {
-      log(`ERROR employer check: ${error.message}`);
-      return false;
-    }
-    const page = data ?? [];
-    // Only an empty page ends the scan; a server row cap below 1000 returns short pages.
-    if (page.length === 0) break;
-    for (const row of page) {
-      const company = Array.isArray(row.companies) ? row.companies[0] : row.companies;
-      roles.push({
-        id: String(row.id),
-        applyUrl: typeof row.apply_url === 'string' ? row.apply_url : null,
-        company: company ? {
-          atsProvider: company.ats_provider as string | null,
-          atsBoardToken: company.ats_board_token as string | null,
-        } : null,
-      });
-    }
-    after = String(page[page.length - 1].id);
-  }
-
-  const plan = await planEmployerConfirmation(roles);
-  const now = new Date().toISOString();
-
-  for (let offset = 0; offset < plan.closeIds.length; offset += 100) {
-    const ids = plan.closeIds.slice(offset, offset + 100);
-    const { error } = await db.from('roles').update({ listing_status: 'Closed' }).in('id', ids).eq('listing_status', 'Active');
-    if (error) {
-      log(`ERROR employer close: ${error.message}`);
-      return false;
-    }
-  }
-
-  for (let offset = 0; offset < plan.confirmIds.length; offset += 100) {
-    const ids = plan.confirmIds.slice(offset, offset + 100);
-    const { error } = await db.from('roles').update({ last_verified_at: now }).in('id', ids).eq('listing_status', 'Active');
-    if (error) {
-      log(`ERROR employer confirm: ${error.message}`);
-      return false;
-    }
-  }
-
-  log(
-    `Employer check: boards ${plan.boardsChecked}; failed boards ${plan.boardsFailed}; ` +
-    `confirmed open ${plan.confirmIds.length}; closed ${plan.closeIds.length}; skipped ${plan.skipped}`,
-  );
-  return true;
+  employerResult = await confirmEmployerRoles(db, { log });
+  // Failed boards, an incomplete role list, or writes that did not land mean some
+  // roles were not checked even though the stage ran.
+  return employerResult.clean;
 }
 
 /** Roles the list download did not touch are checked on their own Workday page. */
 async function recheckMissedWorkday(): Promise<boolean> {
-  const cutoff = new Date(Date.now() - 45 * 60 * 1000).toISOString();
-  const { data: companies, error } = await db.from('companies')
-    .select('id,ats_board_token')
-    .eq('ats_provider', 'workday')
-    .not('ats_board_token', 'is', null);
-  if (error) {
-    log(`ERROR workday recheck: ${error.message}`);
-    return false;
-  }
-  const tokens = new Map<string, string>();
-  for (const company of companies ?? []) {
-    if (typeof company.ats_board_token === 'string') tokens.set(String(company.id), company.ats_board_token);
-  }
-  const companyIds = [...tokens.keys()];
-  if (!companyIds.length) return true;
-
-  const stale: Array<{ id: string; url: string }> = [];
-  for (let index = 0; index < companyIds.length; index += 40) {
-    const ids = companyIds.slice(index, index + 40);
-    let after = '';
-    for (;;) {
-      let query = db.from('roles')
-        .select('id,company_id,apply_url')
-        .eq('listing_status', 'Active')
-        .lt('last_verified_at', cutoff)
-        .in('company_id', ids)
-        .order('id', { ascending: true })
-        .limit(1000);
-      if (after) query = query.gt('id', after);
-      const { data, error: roleError } = await query;
-      if (roleError) {
-        log(`ERROR workday recheck: ${roleError.message}`);
-        return false;
-      }
-      const page = data ?? [];
-      if (page.length === 0) break;
-      for (const row of page) {
-        const token = tokens.get(String(row.company_id));
-        const applyUrl = typeof row.apply_url === 'string' ? row.apply_url : '';
-        const detail = token ? workdayDetailUrl(token, applyUrl) : null;
-        if (!detail) continue;
-        stale.push({ id: String(row.id), url: detail });
-      }
-      after = String(page[page.length - 1].id);
-    }
-  }
-
-  log(`Workday roles the list did not refresh: ${stale.length}`);
-  let cursor = 0;
-  let confirmed = 0;
-  let closed = 0;
-  let unread = 0;
-
-  const workers = Array.from({ length: 8 }, async () => {
-    for (;;) {
-      const current = cursor;
-      cursor += 1;
-      const item = stale[current];
-      if (!item) return;
-      try {
-        const response = await fetch(item.url, {
-          headers: { Accept: 'application/json' },
-          signal: AbortSignal.timeout(15000),
-        });
-        if (response.status === 404 || response.status === 410) {
-          closed += 1;
-          const { error: closeError } = await db.from('roles')
-            .update({ listing_status: 'Closed' })
-            .eq('id', item.id)
-            .eq('listing_status', 'Active');
-          if (closeError) log(`ERROR workday close ${item.id}: ${closeError.message}`);
-          continue;
-        }
-        if (!response.ok) {
-          unread += 1;
-          continue;
-        }
-        const body = await response.json() as { jobPostingInfo?: unknown };
-        if (!body.jobPostingInfo) {
-          unread += 1;
-          continue;
-        }
-        confirmed += 1;
-        const { error: stampError } = await db.from('roles')
-          .update({ last_verified_at: new Date().toISOString() })
-          .eq('id', item.id)
-          .eq('listing_status', 'Active');
-        if (stampError) log(`ERROR workday stamp ${item.id}: ${stampError.message}`);
-      } catch {
-        unread += 1;
-      }
-    }
-  });
-  await Promise.all(workers);
-  log(`Workday page check: refreshed ${confirmed}; closed ${closed}; still unread ${unread}`);
-  return true;
+  // Small margin for clock skew between this runner and the database.
+  const since = new Date((atsStartedAt ?? new Date(Date.now() - 45 * MINUTE)).getTime() - 5 * MINUTE);
+  workdayResult = await recheckWorkdayRoles(db, { refreshedSince: since, log });
+  return workdayResult.clean;
 }
-
 function writeStepSummary(outcomes: StageOutcome[]): void {
   const path = process.env.GITHUB_STEP_SUMMARY;
   if (!path) return;
@@ -314,14 +190,44 @@ function writeStepSummary(outcomes: StageOutcome[]): void {
   for (const o of outcomes) {
     lines.push(`| ${o.name} | ${o.group} | ${o.status}${o.error ? `: ${o.error.replace(/\|/g, '/')}` : ''} | ${(o.durationMs / 1000).toFixed(1)} |`);
   }
+  if (ingestResults.length) {
+    lines.push('', '### Aggregator feeds', '', '| Source | Coverage | Fetched | New | Refreshed | Closed | Errors | Stop reason |', '| --- | --- | --- | --- | --- | --- | --- | --- |');
+    for (const r of ingestResults) {
+      lines.push(`| ${r.source} | ${r.coverage === 'complete' || r.coverage === 'disabled' ? r.coverage : r.coverage.toUpperCase()} | ${r.fetched} | ${r.rolesUpserted} | ${r.refreshed} | ${r.closed} | ${r.errors.length} | ${r.feedStopReason.replace(/\|/g, '/').slice(0, 300)} |`);
+    }
+  }
+  if (workdayResult) {
+    const w = workdayResult;
+    lines.push(
+      '', '### Workday page check', '',
+      '| Candidates | Unmapped | Ineligible | Attempted | Verified | Closed | Unreadable | Failed | Blocked | Write failures | Coverage |',
+      '| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |',
+      `| ${w.candidates} | ${w.unmapped} | ${w.ineligible} | ${w.attempted} | ${w.verified} | ${w.closed} | ${w.unreadable} | ${w.failed} | ${w.blocked} | ${w.writeFailures} | ${w.coverage.complete ? 'complete' : `INCOMPLETE (${w.coverage.stopReason.replace(/\|/g, '/')})`} |`,
+    );
+  }
+  if (employerResult) {
+    const e = employerResult;
+    lines.push(
+      '', '### Employer board confirmation', '',
+      '| Roles scanned | Boards read | Boards failed | Confirmed | Closed | Ineligible | Skipped | Write failures | Coverage |',
+      '| --- | --- | --- | --- | --- | --- | --- | --- | --- |',
+      `| ${e.rolesScanned} | ${e.boardsChecked} | ${e.boardsFailed} | ${e.confirmed} | ${e.closed} | ${e.ineligible} | ${e.skipped} | ${e.writeFailures} | ${e.coverage.complete ? 'complete' : `INCOMPLETE (${e.coverage.stopReason.replace(/\|/g, '/')})`} |`,
+    );
+  }
   if (sweepResult) {
     const s = sweepResult;
     lines.push(
       '', '### Aggregator verification', '',
-      '| Eligible | Attempted | Verified | Closed | Unreadable | Failed | Deferred | Backlog | Waiting on retry | Cycle complete |',
-      '| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |',
-      `| ${s.eligible} | ${s.attempted} | ${s.verified} | ${s.closed} | ${s.unreadable} | ${s.failed} | ${s.deferred} | ${s.backlog} | ${s.waitingRetry} | ${s.cycleComplete ? 'yes' : 'NO'} |`,
+      '| Eligible | Attempted | Recovery probes | Verified | Closed | Unreadable | Failed | Blocked | Host-blocked skipped | Deferred | Write failures | Backlog | Waiting on retry (start) | Waiting on retry (end) | Ineligible | Cycle complete |',
+      '| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |',
+      `| ${s.eligible} | ${s.attempted} | ${s.recoveryProbes} | ${s.verified} | ${s.closed} | ${s.unreadable} | ${s.failed} | ${s.blocked} | ${s.hostBlockedSkipped} | ${s.deferred} | ${s.writeFailures} | ${s.backlog} | ${s.retryWaitingAtStart} | ${s.retryScheduledAtEnd} | ${s.ineligible} | ${s.cycleComplete ? 'yes' : 'NO'} |`,
       '', `Pagination: ${s.pagination.pages} page(s), ${s.pagination.complete ? 'complete' : 'INCOMPLETE'} (${s.pagination.stopReason}).`,
+      `Blocked hosts: ${s.blockedHosts.join(', ') || 'none'}. Recovered hosts: ${s.recoveredHosts.join(', ') || 'none'}` +
+        `${s.retryCleared ? ` (${s.retryCleared} retry time(s) cleared for the next run)` : ''}.`,
+      '', '| Feed | Host | Due | Waiting (start) | Attempted | Verified | Closed | Unreadable | Failed | Blocked | Host-blocked skipped | Deferred |',
+      '| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |',
+      ...s.bySource.map((b) =>
+        `| ${b.feed} | ${b.host} | ${b.due} | ${b.waitingAtStart} | ${b.attempted} | ${b.verified} | ${b.closed} | ${b.unreadable} | ${b.failed} | ${b.blocked} | ${b.hostBlockedSkipped} | ${b.deferred} |`),
     );
   }
   try {

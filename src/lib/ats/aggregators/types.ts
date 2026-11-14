@@ -25,6 +25,11 @@ export interface FeedReport {
   pagesRead: number;
   /** Why paging ended, including every reason that made the feed incomplete. */
   stopReason: string;
+  /**
+   * Set only when the source served an explicit access challenge (see
+   * accessChallenge.ts). A plain HTTP error does not set this.
+   */
+  blocked?: { status: number; vendor: string; evidence: string };
 }
 
 export interface AggregatorClient {

@@ -37,6 +37,21 @@ export interface AggregatorResult {
   feedPages: number | null;
   /** Why the feed ended or why it counts as incomplete. */
   feedStopReason: string;
+  /**
+   * complete  the whole feed was read
+   * partial   some postings were read and saved, but the feed was cut short
+   *           (time limit, page errors, safety cap). Jobs past the cut-off were
+   *           neither refreshed nor closed.
+   * failed    nothing usable was read
+   * blocked   the source served an explicit access challenge (e.g. Cloudflare);
+   *           whatever was read before it is kept, nothing past it was seen
+   * disabled  the source is not configured (no credentials); nothing expected
+   */
+  coverage: 'complete' | 'partial' | 'failed' | 'blocked' | 'disabled';
+  /** Present when coverage is 'blocked'. */
+  accessChallenge?: { status: number; vendor: string; evidence: string };
+  /** Refresh writes that errored or matched fewer rows than requested. */
+  refreshWriteFailures: number;
   errors: string[];
   durationMs: number;
 }
@@ -94,7 +109,10 @@ type IndexedRole = {
  * Inserts can still have happened; callers must not treat that as a clean run.
  */
 export function aggregatorRunSucceeded(results: AggregatorResult[]): boolean {
-  return results.every((result) => result.errors.length === 0);
+  return results.every((result) =>
+    result.errors.length === 0 &&
+    result.refreshWriteFailures === 0 &&
+    (result.coverage === 'complete' || result.coverage === 'disabled'));
 }
 
 function isMissingCoordColumn(error: { message: string } | null): boolean {
@@ -103,7 +121,13 @@ function isMissingCoordColumn(error: { message: string } | null): boolean {
 
 export async function ingestAggregators(
   db: SupabaseClient,
-  opts: { fetchImpl?: typeof fetch; now?: Date; clients?: AggregatorClient[] } = {},
+  opts: {
+    fetchImpl?: typeof fetch;
+    now?: Date;
+    clients?: AggregatorClient[];
+    /** Per-source feed time limit. Postings read before it fires are kept; coverage is reported as partial. */
+    feedTimeoutMs?: number;
+  } = {},
 ): Promise<AggregatorResult[]> {
   const startedAt = Date.now();
   const clients: AggregatorClient[] = opts.clients ?? [
@@ -148,13 +172,15 @@ export async function ingestAggregators(
       closeMissingEligible: false,
       feedPages: null,
       feedStopReason: 'feed not fetched',
+      coverage: 'failed',
+      refreshWriteFailures: 0,
       errors: [],
       durationMs: 0,
     };
     console.log(`[${stamp()}] ${client.source}: fetching feed`);
     let postings: AggregatedPosting[];
     try {
-      postings = await client.fetchEarlyCareer(AbortSignal.timeout(90_000));
+      postings = await client.fetchEarlyCareer(AbortSignal.timeout(opts.feedTimeoutMs ?? 90_000));
     } catch (error) {
       result.errors.push(`Feed fetch: ${message(error)}`);
       result.durationMs = Date.now() - sourceStarted;
@@ -168,6 +194,22 @@ export async function ingestAggregators(
     result.feedPages = report?.pagesRead ?? null;
     result.feedStopReason = report?.stopReason ??
       (client.feedWasComplete ? (result.feedComplete ? 'feed fully read' : 'feed reported incomplete') : 'source does not report completeness');
+    if ((client as { enabled?: boolean }).enabled === false) {
+      result.coverage = 'disabled';
+      result.feedStopReason = 'source not configured (missing credentials); nothing fetched';
+    } else if (report?.blocked) {
+      result.coverage = 'blocked';
+      result.accessChallenge = report.blocked;
+      // An error, so the run can never be reported clean while access is refused.
+      result.errors.push(
+        `Access challenge from ${client.source} (${report.blocked.evidence}); ` +
+        `${postings.length} posting(s) read before it. Unread listings were neither refreshed nor closed.`,
+      );
+    } else if (result.feedComplete) {
+      result.coverage = 'complete';
+    } else {
+      result.coverage = postings.length > 0 ? 'partial' : 'failed';
+    }
     console.log(`[${stamp()}] ${client.source}: ${postings.length} postings fetched`);
 
     let pending: RoleRow[] = [];
@@ -212,15 +254,23 @@ export async function ingestAggregators(
         const batch = ids.slice(offset, offset + WRITE_BATCH);
         // Stamp only rows we loaded as active aggregator listings. Do not reopen
         // closed rows and do not touch ATS rows that share an application URL.
-        const { error } = await db.from('roles').update({ last_verified_at: verifiedAt })
+        const { data, error } = await db.from('roles').update({ last_verified_at: verifiedAt })
           .eq('source', 'aggregator')
           .eq('listing_status', 'Active')
-          .in('id', batch);
+          .in('id', batch)
+          .select('id');
         if (error) {
+          result.refreshWriteFailures += batch.length;
           result.errors.push(`Verify batch (${batch.length}): ${error.message}`);
           console.error(`[${stamp()}] ${client.source}: verify batch failed: ${error.message}`);
         } else {
-          result.refreshed += batch.length;
+          // Count what the database changed, not what was requested.
+          const updated = Array.isArray(data) ? data.length : 0;
+          result.refreshed += updated;
+          if (updated < batch.length) {
+            result.refreshWriteFailures += batch.length - updated;
+            console.error(`[${stamp()}] ${client.source}: ${batch.length - updated} refresh write(s) matched no row`);
+          }
         }
       }
       console.log(`[${stamp()}] ${client.source}: ${result.refreshed} existing roles refreshed`);
@@ -331,16 +381,17 @@ export async function ingestAggregators(
       const stale = prefix ? index.staleIds(prefix, live) : [];
       for (let offset = 0; offset < stale.length; offset += WRITE_BATCH) {
         const batch = stale.slice(offset, offset + WRITE_BATCH);
-        const { error } = await db.from('roles').update({ listing_status: 'Closed' })
+        const { data, error } = await db.from('roles').update({ listing_status: 'Closed' })
           .eq('source', 'aggregator')
           .eq('listing_status', 'Active')
-          .in('id', batch);
+          .in('id', batch)
+          .select('id');
         if (error) {
           result.errors.push(`Close missing (${batch.length}): ${error.message}`);
           console.error(`[${stamp()}] ${client.source}: close missing failed: ${error.message}`);
           break;
         }
-        result.closed += batch.length;
+        result.closed += Array.isArray(data) ? data.length : 0;
       }
       if (result.closed) {
         console.log(`[${stamp()}] ${client.source}: closed ${result.closed} listings missing from the completed feed`);
@@ -349,7 +400,7 @@ export async function ingestAggregators(
     result.durationMs = Date.now() - sourceStarted;
     console.log(
       `[${stamp()}] ${client.source}: complete in ${(result.durationMs / 1000).toFixed(1)}s; ` +
-      `feedComplete ${result.feedComplete} (${result.feedStopReason}); fetched ${result.fetched}; new ${result.rolesUpserted}; refreshed ${result.refreshed}; ` +
+      `coverage ${result.coverage}; feedComplete ${result.feedComplete} (${result.feedStopReason}); fetched ${result.fetched}; new ${result.rolesUpserted}; refreshed ${result.refreshed}; ` +
       `duplicates ${result.duplicatesSkipped}; invalid ${result.skippedInvalid}; ` +
       `expired ${result.skippedExpired}; closed ${result.closed}; companies ${result.companiesUpserted}; errors ${result.errors.length}`,
     );

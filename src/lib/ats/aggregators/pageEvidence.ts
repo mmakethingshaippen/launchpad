@@ -11,7 +11,11 @@
  *
  * Closing needs an explicit 404/410 that can be attributed to the original URL.
  * Everything else leaves the row open and unverified.
+ *
+ * An explicit access challenge (see accessChallenge.ts) is reported as
+ * 'blocked', separately from ordinary failures. A plain 403 stays 'failed'.
  */
+import { blockedReason, detectAccessChallenge, type HeaderSource } from '../accessChallenge';
 
 const MIN_LIVE_BODY_CHARS = 500;
 
@@ -24,8 +28,9 @@ const CLOSED_PAGE_RE =
  * closed     explicit 404/410 on the original URL
  * unreadable the page was reached but cannot prove or disprove this role
  * failed     transport or server-side trouble; nothing was learned
+ * blocked    the site served an explicit bot/access challenge; nothing was learned
  */
-export type PageVerdictKind = 'closed' | 'live' | 'unreadable' | 'failed';
+export type PageVerdictKind = 'closed' | 'live' | 'unreadable' | 'failed' | 'blocked';
 
 export interface PageVerdict {
   verdict: PageVerdictKind;
@@ -41,6 +46,8 @@ export interface PageEvidenceInput {
   requestedUrl: string;
   /** Final URL after redirects (Response.url). Empty or absent means "same as requested". */
   finalUrl?: string | null;
+  /** Response headers, used only to recognise an explicit access challenge. */
+  headers?: HeaderSource | null;
   now?: Date;
 }
 
@@ -233,6 +240,10 @@ function evidenceForRole(
 export function judgePage(input: PageEvidenceInput): PageVerdict {
   const { status, contentType, body, role, requestedUrl, finalUrl } = input;
   const redirected = redirectedElsewhere(requestedUrl, finalUrl);
+
+  // Before any status rule: a challenge can arrive as 403, 429, 503 or even 200.
+  const challenge = detectAccessChallenge(status, input.headers, body);
+  if (challenge) return { verdict: 'blocked', reason: blockedReason(challenge) };
 
   if (status === 404 || status === 410) {
     // A 404 at a redirect target (often a generic page) says nothing about the original job.

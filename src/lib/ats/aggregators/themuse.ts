@@ -3,6 +3,7 @@ import { fetchRetrying, TRANSIENT_HTTP } from '../fetchRetry';
 import type { AggregatedPosting, AggregatorClient, FeedReport } from './types';
 import { isEarlyCareerTitle } from '../classify';
 import { splitLocation } from '../util';
+import { detectAccessChallenge, type AccessChallenge, type HeaderSource } from '../accessChallenge';
 
 // The Muse public jobs API (keyless):
 //   https://www.themuse.com/api/public/jobs?level=Internship&page=1
@@ -42,6 +43,7 @@ export function createTheMuseClient(fetchImpl: FetchLike = fetch): AggregatorCli
       feedComplete = false;
       let stoppedEarly = false;
       let pagesRead = 0;
+      let blocked: { status: number; challenge: AccessChallenge } | null = null;
       const reasons: string[] = [];
       const stop = (level: string, page: number, reason: string, incomplete: boolean) => {
         reasons.push(`${level}: ${reason} at page ${page}`);
@@ -50,6 +52,15 @@ export function createTheMuseClient(fetchImpl: FetchLike = fetch): AggregatorCli
       const out: AggregatedPosting[] = [];
       const seen = new Set<string>(); // dedup across level/page queries
       for (const level of LEVELS) {
+        if (blocked) {
+          // Same host, same challenge: do not send more requests for the other level.
+          stop(level, 1, 'not requested: access challenge on an earlier request', true);
+          continue;
+        }
+        if (signal?.aborted) {
+          stop(level, 1, 'not started: feed time limit reached', true);
+          continue;
+        }
         let previousFirstId: number | undefined;
         let skippedPages = 0;
         for (let page = 1; page <= MAX_PAGES_PER_LEVEL; page++) {
@@ -59,6 +70,11 @@ export function createTheMuseClient(fetchImpl: FetchLike = fetch): AggregatorCli
             res = await fetchRetrying(fetchImpl, url, { signal }, `The Muse ${level} page ${page}`);
           } catch {
             stoppedEarly = true;
+            if (signal?.aborted) {
+              // The caller's time limit, not a page error. Keep what was read and say so.
+              stop(level, page, `feed time limit reached after ${pagesRead} page(s) read`, true);
+              break;
+            }
             skippedPages += 1;
             if (skippedPages >= 3) {
               stop(level, page, 'stopped after 3 skipped pages (network errors)', true);
@@ -69,6 +85,15 @@ export function createTheMuseClient(fetchImpl: FetchLike = fetch): AggregatorCli
           }
           if (!res.ok) {
             stoppedEarly = true;
+            const withExtras = res as typeof res & { headers?: HeaderSource; text?: () => Promise<string> };
+            const refusalBody = withExtras.text ? (await withExtras.text().catch(() => '')).slice(0, 20_000) : '';
+            const challenge = detectAccessChallenge(res.status, withExtras.headers, refusalBody);
+            if (challenge) {
+              blocked = { status: res.status, challenge };
+              stop(level, page, `access challenge: ${challenge.evidence}`, true);
+              console.error(`The Muse: access challenge on ${level} page ${page}: ${challenge.evidence}`);
+              break;
+            }
             if (!TRANSIENT_HTTP.has(res.status) || skippedPages >= 2) {
               stop(level, page, `stopped on HTTP ${res.status}`, true);
               console.error(`The Muse: stopped on ${level} page ${page}: HTTP ${res.status}`);
@@ -157,6 +182,9 @@ export function createTheMuseClient(fetchImpl: FetchLike = fetch): AggregatorCli
         complete: feedComplete,
         pagesRead,
         stopReason: reasons.join('; ') || 'no pages read',
+        ...(blocked ? {
+          blocked: { status: blocked.status, vendor: blocked.challenge.vendor, evidence: blocked.challenge.evidence },
+        } : {}),
       };
       return out;
     },

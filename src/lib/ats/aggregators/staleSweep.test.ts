@@ -1,6 +1,7 @@
 // @vitest-environment node
 import { describe, expect, it } from 'vitest';
 import type { SupabaseClient } from '@supabase/supabase-js';
+import { isFreshlyVerified } from '../../freshness';
 import {
   judgePage,
   nextRetryAt,
@@ -22,6 +23,8 @@ interface FakeOptions {
   /** Updates to these ids silently match no row. */
   zeroRowIds?: string[];
   failRunInsert?: boolean;
+  /** The runs table lacks the 0008 columns: updates that include them fail like PostgREST would. */
+  missingRunColumns?: boolean;
   /** 1-based roles select request number that returns a database error. */
   failSelectAtRequest?: number;
 }
@@ -35,7 +38,7 @@ function createDb(roles: Row[], options: FakeOptions = {}) {
     const op = {
       action: 'select' as 'select' | 'update' | 'insert',
       payload: {} as Row,
-      filters: [] as Array<{ type: 'eq' | 'gt' | 'lt' | 'or'; col: string; val: unknown }>,
+      filters: [] as Array<{ type: 'eq' | 'gt' | 'lt' | 'in' | 'or'; col: string; val: unknown }>,
       limit: 1000,
     };
     const builder = {
@@ -46,6 +49,7 @@ function createDb(roles: Row[], options: FakeOptions = {}) {
       eq(col: string, val: unknown) { op.filters.push({ type: 'eq', col, val }); return builder; },
       gt(col: string, val: unknown) { op.filters.push({ type: 'gt', col, val }); return builder; },
       lt(col: string, val: unknown) { op.filters.push({ type: 'lt', col, val }); return builder; },
+      in(col: string, val: unknown) { op.filters.push({ type: 'in', col, val }); return builder; },
       or(expr: string) { op.filters.push({ type: 'or', col: '', val: expr }); return builder; },
       order() { return builder; },
       limit(n: number) { op.limit = n; return builder; },
@@ -66,6 +70,7 @@ function createDb(roles: Row[], options: FakeOptions = {}) {
       return op.filters.every((f) => {
         if (f.type === 'eq') return row[f.col] === f.val;
         if (f.type === 'gt') return String(row[f.col]) > String(f.val);
+        if (f.type === 'in') return (f.val as unknown[]).includes(row[f.col]);
         // SQL semantics: NULL < x is not true.
         if (f.type === 'lt') return row[f.col] !== null && row[f.col] !== undefined && String(row[f.col]) < String(f.val);
         return matchesOr(row, String(f.val));
@@ -78,6 +83,9 @@ function createDb(roles: Row[], options: FakeOptions = {}) {
           const row = { ...op.payload, id: `run-${runs.length + 1}` };
           runs.push(row);
           return { data: { id: row.id }, error: null };
+        }
+        if (options.missingRunColumns && 'blocked' in op.payload) {
+          return { data: null, error: { message: "Could not find the 'blocked' column of 'aggregator_verification_runs' in the schema cache" } };
         }
         const hit = runs.find((r) => r.id === op.filters.find((f) => f.col === 'id')?.val);
         if (hit) Object.assign(hit, op.payload);
@@ -434,5 +442,292 @@ describe('page evidence (judgePage)', () => {
   it('classifies 403/429/5xx as failed and other statuses as unreadable', () => {
     for (const status of [403, 429, 500, 503]) expect(judgePage({ ...base, status, body: '' }).verdict).toBe('failed');
     expect(judgePage({ ...base, status: 401, body: '' }).verdict).toBe('unreadable');
+  });
+});
+
+describe('daily cohort under schedule drift', () => {
+  it('rechecks a job stamped yesterday evening when today\'s run starts hours earlier', async () => {
+    // Observed: runs started 18:19 UTC one day and 10:45 UTC the next was possible.
+    const yesterdayLate = '2026-11-12T18:20:00.000Z';
+    const todayEarly = new Date('2026-11-13T10:45:00.000Z');
+    const roles = [role('drift', { last_verified_at: yesterdayLate })];
+    const fake = createDb(roles);
+    const result = await sweepStaleAggregatorRoles(fake.db, { now: todayEarly, fetchImpl: liveFetch });
+    // A fixed 22h or 24h cutoff would have skipped it: it is only 16.4h old.
+    expect(result).toMatchObject({ eligible: 1, verified: 1 });
+    expect(roles[0].last_verified_at).toBe(todayEarly.toISOString());
+  });
+
+  it('does not refetch a job verified a few minutes earlier when two runs straddle midnight UTC', async () => {
+    const roles = [role('straddle', { last_verified_at: '2026-11-12T23:50:00.000Z' })];
+    const fake = createDb(roles);
+    let fetched = 0;
+    const result = await sweepStaleAggregatorRoles(fake.db, {
+      now: new Date('2026-11-13T00:10:00.000Z'),
+      fetchImpl: (async () => { fetched += 1; return htmlResponse(200, LIVE_HTML); }) as unknown as typeof fetch,
+    });
+    expect(fetched).toBe(0);
+    expect(result.eligible).toBe(0);
+  });
+
+  it('each job is due exactly once per UTC day across drifting runs', async () => {
+    const roles = [role('daily', { last_verified_at: null })];
+    const fake = createDb(roles);
+    const starts = ['2026-11-10T10:45:00Z', '2026-11-11T20:44:00Z', '2026-11-12T17:50:00Z', '2026-11-13T10:52:00Z'];
+    const verifiedDays: string[] = [];
+    for (const start of starts) {
+      const r = await sweepStaleAggregatorRoles(fake.db, { now: new Date(start), fetchImpl: liveFetch });
+      if (r.verified) verifiedDays.push(start.slice(0, 10));
+      // A second run the same day finds nothing to do.
+      const again = await sweepStaleAggregatorRoles(fake.db, { now: new Date(Date.parse(start) + 30 * 60_000), fetchImpl: liveFetch });
+      expect(again.eligible).toBe(0);
+    }
+    expect(verifiedDays).toEqual(['2026-11-10', '2026-11-11', '2026-11-12', '2026-11-13']);
+  });
+});
+
+describe('verification follows the pipeline eligibility rules', () => {
+  it('never stamps a concluded cohort, a passed deadline, or an expired term, even when the page is live', async () => {
+    const roles = [
+      role('summer-2026', { seasons: ['Summer'], cohort_year: 2026 }),
+      role('deadline', { application_deadline: '2026-11-01' }),
+      role('old-term', { title: 'Software Engineering Intern (Summer 2025)' }),
+      role('current'),
+    ];
+    const fake = createDb(roles);
+    const fetched: string[] = [];
+    const result = await sweepStaleAggregatorRoles(fake.db, {
+      now: NOW,
+      fetchImpl: (async (url: string) => { fetched.push(String(url).split('/').pop()!); return htmlResponse(200, LIVE_HTML); }) as unknown as typeof fetch,
+    });
+    expect(fetched).toEqual(['current']);
+    expect(result).toMatchObject({ ineligible: 3, eligible: 1, verified: 1 });
+    for (const id of ['summer-2026', 'deadline', 'old-term']) {
+      const row = roles.find((r) => r.id === id)!;
+      expect(row.last_verified_at).toBe(OLD);
+      expect(row.listing_status).toBe('Active'); // not closed either: same as ingestion
+    }
+  });
+
+  it('keeps a Fall cohort eligible until its Dec 15 cutoff', async () => {
+    const roles = [role('fall', { seasons: ['Fall'], cohort_year: 2026 })];
+    const fake = createDb(roles);
+    const result = await sweepStaleAggregatorRoles(fake.db, { now: NOW, fetchImpl: liveFetch });
+    expect(result).toMatchObject({ ineligible: 0, verified: 1 });
+  });
+});
+// ---------------------------------------------------------------- Access challenges (Muse/Cloudflare regression)
+
+const CHALLENGE_HEADERS = { 'cf-mitigated': 'challenge', server: 'cloudflare' };
+const CHALLENGE_PAGE = '<!DOCTYPE html><html><head><title>Just a moment...</title></head><body>Checking your browser</body></html>';
+const challenge = () => htmlResponse(403, CHALLENGE_PAGE, '', CHALLENGE_HEADERS);
+const museRole = (id: string, overrides: Partial<Row> = {}) =>
+  role(id, { external_job_id: `muse-${id}`, apply_url: `https://www.themuse.com/jobs/acme/${id}`, ...overrides });
+const amazonRole = (id: string, overrides: Partial<Row> = {}) =>
+  role(id, { external_job_id: `amazon-${id}`, apply_url: `https://www.amazon.jobs/en/jobs/${id}/intern`, ...overrides });
+const hostFetch = (byHost: Record<string, () => Response>, seen: string[] = []) =>
+  (async (url: string) => {
+    seen.push(String(url));
+    const make = byHost[new URL(String(url)).hostname];
+    if (!make) throw new Error(`unexpected host ${url}`);
+    return make();
+  }) as unknown as typeof fetch;
+
+describe('explicit access challenges', () => {
+  it('counts a Cloudflare challenge as blocked, not failed, and leaves verification date and status alone', async () => {
+    const roles = [museRole('m1')];
+    const fake = createDb(roles);
+    const result = await sweepStaleAggregatorRoles(fake.db, { now: NOW, fetchImpl: hostFetch({ 'www.themuse.com': challenge }) });
+    expect(result).toMatchObject({ attempted: 1, blocked: 1, failed: 0, unreadable: 0, verified: 0, closed: 0 });
+    expect(roles[0]).toMatchObject({
+      last_verified_at: OLD,
+      listing_status: 'Active',
+      last_verification_failure_reason: 'blocked:cloudflare-challenge',
+      verification_failure_count: 1,
+      next_verification_at: new Date(NOW.getTime() + 24 * 3_600_000).toISOString(),
+    });
+    for (const update of fake.updates) {
+      expect(update.patch).not.toHaveProperty('last_verified_at');
+      expect(update.patch).not.toHaveProperty('listing_status');
+    }
+  });
+
+  it('keeps a plain 403 without challenge evidence as an ordinary failure with the short retry', async () => {
+    const roles = [museRole('m1')];
+    const fake = createDb(roles);
+    const result = await sweepStaleAggregatorRoles(fake.db, {
+      now: NOW,
+      fetchImpl: hostFetch({ 'www.themuse.com': () => htmlResponse(403, 'Forbidden', '', { server: 'cloudflare' }) }),
+    });
+    expect(result).toMatchObject({ blocked: 0, failed: 1 });
+    expect(roles[0].last_verification_failure_reason).toBe('http-403');
+    expect(roles[0].next_verification_at).toBe(new Date(NOW.getTime() + 2 * 3_600_000).toISOString());
+  });
+
+  it('stops requesting a host after repeated challenges and still checks other hosts', async () => {
+    const roles = [...Array.from({ length: 20 }, (_, i) => museRole(`m${String(i).padStart(2, '0')}`)), amazonRole('a1')];
+    const before = JSON.parse(JSON.stringify(roles.slice(0, 20)));
+    const fake = createDb(roles);
+    const seen: string[] = [];
+    const result = await sweepStaleAggregatorRoles(fake.db, {
+      now: NOW, concurrency: 1,
+      fetchImpl: hostFetch({ 'www.themuse.com': challenge, 'www.amazon.jobs': () => htmlResponse(200, LIVE_HTML) }, seen),
+    });
+    expect(seen.filter((u) => u.includes('themuse')).length).toBe(3);
+    expect(result).toMatchObject({ blocked: 3, hostBlockedSkipped: 17, verified: 1, cycleComplete: false });
+    expect(result.blockedHosts).toEqual(['www.themuse.com']);
+    // Skipped roles were not attempted, so nothing about them was written.
+    const skipped = roles.slice(0, 20).filter((r) => r.last_verification_attempt_at === null);
+    expect(skipped).toHaveLength(17);
+    for (const r of skipped) expect(r).toEqual(before.find((b: Row) => b.id === r.id));
+  });
+
+  it('backs off a role that keeps getting challenged: 24h, then 72h', async () => {
+    const roles = [museRole('m1')];
+    const fake = createDb(roles);
+    const fetchImpl = hostFetch({ 'www.themuse.com': challenge });
+    await sweepStaleAggregatorRoles(fake.db, { now: NOW, fetchImpl });
+    const second = new Date(NOW.getTime() + 25 * 3_600_000);
+    await sweepStaleAggregatorRoles(fake.db, { now: second, fetchImpl });
+    expect(roles[0].verification_failure_count).toBe(2);
+    expect(roles[0].next_verification_at).toBe(new Date(second.getTime() + 72 * 3_600_000).toISOString());
+    expect(roles[0].last_verified_at).toBe(OLD);
+  });
+
+  it('sends only a few recovery probes when every role of a blocked host is waiting', async () => {
+    const later = new Date(NOW.getTime() + 48 * 3_600_000).toISOString();
+    const roles = Array.from({ length: 10 }, (_, i) => museRole(`m${i}`, {
+      last_verification_attempt_at: HOURS(1), last_verification_failure_reason: 'blocked:cloudflare-challenge',
+      verification_failure_count: 1, next_verification_at: later,
+    }));
+    const fake = createDb(roles);
+    const seen: string[] = [];
+    const result = await sweepStaleAggregatorRoles(fake.db, { now: NOW, concurrency: 1, fetchImpl: hostFetch({ 'www.themuse.com': challenge }, seen) });
+    expect(seen).toHaveLength(3);
+    expect(result).toMatchObject({
+      eligible: 0, recoveryProbes: 3, attempted: 3, blocked: 3, retryCleared: 0,
+      retryWaitingAtStart: 10, retryScheduledAtEnd: 10, recoveredHosts: [],
+    });
+    expect(roles.every((r) => r.last_verified_at === OLD && r.listing_status === 'Active')).toBe(true);
+  });
+
+  it('reschedules a recovered host without changing any verification date it did not check', async () => {
+    const later = new Date(NOW.getTime() + 48 * 3_600_000).toISOString();
+    const roles = Array.from({ length: 6 }, (_, i) => museRole(`m${i}`, {
+      last_verification_attempt_at: HOURS(1), last_verification_failure_reason: 'blocked:cloudflare-challenge',
+      verification_failure_count: 1, next_verification_at: later,
+    }));
+    const fake = createDb(roles);
+    const result = await sweepStaleAggregatorRoles(fake.db, {
+      now: NOW, concurrency: 1, fetchImpl: hostFetch({ 'www.themuse.com': () => htmlResponse(200, LIVE_HTML) }),
+    });
+    expect(result).toMatchObject({ recoveryProbes: 3, verified: 3, retryCleared: 3, recoveredHosts: ['www.themuse.com'], retryScheduledAtEnd: 0 });
+    const unchecked = roles.filter((r) => r.last_verification_attempt_at === HOURS(1));
+    expect(unchecked).toHaveLength(3);
+    for (const r of unchecked) {
+      expect(r.next_verification_at).toBeNull();
+      expect(r.last_verified_at).toBe(OLD);
+    }
+  });
+});
+
+describe('retry counts and per-source reporting', () => {
+  it('reports waiting-on-retry before and after the run, and a per feed/host breakdown', async () => {
+    const later = new Date(NOW.getTime() + 3_600_000).toISOString();
+    const roles = [
+      amazonRole('w1', { next_verification_at: later, verification_failure_count: 1, last_verification_failure_reason: 'timeout' }),
+      amazonRole('w2', { next_verification_at: later, verification_failure_count: 1, last_verification_failure_reason: 'timeout' }),
+      museRole('m1'), museRole('m2'),
+      amazonRole('ok'),
+    ];
+    const fake = createDb(roles);
+    const result = await sweepStaleAggregatorRoles(fake.db, {
+      now: NOW, concurrency: 1,
+      fetchImpl: hostFetch({ 'www.themuse.com': () => htmlResponse(503, 'down'), 'www.amazon.jobs': () => htmlResponse(200, LIVE_HTML) }),
+    });
+    expect(result).toMatchObject({ retryWaitingAtStart: 2, waitingRetry: 2, retryScheduledAtEnd: 4, failed: 2, verified: 1, backlog: 4 });
+    const muse = result.bySource.find((b) => b.feed === 'muse');
+    const amazon = result.bySource.find((b) => b.feed === 'amazon');
+    expect(muse).toMatchObject({ host: 'www.themuse.com', due: 2, attempted: 2, failed: 2, blocked: 0 });
+    expect(amazon).toMatchObject({ host: 'www.amazon.jobs', due: 3, waitingAtStart: 2, attempted: 1, verified: 1 });
+    expect(fake.runs[0]).toMatchObject({ blocked: 0, retry_waiting_at_start: 2, retry_scheduled_at_end: 4 });
+  });
+
+  it('stores feed coverage with the run and falls back to base counts when 0008 is not applied', async () => {
+    const feeds = [{ source: 'themuse', coverage: 'blocked' }];
+    const applied = createDb([museRole('m1')]);
+    await sweepStaleAggregatorRoles(applied.db, { now: NOW, feeds, fetchImpl: hostFetch({ 'www.themuse.com': challenge }) });
+    expect(applied.runs[0]).toMatchObject({ feeds, blocked: 1, blocked_hosts: [] });
+
+    const logs: string[] = [];
+    const old = createDb([museRole('m1')], { missingRunColumns: true });
+    const result = await sweepStaleAggregatorRoles(old.db, { now: NOW, feeds, log: (m) => logs.push(m), fetchImpl: hostFetch({ 'www.themuse.com': challenge }) });
+    expect(result.summaryPersisted).toBe(true);
+    expect(old.runs[0]).toMatchObject({ attempted: 1, status: 'completed' });
+    expect(old.runs[0]).not.toHaveProperty('blocked');
+    expect(logs.some((m) => m.includes('0008_verification_blocked_reporting.sql'))).toBe(true);
+  });
+});
+
+describe('judgePage challenge evidence', () => {
+  const base = { contentType: 'text/html', role: { title: 'HR Operations Lifecycle Intern' }, requestedUrl: 'https://www.themuse.com/jobs/acme/1' };
+  const headers = (h: Record<string, string>) => new Headers(h);
+
+  it('treats the cf-mitigated header as a challenge at any status, before the 403 rule', () => {
+    expect(judgePage({ ...base, status: 403, body: '', headers: headers({ 'cf-mitigated': 'challenge' }) }).verdict).toBe('blocked');
+    expect(judgePage({ ...base, status: 503, body: '', headers: headers({ 'cf-mitigated': 'challenge' }) }).verdict).toBe('blocked');
+  });
+
+  it('recognises a Cloudflare challenge page on a refusal status', () => {
+    expect(judgePage({ ...base, status: 403, body: CHALLENGE_PAGE, headers: headers({ server: 'cloudflare' }) }))
+      .toEqual({ verdict: 'blocked', reason: 'blocked:cloudflare-challenge' });
+  });
+
+  it('does not call it a challenge without vendor evidence', () => {
+    expect(judgePage({ ...base, status: 403, body: CHALLENGE_PAGE, headers: headers({ server: 'nginx' }) }).verdict).toBe('failed');
+    expect(judgePage({ ...base, status: 403, body: 'Forbidden', headers: headers({ server: 'cloudflare' }) }).verdict).toBe('failed');
+    // Challenge words on an ordinary 200 page are content, not a challenge.
+    expect(judgePage({ ...base, status: 200, body: LIVE_HTML + CHALLENGE_PAGE, headers: headers({ server: 'cloudflare' }) }).verdict).toBe('live');
+  });
+});
+// ---------------------------------------------------------------- Seven-day public freshness
+
+describe('public freshness does not affect verification selection', () => {
+  const visible = (row: Row) => isFreshlyVerified(row.last_verified_at as string | null, NOW) && row.listing_status === 'Active';
+
+  it('selects jobs hidden from public listings (stale and never verified) and restores them on success', async () => {
+    const roles = [
+      role('stale', { last_verified_at: HOURS(24 * 10) }),
+      role('never', { last_verified_at: null }),
+      role('fresh', { last_verified_at: HOURS(2) }),
+    ];
+    expect(roles.map(visible)).toEqual([false, false, true]);
+    const fake = createDb(roles);
+    const fetched: string[] = [];
+    const result = await sweepStaleAggregatorRoles(fake.db, {
+      now: NOW,
+      fetchImpl: (async (url: string) => { fetched.push(String(url).split('/').pop()!); return htmlResponse(200, LIVE_HTML); }) as unknown as typeof fetch,
+    });
+    expect(fetched.sort()).toEqual(['never', 'stale']);
+    expect(result.verified).toBe(2);
+    expect(roles.map(visible)).toEqual([true, true, true]);
+  });
+
+  it('does not extend visibility after blocked or failed attempts', async () => {
+    const roles = [
+      museRole('blocked', { last_verified_at: HOURS(24 * 10) }),
+      role('down', { last_verified_at: HOURS(24 * 10) }),
+      role('never', { last_verified_at: null }),
+    ];
+    const fake = createDb(roles);
+    await sweepStaleAggregatorRoles(fake.db, {
+      now: NOW,
+      fetchImpl: hostFetch({ 'www.themuse.com': challenge, 'jobs.example.test': () => htmlResponse(503, 'down') }),
+    });
+    // The attempts were recorded, but only last_verified_at decides visibility.
+    expect(roles.every((r) => r.last_verification_attempt_at === NOW.toISOString())).toBe(true);
+    expect(roles.map(visible)).toEqual([false, false, false]);
+    expect(roles.map((r) => r.listing_status)).toEqual(['Active', 'Active', 'Active']);
+    expect(roles.map((r) => r.last_verified_at)).toEqual([HOURS(24 * 10), HOURS(24 * 10), null]);
   });
 });

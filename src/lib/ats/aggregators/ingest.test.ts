@@ -47,6 +47,7 @@ function createDb(options: {
   failRoleBatch?: boolean;
   failExternalIds?: string[];
   failUpdates?: boolean;
+  zeroRowIds?: string[];
 } = {}) {
   const state = {
     companies: [...(options.companies ?? [])],
@@ -56,6 +57,7 @@ function createDb(options: {
     failRoleBatch: options.failRoleBatch ?? false,
     failExternalIds: new Set(options.failExternalIds ?? []),
     failUpdates: options.failUpdates ?? false,
+    zeroRowIds: new Set(options.zeroRowIds ?? []),
     companyUpserts: [] as string[],
     roleUpsertSizes: [] as number[],
     roleUpdates: [] as string[][],
@@ -170,11 +172,16 @@ function createDb(options: {
         state.updateFilters.push(op.filters.map((filter) => `${filter.type}:${filter.col}=${filter.val}`).join('|'));
         if (state.failUpdates) return { data: null, error: { message: 'verify unavailable' } };
         const patch = op.payload as Row;
+        const changed: Array<{ id: string }> = [];
         for (const role of state.roles) {
           if (!matches(role)) continue;
+          // Simulates a row that changed concurrently: the update matches nothing.
+          if (state.zeroRowIds.has(role.id)) continue;
           Object.assign(role, patch);
+          changed.push({ id: role.id });
         }
-        return { data: null, error: null };
+        // Like PostgREST with .select('id'): only rows the database changed.
+        return { data: changed, error: null };
       }
       return { data: null, error: { message: `unhandled ${op.action} on ${table}` } };
     }
@@ -483,6 +490,141 @@ describe('The Muse feed that stops early', () => {
     expect(results[0].feedComplete).toBe(false);
     expect(results[0].feedStopReason).toMatch(/HTTP 500/);
     expect(results[0].closed).toBe(0);
+    expect(fake.state.roles[0].listing_status).toBe('Active');
+  });
+});
+
+describe('feed coverage is reported honestly', () => {
+  const museJob = (id: number) => ({
+    id,
+    name: 'Data Analyst Intern',
+    refs: { landing_page: `https://www.themuse.com/jobs/acme/${id}` },
+    company: { name: 'Acme Labs' },
+    categories: [{ name: 'Data and Analytics' }],
+    levels: [{ name: 'Internship' }],
+  });
+
+  it('keeps postings from a Muse crawl cut off by the time limit, but reports it partial and not clean', async () => {
+    const fake = createDb({
+      companies: [{ id: 'co-tiktok', slug: 'tiktok' }],
+      roles: [{
+        id: 'role-tiktok', company_id: 'co-tiktok', external_job_id: 'muse-22251632',
+        apply_url: 'https://www.themuse.com/jobs/tiktok/hr-intern', source: 'aggregator',
+        listing_status: 'Active', last_verified_at: '2026-10-29T00:00:00.000Z',
+      }],
+    });
+    let page = 0;
+    // Each page takes 40ms; the feed limit allows only a few of the 50 pages.
+    const slow = ((_url: string, init?: { signal?: AbortSignal }) => new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        page += 1;
+        resolve(new Response(JSON.stringify({ results: [museJob(page)], page_count: 50 }), { status: 200 }));
+      }, 40);
+      init?.signal?.addEventListener('abort', () => {
+        clearTimeout(timer);
+        reject(new DOMException('The operation was aborted', 'TimeoutError'));
+      });
+    })) as unknown as typeof fetch;
+    const { createTheMuseClient } = await import('./themuse');
+    const results = await ingestAggregators(fake.db, {
+      now: NOW,
+      feedTimeoutMs: 300,
+      clients: [createTheMuseClient(slow as never)],
+    });
+    const muse = results[0];
+    expect(muse.fetched).toBeGreaterThan(0);
+    expect(muse.fetched).toBeLessThan(50);
+    expect(muse.rolesUpserted).toBe(muse.fetched); // what was read is saved
+    expect(muse.coverage).toBe('partial');
+    expect(muse.feedComplete).toBe(false);
+    expect(muse.feedStopReason).toMatch(/time limit/);
+    expect(muse.closed).toBe(0);
+    expect(aggregatorRunSucceeded(results)).toBe(false);
+    // The job past the cut-off was neither refreshed nor closed.
+    const tiktok = fake.state.roles.find((r) => r.id === 'role-tiktok');
+    expect(tiktok).toMatchObject({ listing_status: 'Active', last_verified_at: '2026-10-29T00:00:00.000Z' });
+  });
+
+  it('does not count a refresh whose update matched no row, and does not report the run clean', async () => {
+    const fake = createDb({
+      companies: [{ id: 'co-a', slug: 'acme-labs' }],
+      roles: [{
+        id: 'role-a', company_id: 'co-a', external_job_id: 'remotive-1',
+        apply_url: 'https://jobs.acme.test/intern', source: 'aggregator', listing_status: 'Active',
+        last_verified_at: '2026-01-01T00:00:00.000Z',
+      }],
+      zeroRowIds: ['role-a'],
+    });
+    const results = await ingestAggregators(fake.db, { now: NOW, clients: [client('remotive', [posting()], true)] });
+    expect(results[0]).toMatchObject({ refreshed: 0, refreshWriteFailures: 1, coverage: 'complete' });
+    expect(aggregatorRunSucceeded(results)).toBe(false);
+    expect(fake.state.roles[0].last_verified_at).toBe('2026-01-01T00:00:00.000Z');
+  });
+
+  it('counts closes by rows changed, not ids requested', async () => {
+    const fake = createDb({
+      companies: [{ id: 'co-b', slug: 'acme-labs' }],
+      roles: [
+        { id: 'role-gone', company_id: 'co-b', external_job_id: 'simplify-9', apply_url: 'https://x.test/9', source: 'aggregator', listing_status: 'Active' },
+        { id: 'role-raced', company_id: 'co-b', external_job_id: 'simplify-8', apply_url: 'https://x.test/8', source: 'aggregator', listing_status: 'Active' },
+      ],
+      zeroRowIds: ['role-raced'],
+    });
+    const results = await ingestAggregators(fake.db, { now: NOW, clients: [client('simplify', [], true, true)] });
+    expect(results[0].closed).toBe(1);
+  });
+
+  it('treats an unconfigured source as disabled, not as a failed feed', async () => {
+    const fake = createDb();
+    const disabled = { ...client('adzuna', [], false), enabled: false } as AggregatorClient;
+    const results = await ingestAggregators(fake.db, { now: NOW, clients: [disabled, client('remotive', [posting()], true)] });
+    expect(results[0]).toMatchObject({ coverage: 'disabled', fetched: 0 });
+    expect(results[1].coverage).toBe('complete');
+    expect(aggregatorRunSucceeded(results)).toBe(true);
+  });
+
+  it('reports a source that returned nothing and did not finish as failed', async () => {
+    const fake = createDb();
+    const results = await ingestAggregators(fake.db, { now: NOW, clients: [client('themuse', [], false)] });
+    expect(results[0].coverage).toBe('failed');
+    expect(aggregatorRunSucceeded(results)).toBe(false);
+  });
+});
+describe('The Muse feed behind an access challenge', () => {
+  const museRow = () => ({
+    id: 'role-muse', company_id: 'co-tiktok', external_job_id: 'muse-22251632', last_verified_at: '2026-10-01T00:00:00Z',
+    apply_url: 'https://www.themuse.com/jobs/tiktok/hr-intern', source: 'aggregator', listing_status: 'Active',
+  });
+
+  it('reports coverage blocked, records an error, sends no further requests, and leaves listings untouched', async () => {
+    const fake = createDb({ companies: [{ id: 'co-tiktok', slug: 'tiktok' }], roles: [museRow()] });
+    const urls: string[] = [];
+    const fetchImpl = (async (url: string) => {
+      urls.push(String(url));
+      return new Response('<html><head><title>Just a moment...</title></head></html>', {
+        status: 403, headers: { 'content-type': 'text/html', 'cf-mitigated': 'challenge', server: 'cloudflare' },
+      });
+    }) as unknown as typeof fetch;
+    const { createTheMuseClient } = await import('./themuse');
+    const results = await ingestAggregators(fake.db, { now: NOW, clients: [createTheMuseClient(fetchImpl as never)] });
+    expect(urls).toHaveLength(1); // the Entry Level pass is not requested after the challenge
+    expect(results[0]).toMatchObject({ coverage: 'blocked', feedComplete: false, fetched: 0, refreshed: 0, closed: 0 });
+    expect(results[0].accessChallenge).toMatchObject({ status: 403, vendor: 'cloudflare' });
+    expect(results[0].errors.join(' ')).toMatch(/Access challenge from themuse/);
+    expect(results[0].feedStopReason).toMatch(/access challenge: cf-mitigated=challenge/);
+    expect(aggregatorRunSucceeded(results)).toBe(false);
+    expect(fake.state.roles[0]).toMatchObject({ listing_status: 'Active', last_verified_at: '2026-10-01T00:00:00Z' });
+  });
+
+  it('keeps a plain 403 feed as failed coverage, not blocked', async () => {
+    const fake = createDb({ companies: [{ id: 'co-tiktok', slug: 'tiktok' }], roles: [museRow()] });
+    const fetchImpl = (async () => new Response('Forbidden', { status: 403, headers: { server: 'nginx' } })) as unknown as typeof fetch;
+    const { createTheMuseClient } = await import('./themuse');
+    const results = await ingestAggregators(fake.db, { now: NOW, clients: [createTheMuseClient(fetchImpl as never)] });
+    expect(results[0].coverage).toBe('failed');
+    expect(results[0].accessChallenge).toBeUndefined();
+    expect(results[0].feedStopReason).toMatch(/stopped on HTTP 403/);
+    expect(aggregatorRunSucceeded(results)).toBe(false);
     expect(fake.state.roles[0].listing_status).toBe('Active');
   });
 });
