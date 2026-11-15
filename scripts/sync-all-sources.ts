@@ -205,6 +205,7 @@ function writeStepSummary(outcomes: StageOutcome[]): void {
       '| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |',
       `| ${w.candidates} | ${w.unmapped} | ${w.ineligible} | ${w.waitingRetry} | ${w.attempted} | ${w.verified} | ${w.closed} | ${w.unreadable} | ${w.failed} | ${w.blocked} | ${w.hostBlockedSkipped} | ${w.deferred} | ${w.writeFailures} | ${w.coverage.complete ? 'complete' : `INCOMPLETE (${w.coverage.stopReason.replace(/\|/g, '/')})`} |`,
       '', `Failure reasons: ${reasons || 'none'}. Blocked hosts: ${w.blockedHosts.join(', ') || 'none'}.`,
+      `Unmapped (left unverified): ${Object.entries(w.unmappedReasons).sort((a, b) => b[1] - a[1]).slice(0, 20).map(([k, n]) => `${k} ${n}`).join('; ') || 'none'}.`,
     );
   }
   if (employerResult) {

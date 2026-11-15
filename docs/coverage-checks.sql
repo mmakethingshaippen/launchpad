@@ -59,3 +59,31 @@ select r.source,
 from public.roles r join public.companies c on c.id = r.company_id
 where r.listing_status = 'Active' and c.ats_provider = 'workday' and c.ats_board_token is not null
 group by 1, 2, 3 order by 1, 2, 3;
+-- C10. Unmapped Workday recheck candidates by employer and URL pattern (mirrors workdayUnmappedReason).
+select c.slug, r.source,
+       case when r.apply_url is null then 'no apply url'
+            when r.apply_url !~* '^https?://[^/]*myworkday(jobs|site)\.com' then 'non-workday host ' || substring(r.apply_url from '^https?://(?:www\.)?([^/?#]+)')
+            when r.apply_url ~* 'myworkdayjobs\.com'
+                 and lower(substring(r.apply_url from '^https?://([^./]+)\.')) <> lower(split_part(c.ats_board_token, '|', 2))
+              then 'other workday tenant ' || substring(r.apply_url from '^https?://([^./]+)\.')
+            when r.apply_url !~ '/job/' then 'workday url without /job/ path'
+            else 'mappable' end as reason,
+       count(*) as active_jobs
+from public.roles r join public.companies c on c.id = r.company_id
+where r.listing_status = 'Active' and c.ats_provider = 'workday' and c.ats_board_token is not null
+group by 1, 2, 3 order by 4 desc;
+
+-- C11. Workday ATS jobs closed by sync, by employer and day. Before 650563a's successor, 14 Workday
+-- tenants were read only 40 jobs per run and reported complete, so sync could close jobs still on
+-- the board. Jobs the fixed sync finds on the board are reopened by the next upsert.
+select c.slug, date_trunc('day', r.updated_at) as day, count(*) as closed_jobs
+from public.roles r join public.companies c on c.id = r.company_id
+where r.source = 'ats' and r.listing_status = 'Closed' and c.ats_provider = 'workday'
+  and r.updated_at > now() - interval '30 days'
+group by 1, 2 order by 2 desc, 3 desc;
+
+-- C12. Were the prepared employer additions seeded? (rows with these tokens mean yes)
+select slug, ats_provider, ats_board_token, source, moderation_status, updated_at
+from public.companies
+where (ats_provider::text, ats_board_token) in (('greenhouse', 'sharkninjaoperatingllc'), ('greenhouse', 'astranis'),
+       ('greenhouse', 'thenewyorktimes'), ('greenhouse', 'asteraearlycareer2027'), ('ashby', 'base-power'), ('ashby', 'shield'));

@@ -427,3 +427,27 @@ describe('maintenance pages are failures, never evidence', () => {
     expect(roles.map((r) => r.last_verified_at)).toEqual([OLD, OLD]);
   });
 });
+describe('unmapped Workday candidates are grouped by employer and reason', () => {
+  it('explains each unsupported link and leaves it unverified', async () => {
+    const company = { id: 'co-cvs', slug: 'cvs-health', ats_provider: 'workday', ats_board_token: TOKEN };
+    const roles = [
+      wdRole('R1', { apply_url: 'https://www.themuse.com/jobs/cvshealth/analyst-intern' }),
+      wdRole('R2', { apply_url: 'https://othertenant.wd1.myworkdayjobs.com/en-US/External/job/X/Analyst-Intern_R2' }),
+      wdRole('R3', { apply_url: 'https://cvshealth.wd1.myworkdayjobs.com/en-US/CVS_Health_Careers' }),
+      wdRole('R4', { apply_url: null }),
+      wdRole('R5'),
+    ];
+    const fake = createDb({ companies: [company], roles });
+    const seen: string[] = [];
+    const result = await recheckWorkdayRoles(fake.db, { refreshedSince: RUN_START, now: NOW, fetchImpl: workdayFetch({}, seen) });
+    expect(result.unmapped).toBe(4);
+    expect(result.unmappedReasons).toEqual({
+      'cvs-health: non-workday host themuse.com': 1,
+      'cvs-health: other workday tenant othertenant': 1,
+      'cvs-health: workday url without /job/ path': 1,
+      'cvs-health: no apply url': 1,
+    });
+    expect(seen).toEqual(['R5']);
+    expect(roles.slice(0, 4).every((r) => r.last_verified_at === OLD && r.listing_status === 'Active')).toBe(true);
+  });
+});

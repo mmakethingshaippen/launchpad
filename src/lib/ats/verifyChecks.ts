@@ -54,6 +54,8 @@ export interface WorkdayRecheckResult {
   candidates: number;
   /** Candidates whose apply URL is not a job link on this company's Workday tenant. */
   unmapped: number;
+  /** Unmapped candidates by `company-slug: reason`, e.g. 'paypal: non-workday host paypal.eightfold.ai'. Left unverified. */
+  unmappedReasons: Record<string, number>;
   /** Candidates the pipeline's own rules treat as concluded/expired: not fetched, not stamped. */
   ineligible: number;
   /** Candidates whose next_verification_at is still in the future (earlier failure or challenge). */
@@ -116,6 +118,24 @@ export function workdayDetailUrl(token: string, applyUrl: string): string | null
   }
 }
 
+/** Why an apply URL cannot be checked through this company's Workday detail API. */
+export function workdayUnmappedReason(token: string, applyUrl: string | null | undefined): string {
+  if (!applyUrl) return 'no apply url';
+  const coords = parseWorkdayToken(token);
+  if (!coords) return 'company has no valid Workday token';
+  let url: URL;
+  try {
+    url = new URL(applyUrl);
+  } catch {
+    return 'invalid apply url';
+  }
+  const tenant = workdayTenantOf(url);
+  if (!tenant) return `non-workday host ${url.hostname.toLowerCase().replace(/^www\./, '')}`;
+  if (tenant !== coords.tenant.toLowerCase()) return `other workday tenant ${tenant}`;
+  if (url.pathname.indexOf('/job/') < 0) return 'workday url without /job/ path';
+  return 'unmapped';
+}
+
 type WorkdayRow = {
   id: string;
   company_id: string;
@@ -157,15 +177,15 @@ export async function recheckWorkdayRoles(
   const clock = opts.clock ?? Date.now;
   const deadline = clock() + (opts.budgetMs ?? 20 * 60 * 1000);
   const result: WorkdayRecheckResult = {
-    candidates: 0, unmapped: 0, ineligible: 0, waitingRetry: 0, attempted: 0, verified: 0, closed: 0,
+    candidates: 0, unmapped: 0, unmappedReasons: {}, ineligible: 0, waitingRetry: 0, attempted: 0, verified: 0, closed: 0,
     unreadable: 0, failed: 0, blocked: 0, hostBlockedSkipped: 0, deferred: 0, writeFailures: 0,
     failureReasons: {}, blockedHosts: [],
     coverage: { pages: 0, complete: false, stopReason: 'not started' },
     clean: false,
   };
 
-  const companies = await loadAllPages<{ id: string; ats_board_token: string | null }>((after) => {
-    let q = db.from('companies').select('id,ats_board_token')
+  const companies = await loadAllPages<{ id: string; slug?: string | null; ats_board_token: string | null }>((after) => {
+    let q = db.from('companies').select('id,slug,ats_board_token')
       .eq('ats_provider', 'workday')
       .not('ats_board_token', 'is', null)
       .order('id', { ascending: true }).limit(pageSize);
@@ -178,7 +198,11 @@ export async function recheckWorkdayRoles(
     return result;
   }
   const tokens = new Map<string, string>();
-  for (const c of companies.rows) if (typeof c.ats_board_token === 'string') tokens.set(String(c.id), c.ats_board_token);
+  const slugs = new Map<string, string>();
+  for (const c of companies.rows) {
+    if (typeof c.ats_board_token === 'string') tokens.set(String(c.id), c.ats_board_token);
+    if (typeof c.slug === 'string') slugs.set(String(c.id), c.slug);
+  }
   const companyIds = [...tokens.keys()];
 
   const cutoff = opts.refreshedSince.toISOString();
@@ -206,7 +230,13 @@ export async function recheckWorkdayRoles(
       result.candidates += 1;
       const token = tokens.get(String(row.company_id));
       const url = token && row.apply_url ? workdayDetailUrl(token, row.apply_url) : null;
-      if (!url) { result.unmapped += 1; continue; }
+      if (!url) {
+        // Left unverified: no supported per-job check exists for this link.
+        result.unmapped += 1;
+        const key = `${slugs.get(String(row.company_id)) ?? String(row.company_id)}: ${workdayUnmappedReason(token ?? '', row.apply_url)}`;
+        result.unmappedReasons[key] = (result.unmappedReasons[key] ?? 0) + 1;
+        continue;
+      }
       if (verificationBlocker(row, now)) { result.ineligible += 1; continue; }
       if (row.next_verification_at && Date.parse(row.next_verification_at) > now.getTime()) { result.waitingRetry += 1; continue; }
       candidates.push({ ...row, url, host: new URL(url).hostname });
@@ -346,6 +376,10 @@ export async function recheckWorkdayRoles(
     `blocked ${result.blocked}; host-blocked skipped ${result.hostBlockedSkipped}; deferred ${result.deferred}; ` +
     `write failures ${result.writeFailures}; reasons [${reasons}]; pages ${result.coverage.pages} (${result.coverage.stopReason})`,
   );
+  const unmapped = Object.entries(result.unmappedReasons).sort((a, b) => b[1] - a[1]);
+  if (unmapped.length) {
+    log(`  unmapped (left unverified): ${unmapped.slice(0, 20).map(([k, n]) => `${k} ${n}`).join('; ')}${unmapped.length > 20 ? `; ${unmapped.length - 20} more groups` : ''}`);
+  }
   return result;
 }
 // ---------------------------------------------------------------- Employer boards

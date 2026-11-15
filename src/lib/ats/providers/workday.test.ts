@@ -181,3 +181,55 @@ describe('Workday provider', () => {
     expect(client.isCompleteSnapshot?.()).toBe(false);
   });
 });
+
+describe('Workday paging totals (production tenants, Nov 2026)', () => {
+  const TOKEN = 'nvidia.wd5.myworkdayjobs.com|nvidia|NVIDIAExternalCareerSite';
+  const posting = (i: number) => ({ title: `Software Engineering Intern ${i}`, externalPath: `/job/US-CA/Intern_JR${i}`, locationsText: 'Santa Clara, CA', bulletFields: [`JR${i}`] });
+  /** Serves `unique` postings; later offsets repeat earlier ones, like Workday past its 2000-job window. */
+  function board(opts: { unique: number; firstTotal: number; laterTotal: number; facets?: unknown[]; facetPostings?: number }): FetchLike {
+    return (async (_url: string, init?: { body?: string }) => {
+      const body = JSON.parse(init?.body ?? '{}') as { offset: number; appliedFacets: Record<string, string[]> };
+      const narrowed = Object.keys(body.appliedFacets ?? {}).length > 0;
+      const size = narrowed ? opts.facetPostings ?? 0 : opts.unique;
+      const repeat = !narrowed && opts.unique >= 2000;
+      const start = repeat ? body.offset % size : body.offset;
+      const items = Array.from({ length: 20 }, (_, k) => start + k).filter((i) => repeat || i < size).map(posting);
+      const total = body.offset === 0 ? (narrowed ? size : opts.firstTotal) : opts.laterTotal;
+      return { ok: true, status: 200, json: async () => ({ total, jobPostings: items, facets: body.offset === 0 ? opts.facets ?? [] : [] }) };
+    }) as unknown as FetchLike;
+  }
+
+  it('keeps reading when later pages report total: 0, and finishes the board', async () => {
+    const client = createWorkdayClient(board({ unique: 45, firstTotal: 45, laterTotal: 0 }));
+    expect(await client.fetchPostings(TOKEN)).toHaveLength(45);
+    expect(client.isCompleteSnapshot?.()).toBe(true);
+  });
+
+  it('treats a total of 2000 as a cap: stops on repeated jobs and never reports the board complete', async () => {
+    const inner = board({ unique: 2000, firstTotal: 2000, laterTotal: 0 });
+    let requests = 0;
+    const client = createWorkdayClient((async (url: string, init?: { body?: string }) => { requests += 1; return inner(url, init as never); }) as unknown as FetchLike);
+    const jobs = await client.fetchPostings(TOKEN);
+    expect(jobs).toHaveLength(2000);
+    // 100 pages of new jobs plus the first repeated page; not 250 pages of repeats.
+    expect(requests).toBe(101);
+    expect(client.isCompleteSnapshot?.()).toBe(false);
+  });
+
+  it('narrows a capped board to its internship facet, not to a facet that merely starts with "Intern"', async () => {
+    const facets = [{ facetParameter: 'jobFamilyGroup', values: [
+      { descriptor: 'Internal Audit', id: 'audit', count: 23 },
+      { descriptor: 'Intern (Paid)', id: 'paid-intern', count: 15 },
+    ] }];
+    const requested: Array<Record<string, string[]>> = [];
+    const inner = board({ unique: 2000, firstTotal: 2000, laterTotal: 0, facets, facetPostings: 15 });
+    const client = createWorkdayClient((async (url: string, init?: { body?: string }) => {
+      requested.push(JSON.parse(init?.body ?? '{}').appliedFacets);
+      return inner(url, init as never);
+    }) as unknown as FetchLike);
+    expect(await client.fetchPostings(TOKEN)).toHaveLength(15);
+    expect(requested.some((f) => f.jobFamilyGroup?.[0] === 'paid-intern')).toBe(true);
+    expect(requested.some((f) => f.jobFamilyGroup?.[0] === 'audit')).toBe(false);
+    expect(client.isCompleteSnapshot?.()).toBe(false); // a filtered list never closes absent jobs
+  });
+});

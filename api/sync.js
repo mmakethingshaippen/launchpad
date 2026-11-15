@@ -14656,6 +14656,7 @@ function parseWorkdayToken(token) {
   return { host, tenant, site };
 }
 var PAGE_SIZE2 = 20;
+var TOTAL_CAP = 2e3;
 var MAX_PAGES2 = 250;
 var BOARD_CAP = PAGE_SIZE2 * MAX_PAGES2;
 function selectInternshipFacet(facets) {
@@ -14666,7 +14667,7 @@ function selectInternshipFacet(facets) {
       const label = value.descriptor?.trim() ?? "";
       if (!value.id || !label || typeof value.count !== "number") continue;
       if (value.count < 1 || value.count > BOARD_CAP) continue;
-      if (!/intern|early career|university|campus|new grad|student/i.test(label)) continue;
+      if (!/\b(intern|interns|internship|internships|early careers?|university|campus|new grads?|students?)\b/i.test(label)) continue;
       matches.push({
         parameter: facet.facetParameter,
         id: value.id,
@@ -14702,11 +14703,14 @@ function createWorkdayClient(fetchImpl = fetch) {
       let reachedEnd = false;
       const missed = /* @__PURE__ */ new Set();
       const ingest = (data) => {
+        let added = 0;
         for (const posting of data.jobPostings ?? []) {
           if (!posting?.externalPath || seen.has(posting.externalPath)) continue;
           seen.add(posting.externalPath);
           collected.push({ ...posting, __coords: coords });
+          added += 1;
         }
+        return added;
       };
       const loadPage = async (offset) => {
         if (signal?.aborted) return { data: null, status: 0 };
@@ -14756,7 +14760,8 @@ function createWorkdayClient(fetchImpl = fetch) {
           if (total != null && offset + PAGE_SIZE2 >= total) break;
           continue;
         }
-        if (page === 0 && !narrowed && typeof data.total === "number" && data.total > BOARD_CAP) {
+        if (page === 0 && !narrowed && typeof data.total === "number" && // Above the reported-total cap the full list cannot be read to the end either.
+        data.total >= Math.min(BOARD_CAP, TOTAL_CAP)) {
           const pick = selectInternshipFacet(data.facets);
           if (pick) {
             console.log(
@@ -14769,8 +14774,12 @@ function createWorkdayClient(fetchImpl = fetch) {
             continue;
           }
         }
-        if (typeof data.total === "number") total = data.total;
-        ingest(data);
+        if (page === 0 && typeof data.total === "number") total = data.total >= TOTAL_CAP ? null : data.total;
+        const added = ingest(data);
+        if (added === 0 && (data.jobPostings?.length ?? 0) > 0) {
+          console.log(`Workday ${tenant}: offset ${offset} repeated earlier jobs; the list is capped at ${collected.length} and is incomplete`);
+          break;
+        }
         const count = data.jobPostings.length;
         const covered = offset + count;
         if (total != null && covered >= total) {
@@ -23706,6 +23715,13 @@ function companyToken(company, provider) {
   if (!company?.atsBoardToken) return "";
   return company.atsProvider === provider ? company.atsBoardToken.trim() : "";
 }
+function decodeSegment(segment) {
+  try {
+    return decodeURIComponent(segment);
+  } catch {
+    return segment;
+  }
+}
 function identifyEmployerJob(applyUrl, company) {
   let url;
   try {
@@ -23714,7 +23730,7 @@ function identifyEmployerJob(applyUrl, company) {
     return null;
   }
   const host = url.hostname.toLowerCase().replace(/^www\./, "");
-  const parts = url.pathname.split("/").filter(Boolean);
+  const parts = url.pathname.split("/").filter(Boolean).map(decodeSegment);
   if (host.endsWith("greenhouse.io")) {
     const jobsAt = parts.indexOf("jobs");
     const tokenFromPath = jobsAt > 0 ? parts[jobsAt - 1] : "";

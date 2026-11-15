@@ -63,6 +63,12 @@ export function parseWorkdayToken(
 }
 
 const PAGE_SIZE = 20;
+/**
+ * Workday reports at most this many jobs in `total`, even when more exist (NVIDIA, Citi, T-Mobile and
+ * Applied Materials returned 2000 and still served jobs at offset 2000). A total at the cap is a lower
+ * bound, so the board is read until a short or empty page instead.
+ */
+const TOTAL_CAP = 2000;
 const MAX_PAGES = 250;
 const BOARD_CAP = PAGE_SIZE * MAX_PAGES;
 
@@ -77,7 +83,8 @@ function selectInternshipFacet(
       const label = value.descriptor?.trim() ?? '';
       if (!value.id || !label || typeof value.count !== 'number') continue;
       if (value.count < 1 || value.count > BOARD_CAP) continue;
-      if (!/intern|early career|university|campus|new grad|student/i.test(label)) continue;
+      // Whole words: Citi's "Internal Audit" facet matched a bare /intern/ and replaced the internship list.
+      if (!/\b(intern|interns|internship|internships|early careers?|university|campus|new grads?|students?)\b/i.test(label)) continue;
       matches.push({
         parameter: facet.facetParameter,
         id: value.id,
@@ -127,12 +134,16 @@ export function createWorkdayClient(
       let reachedEnd = false;
       const missed = new Set<number>();
 
-      const ingest = (data: WorkdayResponse) => {
+      /** Adds unseen postings and returns how many were new. */
+      const ingest = (data: WorkdayResponse): number => {
+        let added = 0;
         for (const posting of data.jobPostings ?? []) {
           if (!posting?.externalPath || seen.has(posting.externalPath)) continue;
           seen.add(posting.externalPath);
           collected.push({ ...posting, __coords: coords });
+          added += 1;
         }
+        return added;
       };
 
       const loadPage = async (offset: number): Promise<{ data: WorkdayResponse | null; status: number; failure?: string }> => {
@@ -191,7 +202,8 @@ export function createWorkdayClient(
           page === 0 &&
           !narrowed &&
           typeof data.total === 'number' &&
-          data.total > BOARD_CAP
+          // Above the reported-total cap the full list cannot be read to the end either.
+          data.total >= Math.min(BOARD_CAP, TOTAL_CAP)
         ) {
           const pick = selectInternshipFacet(data.facets);
           if (pick) {
@@ -207,8 +219,16 @@ export function createWorkdayClient(
           }
         }
 
-        if (typeof data.total === 'number') total = data.total;
-        ingest(data);
+        // Only the first page of a query carries a meaningful total. 14 of 21 configured tenants return
+        // total: 0 on later pages; taking it from every page ended the read after 40 jobs, reported the
+        // board as complete, and let sync close every other job on it.
+        if (page === 0 && typeof data.total === 'number') total = data.total >= TOTAL_CAP ? null : data.total;
+        const added = ingest(data);
+        if (added === 0 && (data.jobPostings?.length ?? 0) > 0) {
+          // Past Workday's 2000-job window the API repeats earlier postings. The list is capped, not finished.
+          console.log(`Workday ${tenant}: offset ${offset} repeated earlier jobs; the list is capped at ${collected.length} and is incomplete`);
+          break;
+        }
 
         const count = data.jobPostings!.length;
         const covered = offset + count;

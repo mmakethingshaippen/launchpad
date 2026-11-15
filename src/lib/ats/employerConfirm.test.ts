@@ -127,3 +127,29 @@ describe('employer board coverage fixes', () => {
     expect(plan.failedBoards[0].reason).toBe('unexpected-response');
   });
 });
+describe('percent-encoded board tokens (production: skyband%20systems, Verne%20Robotics, ...)', () => {
+  it('decodes the token from the URL and encodes it exactly once in the API request', async () => {
+    const url = 'https://jobs.ashbyhq.com/skyband%20systems/74d42f88-5265-4879-9c6d-61f532e89b20/application';
+    expect(identifyEmployerJob(url)).toEqual({ provider: 'ashby', token: 'skyband systems', jobId: '74d42f88-5265-4879-9c6d-61f532e89b20' });
+    const requested: string[] = [];
+    const plan = await planEmployerConfirmation([{ id: 'r1', applyUrl: url }], (async (u: string) => {
+      requested.push(u);
+      return { ok: true, status: 200, json: async () => ({ jobs: [{ id: '74d42f88-5265-4879-9c6d-61f532e89b20' }] }) };
+    }) as FetchLike);
+    expect(requested).toEqual(['https://api.ashbyhq.com/posting-api/job-board/skyband%20systems']);
+    expect(plan).toMatchObject({ confirmIds: ['r1'], boardsFailed: 0 });
+  });
+
+  it('keeps a mixed-case token with a space intact', () => {
+    expect(identifyEmployerJob('https://jobs.ashbyhq.com/Verne%20Robotics/bb78cdd4-449b-49f0-bd10-2c62fc85f83b')?.token).toBe('Verne Robotics');
+  });
+
+  it('still names a genuinely missing board and closes nothing', async () => {
+    const plan = await planEmployerConfirmation(
+      [{ id: 'keep', applyUrl: 'https://jobs.ashbyhq.com/atomicsemi/009d0819-c688-4ab9-8816-a3c7ab002470/application' }],
+      (async () => new Response(JSON.stringify({ message: 'not found' }), { status: 404, headers: { 'content-type': 'application/json' } })) as unknown as FetchLike,
+    );
+    expect(plan).toMatchObject({ closeIds: [], confirmIds: [], boardsFailed: 1 });
+    expect(plan.failedBoards[0]).toMatchObject({ token: 'atomicsemi', reason: 'incorrect-endpoint: http-404' });
+  });
+});

@@ -1,6 +1,7 @@
 import type { FetchLike } from '../types';
 import { fetchRetrying } from '../fetchRetry';
-import type { AggregatedPosting, AggregatorClient } from './types';
+import type { AggregatedPosting, AggregatorClient, FeedReport } from './types';
+import { describeJsonFailure, readJsonResponse } from '../jsonResponse';
 import { isEarlyCareerTitle } from '../classify';
 
 // Remotive public remote-jobs API (keyless):
@@ -19,19 +20,25 @@ interface RemotiveJob {
 }
 interface RemotiveResponse {
   jobs?: RemotiveJob[];
+  'job-count'?: number;
+  'total-job-count'?: number;
 }
 
 export function createRemotiveClient(fetchImpl: FetchLike = fetch): AggregatorClient {
   let feedComplete = false;
+  let report: FeedReport = { complete: false, pagesRead: 0, stopReason: 'not fetched yet' };
   return {
     source: 'remotive',
     feedWasComplete: () => feedComplete,
+    feedReport: () => report,
     async fetchEarlyCareer(signal) {
       feedComplete = false;
       const url = 'https://remotive.com/api/remote-jobs';
       const res = await fetchRetrying(fetchImpl, url, { signal }, 'Remotive');
-      if (!res.ok) throw new Error(`Remotive: HTTP ${res.status}`);
-      const data = (await res.json()) as RemotiveResponse;
+      const read = await readJsonResponse<RemotiveResponse>(res, url);
+      if (!read.ok) throw new Error(`Remotive: ${describeJsonFailure(read)}`);
+      const data = read.data;
+      if (!data || !Array.isArray(data.jobs)) throw new Error('Remotive: unexpected response (no jobs array)');
 
       const out: AggregatedPosting[] = [];
       for (const j of data.jobs ?? []) {
@@ -53,6 +60,13 @@ export function createRemotiveClient(fetchImpl: FetchLike = fetch): AggregatorCl
         });
       }
       feedComplete = true;
+      // Report the raw size so an empty result after filtering is distinguishable from a broken request.
+      const total = data['total-job-count'];
+      report = {
+        complete: true,
+        pagesRead: 1,
+        stopReason: `API returned ${data.jobs.length} job(s)${typeof total === 'number' ? ` (total-job-count ${total})` : ''}; ${out.length} early-career`,
+      };
       return out;
     },
   };

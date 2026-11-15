@@ -57,6 +57,14 @@ function companyToken(company: EmployerCompany | null | undefined, provider: Emp
   return company.atsProvider === provider ? company.atsBoardToken.trim() : '';
 }
 
+function decodeSegment(segment: string): string {
+  try {
+    return decodeURIComponent(segment);
+  } catch {
+    return segment;
+  }
+}
+
 /** Pull a board token and job id out of an apply URL. Custom domains can use the company's stored token. */
 export function identifyEmployerJob(applyUrl: string, company?: EmployerCompany | null): EmployerTarget | null {
   let url: URL;
@@ -66,7 +74,9 @@ export function identifyEmployerJob(applyUrl: string, company?: EmployerCompany 
     return null;
   }
   const host = url.hostname.toLowerCase().replace(/^www\./, '');
-  const parts = url.pathname.split('/').filter(Boolean);
+  // Path segments arrive percent-encoded (jobs.ashbyhq.com/skyband%20systems/...). Decode them once
+  // here; boardUrl() encodes once. Keeping the encoded form made requests for skyband%2520systems.
+  const parts = url.pathname.split('/').filter(Boolean).map(decodeSegment);
 
   // boards.greenhouse.io, job-boards.greenhouse.io and the regional job-boards.eu/anz
   // hosts are all served by boards-api.greenhouse.io (checked against live boards).
