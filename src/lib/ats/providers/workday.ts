@@ -1,5 +1,5 @@
 
-import type { ProviderClient, FetchLike } from '../types';
+import type { ProviderClient, FetchLike, ProviderCoverage } from '../types';
 import { fetchRetrying } from '../fetchRetry';
 import { splitLocation } from '../util';
 import { describeJsonFailure, readJsonResponse } from '../jsonResponse';
@@ -102,14 +102,17 @@ export function createWorkdayClient(
   fetchImpl: FetchLike = fetch,
 ): ProviderClient<WorkdayItem> {
   let completeSnapshot = false;
+  let coverage: ProviderCoverage = { status: 'partial', reason: 'not started' };
 
   return {
     provider: 'workday',
 
     isCompleteSnapshot: () => completeSnapshot,
+    getFetchCoverage: () => ({ ...coverage }),
 
     async fetchPostings(token, signal) {
       completeSnapshot = false;
+      coverage = { status: 'partial', reason: 'download not completed' };
 
       const coords = parseWorkdayToken(token);
 
@@ -120,6 +123,7 @@ export function createWorkdayClient(
       }
 
       const { host, tenant, site } = coords;
+      coverage.host = host;
 
       const endpoint =
         `https://${host}/wday/cxs/` +
@@ -133,6 +137,8 @@ export function createWorkdayClient(
       let total: number | null = null;
       let reachedEnd = false;
       const missed = new Set<number>();
+      let stopReason: string | null = null;
+      let hostBlocked = false;
 
       /** Adds unseen postings and returns how many were new. */
       const ingest = (data: WorkdayResponse): number => {
@@ -146,7 +152,7 @@ export function createWorkdayClient(
         return added;
       };
 
-      const loadPage = async (offset: number): Promise<{ data: WorkdayResponse | null; status: number; failure?: string }> => {
+      const loadPage = async (offset: number): Promise<{ data: WorkdayResponse | null; status: number; failure?: string; blocked?: boolean }> => {
         if (signal?.aborted) return { data: null, status: 0 };
         try {
           const res = await fetchRetrying(
@@ -170,14 +176,15 @@ export function createWorkdayClient(
           );
           // Validate before parsing: a tenant under maintenance answers 200 with an HTML page.
           const read = await readJsonResponse<WorkdayResponse>(res, endpoint);
-          if (!read.ok) return { data: null, status: res.status, failure: describeJsonFailure(read) };
+          if (!read.ok) return { data: null, status: res.status, failure: describeJsonFailure(read), blocked: read.kind === 'access-challenge' };
           if (!read.data || !Array.isArray(read.data.jobPostings)) {
             return { data: null, status: res.status, failure: 'unexpected-response: no jobPostings array' };
           }
           return { data: read.data, status: res.status };
         } catch (error) {
           if (signal?.aborted) return { data: null, status: 0 };
-          throw error;
+          // A late network failure must not discard pages already downloaded.
+          return { data: null, status: 0, failure: error instanceof Error && error.name === 'TimeoutError' ? 'timeout' : 'network-error' };
         }
       };
 
@@ -189,9 +196,15 @@ export function createWorkdayClient(
 
         if (!data) {
           if (signal?.aborted) break;
+          if (loaded.blocked) {
+            hostBlocked = true;
+            stopReason = loaded.failure ?? 'access-challenge';
+            coverage = { status: 'blocked', reason: stopReason, host };
+          }
           if (total == null && collected.length === 0 && page === 0) {
             throw new Error(`Workday ${tenant}: ${loaded.failure ?? `HTTP ${loaded.status}`} on the first page`);
           }
+          if (hostBlocked) break;
           missed.add(offset);
           console.log(`Workday ${tenant}: offset ${offset} failed (${loaded.failure ?? `HTTP ${loaded.status}`}); reading the following pages anyway`);
           if (total != null && offset + PAGE_SIZE >= total) break;
@@ -227,6 +240,7 @@ export function createWorkdayClient(
         if (added === 0 && (data.jobPostings?.length ?? 0) > 0) {
           // Past Workday's 2000-job window the API repeats earlier postings. The list is capped, not finished.
           console.log(`Workday ${tenant}: offset ${offset} repeated earlier jobs; the list is capped at ${collected.length} and is incomplete`);
+          stopReason = 'API repeated earlier jobs; board is capped';
           break;
         }
 
@@ -247,20 +261,27 @@ export function createWorkdayClient(
         }
       }
 
-      for (let round = 0; round < 4 && missed.size > 0 && !signal?.aborted; round++) {
+      for (let round = 0; round < 4 && missed.size > 0 && !signal?.aborted && !hostBlocked; round++) {
         if (round > 0 && !process.env.VITEST) {
           await new Promise((resolve) => setTimeout(resolve, 2000));
         }
         for (const offset of [...missed]) {
           if (signal?.aborted) break;
           const data = await loadPage(offset);
+          if (data.blocked) {
+            hostBlocked = true;
+            stopReason = data.failure ?? 'access-challenge';
+            break;
+          }
           if (!data.data || data.data.jobPostings?.length === 0) continue;
           missed.delete(offset);
           ingest(data.data);
         }
       }
 
-      if (signal?.aborted) {
+      if (hostBlocked) {
+        console.log(`Workday ${tenant}: blocked; saving ${collected.length} jobs already read; no more requests to this board this run`);
+      } else if (signal?.aborted) {
         console.log(`Workday ${tenant}: time ran out; saving ${collected.length} jobs already read`);
       } else if (missed.size > 0) {
         console.log(
@@ -271,6 +292,11 @@ export function createWorkdayClient(
       }
 
       completeSnapshot = reachedEnd && missed.size === 0 && !signal?.aborted && !narrowed;
+      coverage = {
+        status: hostBlocked ? 'blocked' : signal?.aborted || missed.size > 0 || !reachedEnd ? 'partial' : narrowed ? 'filtered' : 'complete',
+        reason: stopReason ?? (signal?.aborted ? 'download deadline reached' : missed.size > 0 ? `${missed.size} page(s) unread` : !reachedEnd ? 'page limit reached' : narrowed ? 'internship facet only; absent jobs need individual checks' : 'full board read'),
+        host,
+      };
       return collected;
     },
 

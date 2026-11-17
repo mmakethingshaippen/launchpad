@@ -3,6 +3,7 @@ import { isValidHttpUrl } from '../util';
 import { judgePage, type PageVerdictKind } from './pageEvidence';
 import { verificationBlocker } from '../verifyEligibility';
 import { isBlockedReason } from '../accessChallenge';
+import { checkHimalayasJob, himalayasJobUrl } from './himalayas';
 
 export { judgePage } from './pageEvidence';
 
@@ -166,6 +167,7 @@ type EligibleRole = {
   id: string;
   title: string;
   applyUrl: string;
+  sourceUrl: string | null;
   companyName: string | null;
   /** external_job_id prefix, e.g. 'muse'. */
   feed: string;
@@ -182,7 +184,7 @@ type EligibleRole = {
 type Outcome = { kind: PageVerdictKind; reason: string };
 
 const ROLE_COLUMNS =
-  'id,title,apply_url,external_job_id,seasons,cohort_year,application_deadline,last_verified_at,' +
+  'id,title,apply_url,source_url,external_job_id,seasons,cohort_year,application_deadline,last_verified_at,' +
   'last_verification_attempt_at,last_verification_failure_reason,verification_failure_count,next_verification_at,companies(name)';
 
 function companyNameOf(row: Record<string, unknown>): string | null {
@@ -255,6 +257,7 @@ export async function loadEligibleRoles(
         id: String(row.id),
         title: typeof row.title === 'string' ? row.title : '',
         applyUrl,
+        sourceUrl: typeof row.source_url === 'string' ? row.source_url : null,
         companyName: companyNameOf(row),
         feed: feedOf(row.external_job_id),
         host: hostOf(applyUrl),
@@ -299,6 +302,9 @@ async function checkRole(
   now: Date,
 ): Promise<Outcome> {
   if (!isValidHttpUrl(role.applyUrl)) return { kind: 'unreadable', reason: 'invalid-apply-url' };
+  if (role.feed === 'himalayas' || himalayasJobUrl(role.applyUrl)) {
+    return checkHimalayasJob(role, fetchImpl, now);
+  }
   let response: Response;
   try {
     response = await fetchImpl(role.applyUrl, {
@@ -352,6 +358,8 @@ export async function sweepStaleAggregatorRoles(
     clock?: () => number;
     /** Feed coverage from this run's ingestion, stored with the run summary. */
     feeds?: unknown;
+    /** Explicit feed challenges from this run. Do not immediately retry that host via job pages. */
+    blockedHosts?: ReadonlySet<string>;
     log?: (message: string) => void;
   } = {},
 ): Promise<StaleSweepResult> {
@@ -369,12 +377,15 @@ export async function sweepStaleAggregatorRoles(
   const isWaiting = (r: EligibleRole) => Boolean(r.nextVerificationAt) && Date.parse(r.nextVerificationAt!) > runStart.getTime();
   const ready = due.filter((r) => !isWaiting(r));
   const waiting = due.filter(isWaiting);
+  const blockedHosts = new Set(opts.blockedHosts);
+  for (const host of blockedHosts) log(`Host ${host}: feed already returned an access challenge; skipping job-page retries this run`);
   const queue = orderForVerification(ready);
 
   // Recovery probes: a host whose due roles are all waiting after a challenge still gets a few requests.
   const readyHosts = new Set(ready.map((r) => r.host));
   const probeCandidates = new Map<string, EligibleRole[]>();
   for (const role of orderForVerification(waiting)) {
+    if (blockedHosts.has(role.host)) continue;
     if (!isBlockedReason(role.lastFailureReason) || readyHosts.has(role.host)) continue;
     const list = probeCandidates.get(role.host) ?? [];
     if (list.length < RECOVERY_PROBES_PER_HOST) list.push(role);
@@ -506,8 +517,8 @@ export async function sweepStaleAggregatorRoles(
   }
 
   const consecutiveChallenges = new Map<string, number>();
-  const blockedHosts = new Set<string>();
   const recoveredHosts = new Set<string>();
+  const rateLimitedHosts = new Set<string>();
 
   let cursor = 0;
   const workers = Array.from({ length: Math.max(1, opts.concurrency ?? DEFAULT_CONCURRENCY) }, async () => {
@@ -528,6 +539,11 @@ export async function sweepStaleAggregatorRoles(
         entry.deferred += 1;
         continue;
       }
+      if (rateLimitedHosts.has(role.host)) {
+        // Respect Himalayas' API limit: leave unreached jobs queued for a later run.
+        if (!probeIds.has(role.id)) { result.deferred += 1; entry.deferred += 1; }
+        continue;
+      }
       result.attempted += 1;
       entry.attempted += 1;
       if (probeIds.has(role.id)) result.recoveryProbes += 1;
@@ -536,6 +552,10 @@ export async function sweepStaleAggregatorRoles(
         outcome = await checkRole(role, fetchImpl, stampTime());
       } catch (error) {
         outcome = { kind: 'failed', reason: classifyFetchError(error) };
+      }
+      if (role.feed === 'himalayas' && outcome.kind === 'failed' && outcome.reason === 'http-429') {
+        rateLimitedHosts.add(role.host);
+        log(`Host ${role.host}: API rate limited; deferring its remaining checks until a later run`);
       }
       if (outcome.kind === 'blocked') {
         const streak = (consecutiveChallenges.get(role.host) ?? 0) + 1;
@@ -546,8 +566,9 @@ export async function sweepStaleAggregatorRoles(
         }
       } else {
         consecutiveChallenges.set(role.host, 0);
-        // Any answer that is not a challenge means the challenge no longer applies to this host.
-        if (isBlockedReason(role.lastFailureReason)) recoveredHosts.add(role.host);
+        // A timeout, plain 403, 5xx, login page or malformed response proves
+        // nothing about recovery. Only role-specific evidence can reopen work.
+        if ((outcome.kind === 'live' || outcome.kind === 'closed') && isBlockedReason(role.lastFailureReason)) recoveredHosts.add(role.host);
       }
       const written = await record(role, outcome);
       if (!written) result.writeFailures += 1;
@@ -593,7 +614,8 @@ export async function sweepStaleAggregatorRoles(
   result.retryScheduledAtEnd = scheduled.size;
   result.backlog = due.length - result.verified - result.closed;
   result.bySource = [...breakdown.values()].sort((a, b) => b.due - a.due || a.feed.localeCompare(b.feed));
-  result.cycleComplete = result.pagination.complete && result.deferred === 0 && result.hostBlockedSkipped === 0;
+  result.cycleComplete = result.pagination.complete && result.deferred === 0 && result.hostBlockedSkipped === 0 &&
+    !due.some(role => blockedHosts.has(role.host));
 
   if (runId) {
     const base = {

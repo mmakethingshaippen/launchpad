@@ -78,6 +78,7 @@ function firstCompany(c: RoleRow['companies']): CompanyRow | null {
 export function mapRoleCard(row: RoleRow): RoleCard {
   const c = firstCompany(row.companies);
   return {
+    sourceUrl: row.source_url,
     id: row.id,
     slug: row.slug,
     title: row.title,

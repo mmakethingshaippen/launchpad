@@ -14,6 +14,7 @@ import { isUsableCity } from '../supabaseSink';
 import { canonicalCompanySlug, INTERNSHIP_ONLY_SLUGS } from '../companyMatch';
 import { classifyCompanyByName } from '../classifyCompany';
 import { createAmazonClient } from './amazon';
+import { createHimalayasClient } from './himalayas';
 
 export interface AggregatorResult {
   source: string;
@@ -49,7 +50,7 @@ export interface AggregatorResult {
    */
   coverage: 'complete' | 'partial' | 'failed' | 'blocked' | 'disabled';
   /** Present when coverage is 'blocked'. */
-  accessChallenge?: { status: number; vendor: string; evidence: string };
+  accessChallenge?: { status: number; vendor: string; evidence: string; host?: string };
   /** Refresh writes that errored or matched fewer rows than requested. */
   refreshWriteFailures: number;
   errors: string[];
@@ -65,6 +66,7 @@ const SOURCE_PREFIX: Record<string, string> = {
   remotive: 'remotive-',
   adzuna: 'adzuna-',
   usajobs: 'usajobs-',
+  himalayas: 'himalayas-',
 };
 const stamp = () => new Date().toISOString();
 const message = (error: unknown) => error instanceof Error ? error.message : String(error);
@@ -93,6 +95,11 @@ type RoleRow = {
   moderation_status: string;
   listing_status: string;
   last_verified_at: string;
+  pay_min: number | null;
+  pay_max: number | null;
+  pay_currency: string | null;
+  pay_period: string | null;
+  compensation_status: string;
 };
 
 type IndexedRole = {
@@ -133,6 +140,7 @@ export async function ingestAggregators(
   const clients: AggregatorClient[] = opts.clients ?? [
     createSimplifyClient(opts.fetchImpl),
     createAmazonClient(opts.fetchImpl),
+    createHimalayasClient(opts.fetchImpl, { now: opts.now }),
     createTheMuseClient(opts.fetchImpl),
     createRemotiveClient(opts.fetchImpl),
     createAdzunaClient(opts.fetchImpl),
@@ -180,7 +188,7 @@ export async function ingestAggregators(
     console.log(`[${stamp()}] ${client.source}: fetching feed`);
     let postings: AggregatedPosting[];
     try {
-      postings = await client.fetchEarlyCareer(AbortSignal.timeout(opts.feedTimeoutMs ?? 90_000));
+      postings = await client.fetchEarlyCareer(AbortSignal.timeout(opts.feedTimeoutMs ?? client.feedTimeoutMs ?? 90_000));
     } catch (error) {
       result.errors.push(`Feed fetch: ${message(error)}`);
       result.durationMs = Date.now() - sourceStarted;
@@ -323,14 +331,14 @@ export async function ingestAggregators(
         } else {
           const city = isUsableCity(posting.city) ? posting.city! : null;
           const state = city ? (posting.state ?? null) : null;
-          const country = city ? (posting.country ?? null) : null;
+          const country = city || client.source === 'himalayas' ? (posting.country ?? null) : null;
           const location = [city, state, country].filter(Boolean).join(', ');
           const remote = posting.workArrangement === 'Remote' || isRemoteLocation(location);
           const coords = remote ? null : resolveRoleCoords(location || city || null);
           pending.push({
             company_id: companyId,
             external_job_id: enriched.externalJobId,
-            slug: `${slug}-${enriched.externalJobId}`.slice(0, 80),
+            slug: client.source === 'himalayas' ? `${slug.slice(0, 45)}-${enriched.externalJobId}` : `${slug}-${enriched.externalJobId}`.slice(0, 80),
             title: enriched.title,
             field: enriched.field !== 'Other' ? enriched.field : classifyField(enriched.title),
             opportunity_type: enriched.opportunityType,
@@ -347,7 +355,12 @@ export async function ingestAggregators(
             apply_url: posting.applyUrl,
             description: enriched.descriptionHtml,
             source: 'aggregator',
-            source_url: posting.applyUrl,
+            source_url: posting.sourceUrl ?? posting.applyUrl,
+            pay_min: posting.pay?.min ?? null,
+            pay_max: posting.pay?.max ?? null,
+            pay_currency: posting.pay?.currency ?? null,
+            pay_period: posting.pay?.period ?? null,
+            compensation_status: posting.pay && (posting.pay.min !== undefined || posting.pay.max !== undefined) ? 'Paid' : 'Not disclosed',
             moderation_status: 'Approved',
             listing_status: 'Active',
             last_verified_at: verifiedAt,

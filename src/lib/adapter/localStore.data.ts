@@ -232,6 +232,7 @@ export class LocalStore implements SyncSink {
       lastVerifiedAt: r.lastVerifiedAt,
       listingStatus: r.listingStatus,
       applyUrl: r.applyUrl,
+      sourceUrl: r.sourceUrl,
     };
   }
 

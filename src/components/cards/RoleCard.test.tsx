@@ -35,6 +35,18 @@ function createMockRole(overrides: Partial<RoleCardData> = {}): RoleCardData {
 }
 
 describe('RoleCard', () => {
+  it('credits Himalayas visibly and keeps the supplied Apply link unchanged', () => {
+    const sourceUrl = 'https://himalayas.app/companies/acme/jobs/data-intern';
+    const applyUrl = `${sourceUrl}?utm_source=api&ref=original%2Fvalue`;
+    render(<MemoryRouter><RoleCard role={createMockRole({ sourceUrl, applyUrl })} /></MemoryRouter>);
+    expect(screen.getByRole('link', { name: 'Himalayas' })).toHaveAttribute('href', sourceUrl);
+    expect(screen.getByRole('link', { name: 'Apply' })).toHaveAttribute('href', applyUrl);
+  });
+
+  it('does not credit an unrelated host that includes the source name', () => {
+    render(<MemoryRouter><RoleCard role={createMockRole({ sourceUrl: 'https://himalayas.app.evil.test/a' })} /></MemoryRouter>);
+    expect(screen.queryByRole('link', { name: 'Himalayas' })).toBeNull();
+  });
   describe('Salary display formatting', () => {
     it('renders a single value when min equals max instead of a range', () => {
       const role = createMockRole({

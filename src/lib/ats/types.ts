@@ -38,6 +38,14 @@ export interface ProviderClient<Raw = unknown> {
   toNormalized(raw: Raw): NormalizedPosting | null;
   /** Whether the last fetch included the entire board, allowing absent jobs to close. */
   isCompleteSnapshot?(): boolean;
+  /** Why a download could not cover the whole board; never a reason to stamp unseen jobs. */
+  getFetchCoverage?(): ProviderCoverage;
+}
+
+export interface ProviderCoverage {
+  status: 'complete' | 'filtered' | 'partial' | 'blocked';
+  reason: string;
+  host?: string;
 }
 
 /**
@@ -57,5 +65,6 @@ export interface FetchLike {
     ok: boolean;
     status: number;
     json: () => Promise<unknown>;
+    headers?: { get(name: string): string | null };
   }>;
 }

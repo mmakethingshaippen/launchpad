@@ -233,3 +233,52 @@ describe('Workday paging totals (production tenants, Nov 2026)', () => {
     expect(client.isCompleteSnapshot?.()).toBe(false); // a filtered list never closes absent jobs
   });
 });
+
+describe('Workday incomplete-download recovery', () => {
+  const token = 'micron.wd1.myworkdayjobs.com|micron|External';
+  const posting = (id: number) => ({
+    title: `Engineering Intern ${id}`, externalPath: `/job/Boise/Intern_JR${id}`, bulletFields: [`JR${id}`],
+  });
+  const page = (start: number, total = 60) => ({
+    total, jobPostings: Array.from({ length: 20 }, (_, i) => posting(start + i)),
+  });
+
+  it('stops a challenged first page after one request, with explicit blocked coverage', async () => {
+    let calls = 0;
+    const client = createWorkdayClient(async () => {
+      calls++;
+      return new Response('', { status: 429, headers: { 'cf-mitigated': 'challenge' } });
+    });
+    await expect(client.fetchPostings(token)).rejects.toThrow(/access-challenge/);
+    expect(calls).toBe(1);
+    expect(client.getFetchCoverage?.()).toMatchObject({ status: 'blocked', host: 'micron.wd1.myworkdayjobs.com' });
+    expect(client.isCompleteSnapshot?.()).toBe(false);
+  });
+
+  it('saves downloaded jobs and stops all paging/recovery requests after a late challenge', async () => {
+    const offsets: number[] = [];
+    const client = createWorkdayClient(async (_url, init) => {
+      const { offset } = JSON.parse(init?.body ?? '{}');
+      offsets.push(offset);
+      if (offset === 0) return new Response(JSON.stringify(page(0)), { headers: { 'content-type': 'application/json' } });
+      return new Response('', { status: 429, headers: { 'cf-mitigated': 'challenge' } });
+    });
+    expect(await client.fetchPostings(token)).toHaveLength(20);
+    expect(offsets).toEqual([0, 20]);
+    expect(client.getFetchCoverage?.()).toMatchObject({ status: 'blocked' });
+    expect(client.isCompleteSnapshot?.()).toBe(false);
+  });
+
+  it('keeps earlier and later pages when an intermediate page has a persistent network error', async () => {
+    const client = createWorkdayClient(async (_url, init) => {
+      const { offset } = JSON.parse(init?.body ?? '{}');
+      if (offset === 20) throw new TypeError('connection reset');
+      return new Response(JSON.stringify(page(offset)), { headers: { 'content-type': 'application/json' } });
+    });
+    const raw = await client.fetchPostings(token);
+    expect(raw).toHaveLength(40);
+    expect(raw.at(-1)?.bulletFields).toEqual(['JR59']);
+    expect(client.getFetchCoverage?.()).toMatchObject({ status: 'partial', reason: '1 page(s) unread' });
+    expect(client.isCompleteSnapshot?.()).toBe(false);
+  });
+});

@@ -83,6 +83,14 @@ export function createTheMuseClient(fetchImpl: FetchLike = fetch): AggregatorCli
             reasons.push(`${level}: network error skipped page ${page}`);
             continue;
           }
+          // Challenges can also be served with a 2xx status. Do not treat one
+          // as malformed JSON and request up to 100 more pages from this host.
+          const headerChallenge = detectAccessChallenge(res.status, res.headers);
+          if (headerChallenge) {
+            blocked = { status: res.status, challenge: headerChallenge };
+            stop(level, page, `access challenge: ${headerChallenge.evidence}`, true);
+            break;
+          }
           if (!res.ok) {
             stoppedEarly = true;
             const withExtras = res as typeof res & { headers?: HeaderSource; text?: () => Promise<string> };
@@ -104,10 +112,10 @@ export function createTheMuseClient(fetchImpl: FetchLike = fetch): AggregatorCli
             console.error(`The Muse: HTTP ${res.status} on ${level} page ${page}; skipping that page`);
             continue;
           }
-          skippedPages = 0;
           let data: MuseResponse;
           try {
             data = (await res.json()) as MuseResponse;
+            if (!data || !Array.isArray(data.results)) throw new Error('missing results array');
           } catch {
             stoppedEarly = true;
             skippedPages += 1;
@@ -118,6 +126,9 @@ export function createTheMuseClient(fetchImpl: FetchLike = fetch): AggregatorCli
             reasons.push(`${level}: unreadable JSON skipped page ${page}`);
             continue;
           }
+          // Reset only after usable JSON; resetting before parsing made the
+          // three-failure stop unreachable on repeated HTML/invalid payloads.
+          skippedPages = 0;
           pagesRead += 1;
           const results = data.results ?? [];
           if (results.length === 0) {
@@ -126,7 +137,7 @@ export function createTheMuseClient(fetchImpl: FetchLike = fetch): AggregatorCli
           }
           const firstId = results[0]?.id;
           if (firstId !== undefined && firstId === previousFirstId) {
-            stop(level, page, 'repeated first id (treated as end of feed)', false);
+            stop(level, page, 'repeated first id; pagination did not advance', true);
             break;
           }
           previousFirstId = firstId;
@@ -165,8 +176,8 @@ export function createTheMuseClient(fetchImpl: FetchLike = fetch): AggregatorCli
               updatedAt: j.publication_date,
             });
           }
-          const pageCount = data.page_count ?? 0;
-          if (pageCount <= page) {
+          const pageCount = data.page_count;
+          if (typeof pageCount === 'number' && Number.isFinite(pageCount) && pageCount >= 1 && pageCount <= page) {
             stop(level, page, `last page (page_count ${pageCount})`, false);
             break;
           }
@@ -183,7 +194,7 @@ export function createTheMuseClient(fetchImpl: FetchLike = fetch): AggregatorCli
         pagesRead,
         stopReason: reasons.join('; ') || 'no pages read',
         ...(blocked ? {
-          blocked: { status: blocked.status, vendor: blocked.challenge.vendor, evidence: blocked.challenge.evidence },
+          blocked: { status: blocked.status, vendor: blocked.challenge.vendor, evidence: blocked.challenge.evidence, host: 'www.themuse.com' },
         } : {}),
       };
       return out;

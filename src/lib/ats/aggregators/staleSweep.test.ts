@@ -534,6 +534,73 @@ const hostFetch = (byHost: Record<string, () => Response>, seen: string[] = []) 
   }) as unknown as typeof fetch;
 
 describe('explicit access challenges', () => {
+  it('defers remaining Himalayas checks after an API rate limit without refreshing or closing them', async () => {
+    const source = 'https://himalayas.app/companies/acme/jobs/hr-intern';
+    const roles = ['1', '2'].map(id => role(id, { external_job_id: `himalayas-${id}`, apply_url: `${source}-${id}`, source_url: `${source}-${id}` }));
+    const fake = createDb(roles);
+    const seen: string[] = [];
+    const result = await sweepStaleAggregatorRoles(fake.db, { now: NOW, concurrency: 1, fetchImpl: (async (url: string) => {
+      seen.push(String(url));
+      return new Response('{}', { status: 429, headers: { 'content-type': 'application/json' } });
+    }) as typeof fetch });
+    expect(seen).toHaveLength(1);
+    expect(result).toMatchObject({ attempted: 1, failed: 1, deferred: 1, verified: 0, closed: 0, cycleComplete: false });
+    expect(roles[1]).toMatchObject({ last_verified_at: OLD, last_verification_attempt_at: null });
+  });
+  it('keeps the cycle incomplete when the feed is blocked and every role is waiting', async () => {
+    const fake = createDb([museRole('waiting', {
+      next_verification_at: new Date(NOW.getTime() + 86400000).toISOString(),
+      last_verification_failure_reason: 'blocked:cloudflare-challenge',
+    })]);
+    const result = await sweepStaleAggregatorRoles(fake.db, {
+      now: NOW, blockedHosts: new Set(['www.themuse.com']), fetchImpl: liveFetch,
+    });
+    expect(result).toMatchObject({ attempted: 0, recoveryProbes: 0, waitingRetry: 1, cycleComplete: false });
+  });
+  it('verifies Himalayas jobs through its job API rather than scraping the Apply page', async () => {
+    const source = 'https://himalayas.app/companies/acme/jobs/hr-intern';
+    const roles = [role('h1', { external_job_id: 'himalayas-stable-id', apply_url: `${source}?utm_source=api`, source_url: source })];
+    const fake = createDb(roles);
+    const seen: string[] = [];
+    const result = await sweepStaleAggregatorRoles(fake.db, { now: NOW, fetchImpl: (async (url: string) => {
+      seen.push(String(url));
+      return new Response(JSON.stringify({ job: { guid: source, title: 'HR Operations Lifecycle Intern', expiryDate: NOW.getTime() / 1000 + 86400 } }), { headers: { 'content-type': 'application/json' } });
+    }) as typeof fetch });
+    expect(seen).toEqual(['https://himalayas.app/jobs/api/companies/acme/jobs/hr-intern']);
+    expect(result).toMatchObject({ verified: 1, closed: 0 });
+    expect(roles[0].last_verified_at).toBe(NOW.toISOString());
+  });
+
+  it('honours a block from ingestion, skips its probes and still verifies another source', async () => {
+    const later = new Date(NOW.getTime() + 48 * 3_600_000).toISOString();
+    const roles = [museRole('ready'), museRole('waiting', {
+      next_verification_at: later, last_verification_failure_reason: 'blocked:cloudflare-challenge',
+    }), amazonRole('a1')];
+    const before = JSON.parse(JSON.stringify(roles.slice(0, 2)));
+    const fake = createDb(roles);
+    const seen: string[] = [];
+    const result = await sweepStaleAggregatorRoles(fake.db, {
+      now: NOW, blockedHosts: new Set(['www.themuse.com']),
+      fetchImpl: hostFetch({ 'www.amazon.jobs': () => htmlResponse(200, LIVE_HTML) }, seen),
+    });
+    expect(seen).toEqual(['https://www.amazon.jobs/en/jobs/a1/intern']);
+    expect(result).toMatchObject({ attempted: 1, verified: 1, hostBlockedSkipped: 1, recoveryProbes: 0, cycleComplete: false });
+    expect(roles.slice(0, 2)).toEqual(before);
+  });
+
+  it.each([403, 500])('does not clear blocked-host backoff when a recovery probe returns %i', async status => {
+    const later = new Date(NOW.getTime() + 48 * 3_600_000).toISOString();
+    const roles = Array.from({length: 6}, (_, i) => museRole(`m${i}`, {
+      next_verification_at: later, last_verification_failure_reason: 'blocked:cloudflare-challenge',
+    }));
+    const fake = createDb(roles);
+    const result = await sweepStaleAggregatorRoles(fake.db, {
+      now: NOW, fetchImpl: hostFetch({ 'www.themuse.com': () => htmlResponse(status, 'unavailable') }),
+    });
+    expect(result).toMatchObject({ recoveryProbes: 3, verified: 0, retryCleared: 0, recoveredHosts: [] });
+    expect(roles.every(r => r.next_verification_at !== null && r.last_verified_at === OLD)).toBe(true);
+  });
+
   it('counts a Cloudflare challenge as blocked, not failed, and leaves verification date and status alone', async () => {
     const roles = [museRole('m1')];
     const fake = createDb(roles);

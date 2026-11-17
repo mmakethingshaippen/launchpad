@@ -11,12 +11,15 @@ export type AggregatorSource =
   | 'adzuna'
   | 'simplify'
   | 'usajobs'
-  | 'amazon';
+  | 'amazon'
+  | 'himalayas';
 
 export interface AggregatedPosting extends NormalizedPosting {
   companyName: string;
   companyWebsite?: string;
   source: AggregatorSource;
+  /** Canonical source listing when the supplied Apply URL differs. */
+  sourceUrl?: string;
 }
 
 /** What the last fetch actually read, for run logs. */
@@ -29,11 +32,13 @@ export interface FeedReport {
    * Set only when the source served an explicit access challenge (see
    * accessChallenge.ts). A plain HTTP error does not set this.
    */
-  blocked?: { status: number; vendor: string; evidence: string };
+  blocked?: { status: number; vendor: string; evidence: string; host?: string };
 }
 
 export interface AggregatorClient {
   readonly source: AggregatorSource;
+  /** A documented, rate-limited source can need longer than the default feed budget. */
+  readonly feedTimeoutMs?: number;
   fetchEarlyCareer(signal?: AbortSignal): Promise<AggregatedPosting[]>;
   /** True only when the last fetch read the whole feed. Absent or false must not close older rows. */
   feedWasComplete?(): boolean;

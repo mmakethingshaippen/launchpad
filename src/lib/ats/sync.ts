@@ -1,4 +1,4 @@
-import type { ProviderClient } from './types';
+import type { ProviderClient, ProviderCoverage } from './types';
 import type { EnrichedPosting } from './normalize';
 import { selectCandidates } from './normalize';
 import { createGreenhouseClient } from './providers/greenhouse';
@@ -53,6 +53,9 @@ export interface SyncResult {
   errors: string[];
   /** A partial feed may refresh found jobs without proving that absent jobs closed. */
   warnings?: string[];
+  coverage?: ProviderCoverage;
+  fetched?: number;
+  candidates?: number;
 }
 
 /**
@@ -140,6 +143,8 @@ export async function syncCompany(
   const fetchTimer = setTimeout(() => fetchController.abort(new Error('ATS fetch timed out')), timeoutMs);
   try {
     const raw = await client.fetchPostings(company.atsBoardToken, fetchController.signal);
+    result.fetched = raw.length;
+    result.coverage = client.getFetchCoverage?.();
     const normalized = raw
       .map((r) => client.toNormalized(r))
       .filter((p): p is NonNullable<typeof p> => p !== null);
@@ -153,7 +158,9 @@ export async function syncCompany(
         (c) => c.opportunityType === 'Internship' || c.opportunityType === 'Co-op',
       );
     }
+    result.candidates = candidates.length;
   } catch (err) {
+    result.coverage = client.getFetchCoverage?.();
     result.errors.push(err instanceof Error ? err.message : String(err));
     return result; // do not close-missing on a failed fetch (avoids wiping data)
   } finally {
@@ -200,7 +207,7 @@ export async function syncCompany(
 
   if (stopped() || result.errors.length) return result;
   if (client.isCompleteSnapshot?.() === false) {
-    result.warnings = ['This connector returns a partial or filtered feed; found jobs were refreshed, but absent jobs were not closed.'];
+    result.warnings = [`${result.coverage?.reason ?? 'Partial or filtered feed'}; found jobs were refreshed, but absent jobs were not closed.`];
     return result;
   }
   try {

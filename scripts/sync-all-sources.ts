@@ -35,7 +35,7 @@
  */
 import { appendFileSync } from 'node:fs';
 import { createServiceClient, loadSyncableCompanies, SupabaseSink } from '../src/lib/ats/supabaseSink';
-import { syncAll } from '../src/lib/ats/sync';
+import { syncAll, type SyncResult } from '../src/lib/ats/sync';
 import { aggregatorRunSucceeded, ingestAggregators, type AggregatorResult } from '../src/lib/ats/aggregators/ingest';
 import {
   confirmEmployerRoles,
@@ -71,6 +71,9 @@ const log = (message: string) =>
 const errorMessage = (error: unknown) =>
   error instanceof Error ? error.message : String(error);
 
+const atsResults: SyncResult[] = [];
+const blockedWorkdayHosts = new Set<string>();
+
 async function runAts(): Promise<boolean> {
   atsStartedAt = new Date();
   const companies = await loadSyncableCompanies(db);
@@ -88,9 +91,15 @@ async function runAts(): Promise<boolean> {
     });
 
     for (const result of results) {
-      if (result.errors.length) {
+      atsResults.push(result);
+      if (result.coverage?.status === 'blocked' && result.coverage.host) {
+        blockedWorkdayHosts.add(result.coverage.host);
+      }
+      log(`ATS ${result.company}: fetched ${result.fetched ?? 0}; eligible ${result.candidates ?? 0}; new ${result.imported}; refreshed ${result.updated}; closed ${result.closed}; coverage ${result.coverage?.status ?? (result.errors.length ? 'failed' : 'complete')}`);
+      for (const warning of result.warnings ?? []) log(`WARN ${result.company}: ${warning}`);
+      if (result.errors.length || result.coverage?.status === 'partial' || result.coverage?.status === 'blocked') {
         failures++;
-        log(`ERROR ${result.company}: ${result.errors.join('; ')}`);
+        log(`ERROR ${result.company}: ${result.errors.join('; ') || result.coverage?.reason}`);
       }
     }
 
@@ -157,7 +166,9 @@ async function runAggregatorVerification(): Promise<boolean> {
     source: r.source, coverage: r.coverage, fetched: r.fetched, refreshed: r.refreshed,
     stopReason: r.feedStopReason.slice(0, 300), accessChallenge: r.accessChallenge ?? null,
   }));
-  sweepResult = await sweepStaleAggregatorRoles(db, { log, budgetMs: verifyBudgetMs, feeds });
+  const blockedHosts = new Set(ingestResults.flatMap(r =>
+    r.coverage === 'blocked' && r.accessChallenge?.host ? [r.accessChallenge.host] : []));
+  sweepResult = await sweepStaleAggregatorRoles(db, { log, budgetMs: verifyBudgetMs, feeds, blockedHosts });
   // Unreadable pages and failed fetches are recorded and retried; they do not fail the run.
   // An incomplete cycle (deferred roles, incomplete pagination) or lost writes do.
   return sweepResult.cycleComplete && sweepResult.writeFailures === 0;
@@ -180,7 +191,7 @@ async function runEmployerConfirmation(): Promise<boolean> {
 async function recheckMissedWorkday(): Promise<boolean> {
   // Small margin for clock skew between this runner and the database.
   const since = new Date((atsStartedAt ?? new Date(Date.now() - 45 * MINUTE)).getTime() - 5 * MINUTE);
-  workdayResult = await recheckWorkdayRoles(db, { refreshedSince: since, log, budgetMs: 15 * MINUTE });
+  workdayResult = await recheckWorkdayRoles(db, { refreshedSince: since, log, budgetMs: 15 * MINUTE, blockedHosts: blockedWorkdayHosts });
   return workdayResult.clean;
 }
 function writeStepSummary(outcomes: StageOutcome[]): void {
@@ -189,6 +200,17 @@ function writeStepSummary(outcomes: StageOutcome[]): void {
   const lines = ['## Launchpad sync', '', '| Stage | Group | Status | Seconds |', '| --- | --- | --- | --- |'];
   for (const o of outcomes) {
     lines.push(`| ${o.name} | ${o.group} | ${o.status}${o.error ? `: ${o.error.replace(/\|/g, '/')}` : ''} | ${(o.durationMs / 1000).toFixed(1)} |`);
+  }
+  if (atsResults.length) {
+    const cell = (value: string) => value.replace(/\|/g, '/').replace(/[\r\n]/g, ' ');
+    lines.push('', '### ATS company downloads', '',
+      '| Employer | Coverage | Fetched | Eligible | New | Refreshed | Closed | Reason |',
+      '| --- | --- | --- | --- | --- | --- | --- | --- |');
+    for (const r of atsResults) {
+      const status = r.coverage?.status ?? (r.errors.length ? 'failed' : 'complete');
+      const reason = [...r.errors, ...(r.coverage && r.coverage.status !== 'complete' ? [r.coverage.reason] : [])].join('; ');
+      lines.push(`| ${cell(r.company)} | ${status} | ${r.fetched ?? 0} | ${r.candidates ?? 0} | ${r.imported} | ${r.updated} | ${r.closed} | ${cell(reason).slice(0, 500)} |`);
+    }
   }
   if (ingestResults.length) {
     lines.push('', '### Aggregator feeds', '', '| Source | Coverage | Fetched | New | Refreshed | Closed | Errors | Stop reason |', '| --- | --- | --- | --- | --- | --- | --- | --- |');

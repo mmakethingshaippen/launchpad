@@ -22722,32 +22722,6 @@ function resolveRoleCoords(location2) {
 // src/lib/ats/companyMatch.ts
 var INTERNSHIP_ONLY_SLUGS = /* @__PURE__ */ new Set(["google", "amazon", "tesla", "spacex"]);
 
-// src/lib/ats/fetchRetry.ts
-var TRANSIENT_HTTP = /* @__PURE__ */ new Set([408, 429, 500, 502, 503, 504, 520, 521, 522, 523, 524]);
-var DELAYS_MS = process.env.VITEST ? [10, 10, 10] : [1e3, 2e3, 4e3];
-function wait(ms) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-async function fetchRetrying(fetchImpl, input, init, label) {
-  let last = null;
-  for (let attempt = 0; attempt <= DELAYS_MS.length; attempt++) {
-    if (init?.signal?.aborted) {
-      throw new DOMException("This operation was aborted", "AbortError");
-    }
-    try {
-      const res = await fetchImpl(input, init);
-      if (res.ok || !TRANSIENT_HTTP.has(res.status) || attempt === DELAYS_MS.length) return res;
-      last = res;
-      console.log(`${label}: HTTP ${res.status}; retrying`);
-    } catch (error) {
-      if (init?.signal?.aborted || attempt === DELAYS_MS.length) throw error;
-      console.log(`${label}: network error; retrying`);
-    }
-    await wait(DELAYS_MS[attempt]);
-  }
-  return last ?? { ok: false, status: 0, json: async () => ({}) };
-}
-
 // src/lib/ats/accessChallenge.ts
 var CF_CHALLENGE_BODY_RE = /<title>\s*Just a moment\.\.\.\s*<\/title>|\/cdn-cgi\/challenge-platform\/|cf-chl-|cf_chl_opt/i;
 var AKAMAI_BODY_RE = /<title>\s*Access Denied\s*<\/title>[\s\S]{0,2000}errors\.edgesuite\.net/i;
@@ -22773,6 +22747,33 @@ function detectAccessChallenge(status, headers, body = "") {
 var BLOCKED_REASON_PREFIX = "blocked:";
 function blockedReason(challenge) {
   return `${BLOCKED_REASON_PREFIX}${challenge.vendor}-challenge`;
+}
+
+// src/lib/ats/fetchRetry.ts
+var TRANSIENT_HTTP = /* @__PURE__ */ new Set([408, 429, 500, 502, 503, 504, 520, 521, 522, 523, 524]);
+var DELAYS_MS = process.env.VITEST ? [10, 10, 10] : [1e3, 2e3, 4e3];
+function wait(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+async function fetchRetrying(fetchImpl, input, init, label) {
+  let last = null;
+  for (let attempt = 0; attempt <= DELAYS_MS.length; attempt++) {
+    if (init?.signal?.aborted) {
+      throw new DOMException("This operation was aborted", "AbortError");
+    }
+    try {
+      const res = await fetchImpl(input, init);
+      if (detectAccessChallenge(res.status, res.headers)) return res;
+      if (res.ok || !TRANSIENT_HTTP.has(res.status) || attempt === DELAYS_MS.length) return res;
+      last = res;
+      console.log(`${label}: HTTP ${res.status}; retrying`);
+    } catch (error) {
+      if (init?.signal?.aborted || attempt === DELAYS_MS.length) throw error;
+      console.log(`${label}: network error; retrying`);
+    }
+    await wait(DELAYS_MS[attempt]);
+  }
+  return last ?? { ok: false, status: 0, json: async () => ({}) };
 }
 
 // src/lib/ats/jsonResponse.ts
@@ -23683,11 +23684,14 @@ function selectInternshipFacet(facets) {
 }
 function createWorkdayClient(fetchImpl = fetch) {
   let completeSnapshot = false;
+  let coverage = { status: "partial", reason: "not started" };
   return {
     provider: "workday",
     isCompleteSnapshot: () => completeSnapshot,
+    getFetchCoverage: () => ({ ...coverage }),
     async fetchPostings(token, signal) {
       completeSnapshot = false;
+      coverage = { status: "partial", reason: "download not completed" };
       const coords = parseWorkdayToken(token);
       if (!coords) {
         throw new Error(
@@ -23695,6 +23699,7 @@ function createWorkdayClient(fetchImpl = fetch) {
         );
       }
       const { host, tenant, site } = coords;
+      coverage.host = host;
       const endpoint = `https://${host}/wday/cxs/${encodeURIComponent(tenant)}/${encodeURIComponent(site)}/jobs`;
       const collected = [];
       const seen = /* @__PURE__ */ new Set();
@@ -23703,6 +23708,8 @@ function createWorkdayClient(fetchImpl = fetch) {
       let total = null;
       let reachedEnd = false;
       const missed = /* @__PURE__ */ new Set();
+      let stopReason = null;
+      let hostBlocked = false;
       const ingest = (data) => {
         let added = 0;
         for (const posting of data.jobPostings ?? []) {
@@ -23736,14 +23743,14 @@ function createWorkdayClient(fetchImpl = fetch) {
             `Workday ${tenant} offset ${offset}`
           );
           const read = await readJsonResponse(res, endpoint);
-          if (!read.ok) return { data: null, status: res.status, failure: describeJsonFailure(read) };
+          if (!read.ok) return { data: null, status: res.status, failure: describeJsonFailure(read), blocked: read.kind === "access-challenge" };
           if (!read.data || !Array.isArray(read.data.jobPostings)) {
             return { data: null, status: res.status, failure: "unexpected-response: no jobPostings array" };
           }
           return { data: read.data, status: res.status };
         } catch (error) {
           if (signal?.aborted) return { data: null, status: 0 };
-          throw error;
+          return { data: null, status: 0, failure: error instanceof Error && error.name === "TimeoutError" ? "timeout" : "network-error" };
         }
       };
       for (let page = 0; page < MAX_PAGES2; page++) {
@@ -23753,9 +23760,15 @@ function createWorkdayClient(fetchImpl = fetch) {
         const data = loaded.data;
         if (!data) {
           if (signal?.aborted) break;
+          if (loaded.blocked) {
+            hostBlocked = true;
+            stopReason = loaded.failure ?? "access-challenge";
+            coverage = { status: "blocked", reason: stopReason, host };
+          }
           if (total == null && collected.length === 0 && page === 0) {
             throw new Error(`Workday ${tenant}: ${loaded.failure ?? `HTTP ${loaded.status}`} on the first page`);
           }
+          if (hostBlocked) break;
           missed.add(offset);
           console.log(`Workday ${tenant}: offset ${offset} failed (${loaded.failure ?? `HTTP ${loaded.status}`}); reading the following pages anyway`);
           if (total != null && offset + PAGE_SIZE2 >= total) break;
@@ -23779,6 +23792,7 @@ function createWorkdayClient(fetchImpl = fetch) {
         const added = ingest(data);
         if (added === 0 && (data.jobPostings?.length ?? 0) > 0) {
           console.log(`Workday ${tenant}: offset ${offset} repeated earlier jobs; the list is capped at ${collected.length} and is incomplete`);
+          stopReason = "API repeated earlier jobs; board is capped";
           break;
         }
         const count = data.jobPostings.length;
@@ -23797,19 +23811,26 @@ function createWorkdayClient(fetchImpl = fetch) {
           break;
         }
       }
-      for (let round = 0; round < 4 && missed.size > 0 && !signal?.aborted; round++) {
+      for (let round = 0; round < 4 && missed.size > 0 && !signal?.aborted && !hostBlocked; round++) {
         if (round > 0 && !process.env.VITEST) {
           await new Promise((resolve) => setTimeout(resolve, 2e3));
         }
         for (const offset of [...missed]) {
           if (signal?.aborted) break;
           const data = await loadPage(offset);
+          if (data.blocked) {
+            hostBlocked = true;
+            stopReason = data.failure ?? "access-challenge";
+            break;
+          }
           if (!data.data || data.data.jobPostings?.length === 0) continue;
           missed.delete(offset);
           ingest(data.data);
         }
       }
-      if (signal?.aborted) {
+      if (hostBlocked) {
+        console.log(`Workday ${tenant}: blocked; saving ${collected.length} jobs already read; no more requests to this board this run`);
+      } else if (signal?.aborted) {
         console.log(`Workday ${tenant}: time ran out; saving ${collected.length} jobs already read`);
       } else if (missed.size > 0) {
         console.log(
@@ -23819,6 +23840,11 @@ function createWorkdayClient(fetchImpl = fetch) {
         console.log(`Workday ${tenant}: read ${collected.length} jobs`);
       }
       completeSnapshot = reachedEnd && missed.size === 0 && !signal?.aborted && !narrowed;
+      coverage = {
+        status: hostBlocked ? "blocked" : signal?.aborted || missed.size > 0 || !reachedEnd ? "partial" : narrowed ? "filtered" : "complete",
+        reason: stopReason ?? (signal?.aborted ? "download deadline reached" : missed.size > 0 ? `${missed.size} page(s) unread` : !reachedEnd ? "page limit reached" : narrowed ? "internship facet only; absent jobs need individual checks" : "full board read"),
+        host
+      };
       return collected;
     },
     toNormalized(raw) {
@@ -23896,6 +23922,8 @@ async function syncCompany(company, sink, options = {}) {
   const fetchTimer = setTimeout(() => fetchController.abort(new Error("ATS fetch timed out")), timeoutMs);
   try {
     const raw = await client.fetchPostings(company.atsBoardToken, fetchController.signal);
+    result.fetched = raw.length;
+    result.coverage = client.getFetchCoverage?.();
     const normalized = raw.map((r) => client.toNormalized(r)).filter((p) => p !== null);
     liveIds = [...new Set(normalized.map((posting) => posting.externalJobId))];
     candidates = selectCandidates(normalized, now);
@@ -23904,7 +23932,9 @@ async function syncCompany(company, sink, options = {}) {
         (c) => c.opportunityType === "Internship" || c.opportunityType === "Co-op"
       );
     }
+    result.candidates = candidates.length;
   } catch (err) {
+    result.coverage = client.getFetchCoverage?.();
     result.errors.push(err instanceof Error ? err.message : String(err));
     return result;
   } finally {
@@ -23948,7 +23978,7 @@ async function syncCompany(company, sink, options = {}) {
   }
   if (stopped() || result.errors.length) return result;
   if (client.isCompleteSnapshot?.() === false) {
-    result.warnings = ["This connector returns a partial or filtered feed; found jobs were refreshed, but absent jobs were not closed."];
+    result.warnings = [`${result.coverage?.reason ?? "Partial or filtered feed"}; found jobs were refreshed, but absent jobs were not closed.`];
     return result;
   }
   try {

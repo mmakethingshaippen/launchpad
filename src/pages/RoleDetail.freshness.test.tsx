@@ -35,6 +35,14 @@ function renderDetail(role: RoleDetailView) {
 const MESSAGE = /This listing is temporarily unavailable while we verify it/;
 
 describe('RoleDetail freshness', () => {
+  it('credits Himalayas even without a description and preserves its Apply link', async () => {
+    const sourceUrl = 'https://himalayas.app/companies/acme/jobs/data-intern';
+    const applyUrl = `${sourceUrl}?utm_source=api&ref=original`;
+    renderDetail(detail({ sourceUrl, applyUrl, description: null }));
+    expect(await screen.findByRole('link', { name: 'Himalayas' })).toHaveAttribute('href', sourceUrl);
+    expect(screen.getByRole('link', { name: /Apply via Himalayas/ })).toHaveAttribute('href', applyUrl);
+    expect(screen.queryByText('Apply on Company Website')).toBeNull();
+  });
   it('shows the temporarily unavailable message for a job not verified in seven days', async () => {
     renderDetail(detail({ lastVerifiedAt: daysAgo(10) }));
     expect(await screen.findByText(MESSAGE)).toBeInTheDocument();

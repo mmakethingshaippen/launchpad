@@ -79,7 +79,7 @@ export interface WorkdayRecheckResult {
   failureReasons: Record<string, number>;
   blockedHosts: string[];
   coverage: CoverageReport;
-  /** True when the candidate list was read completely, every ready role was attempted and every write landed. */
+  /** True when coverage is complete and every ready check resolved without failure, blockage or a lost write. */
   clean: boolean;
 }
 
@@ -166,6 +166,8 @@ export async function recheckWorkdayRoles(
     clock?: () => number;
     /** Record failed attempts in the 0007 columns. Defaults to true. */
     recordAttempts?: boolean;
+    /** Hosts challenged by this run's board download. Do not immediately request their job pages again. */
+    blockedHosts?: ReadonlySet<string>;
     log?: Log;
   },
 ): Promise<WorkdayRecheckResult> {
@@ -274,7 +276,7 @@ export async function recheckWorkdayRoles(
   }
 
   const streaks = new Map<string, number>();
-  const blockedHosts = new Set<string>();
+  const blockedHosts = new Set<string>(opts.blockedHosts);
   let cursor = 0;
   await Promise.all(Array.from({ length: Math.max(1, opts.concurrency ?? 6) }, async () => {
     for (;;) {
@@ -367,7 +369,8 @@ export async function recheckWorkdayRoles(
   }));
 
   result.blockedHosts = [...blockedHosts].sort();
-  result.clean = result.coverage.complete && result.writeFailures === 0 && result.deferred === 0 && result.hostBlockedSkipped === 0;
+  result.clean = result.coverage.complete && result.writeFailures === 0 && result.deferred === 0 &&
+    result.hostBlockedSkipped === 0 && result.failed === 0 && result.unreadable === 0 && result.blocked === 0;
   const reasons = Object.entries(result.failureReasons).sort((a, b) => b[1] - a[1]).map(([r, n]) => `${r} ${n}`).join(', ');
   log(
     `Workday page check: candidates ${result.candidates} (NULL timestamps included); unmapped ${result.unmapped}; ` +

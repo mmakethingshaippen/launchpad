@@ -13,6 +13,7 @@ import { RelativeTime } from '../components/ui/RelativeTime';
 import { sanitizeHtml } from '../lib/sanitize';
 import { formatLocation } from '../lib/locationFormat';
 import { AWAITING_VERIFICATION_MESSAGE, isAwaitingVerification } from '../lib/freshness';
+import { JobSource, himalayasSourceUrl } from '../components/ui/JobSource';
 
 export function RoleDetail() {
   const { slug = '' } = useParams();
@@ -62,6 +63,7 @@ export function RoleDetail() {
     );
 
   const isClosed = role.listingStatus !== 'Active';
+  const fromHimalayas = Boolean(himalayasSourceUrl(role.sourceUrl));
   const trackedApplication = applications.find((application) => application.roleId === role.id);
   const isSaving = !canEdit || isRolePending(role.id);
   const cleanDescription = sanitizeHtml(role.description);
@@ -152,7 +154,7 @@ export function RoleDetail() {
           <div className="mt-6 flex flex-wrap gap-2">
             <a href={role.applyUrl} target="_blank" rel="noopener noreferrer" onClick={() => { if (!trackedApplication && !isSaving) upsert({ roleId: role.id, companyName: role.companyName, roleTitle: role.title, status: 'Applied', applicationUrl: role.applyUrl }); }}>
               <Button size="lg">
-                Apply on Company Website <ExternalLink className="h-4 w-4" aria-hidden="true" />
+                {fromHimalayas ? 'Apply via Himalayas' : 'Apply on Company Website'} <ExternalLink className="h-4 w-4" aria-hidden="true" />
               </Button>
             </a>
             {trackedApplication ? (
@@ -192,13 +194,14 @@ export function RoleDetail() {
             </Button>
           </div>
         )}
+        <div className="mt-3"><JobSource sourceUrl={role.sourceUrl} /></div>
       </header>
 
       {cleanDescription && (
         <section className="mt-6 rounded-xl border border-slate-200 bg-white p-6">
           <h2 className="mb-3 text-lg font-semibold text-navy">About this role</h2>
           <div className="prose prose-sm max-w-none text-slate-700" dangerouslySetInnerHTML={{ __html: cleanDescription }} />
-          {role.sourceUrl && (
+          {role.sourceUrl && !fromHimalayas && (
             <p className="mt-4 text-xs text-slate-400">
               Source:{' '}
               <a href={role.sourceUrl} target="_blank" rel="noopener noreferrer" className="underline">

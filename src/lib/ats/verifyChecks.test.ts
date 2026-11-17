@@ -132,6 +132,25 @@ describe('loadAllPages', () => {
 describe('Workday page recheck', () => {
   const company = { id: 'co-cvs', ats_provider: 'workday', ats_board_token: TOKEN };
 
+  it('does not re-request a host blocked by the board stage and still checks other employers', async () => {
+    const otherToken = 'other.wd1.myworkdayjobs.com|other|External';
+    const fake = createDb({
+      companies: [company, { id: 'co-other', ats_provider: 'workday', ats_board_token: otherToken }],
+      roles: [wdRole('R1'), wdRole('R2'), wdRole('R3', {
+        company_id: 'co-other', apply_url: 'https://other.wd1.myworkdayjobs.com/en-US/External/job/Remote/Intern_R3',
+      })],
+    });
+    const seen: string[] = [];
+    const result = await recheckWorkdayRoles(fake.db, {
+      refreshedSince: RUN_START, now: NOW, fetchImpl: workdayFetch({}, seen),
+      blockedHosts: new Set(['cvshealth.wd1.myworkdayjobs.com']),
+    });
+    expect(seen).toEqual(['R3']);
+    expect(result).toMatchObject({ candidates: 3, attempted: 1, verified: 1, hostBlockedSkipped: 2, clean: false });
+    expect(fake.updates.map(u => u.id)).toEqual(['R3']);
+    expect(fake.data.roles[0].last_verified_at).toBe(OLD);
+  });
+
   it('includes NULL last_verified_at and skips roles the list download already refreshed', async () => {
     const fake = createDb({
       companies: [company],
@@ -175,7 +194,7 @@ describe('Workday page recheck', () => {
       refreshedSince: RUN_START, now: NOW,
       fetchImpl: workdayFetch({ GONE: respond(404), DOWN: respond(503), EMPTY: respond(200, {}), NET: new TypeError('socket hang up') }),
     });
-    expect(result).toMatchObject({ closed: 1, failed: 2, unreadable: 1, verified: 0, writeFailures: 0, clean: true });
+    expect(result).toMatchObject({ closed: 1, failed: 2, unreadable: 1, verified: 0, writeFailures: 0, clean: false });
     const byId = Object.fromEntries(fake.data.roles.map((r) => [r.id, r]));
     expect(byId.GONE.listing_status).toBe('Closed');
     for (const id of ['DOWN', 'EMPTY', 'NET']) {

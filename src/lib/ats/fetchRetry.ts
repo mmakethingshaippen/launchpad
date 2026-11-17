@@ -1,4 +1,5 @@
 import type { FetchLike } from './types';
+import { detectAccessChallenge } from './accessChallenge';
 
 /**
  * Statuses that usually clear on a second try. A 400 or 404 is a real answer.
@@ -33,6 +34,9 @@ export async function fetchRetrying(
     }
     try {
       const res = await fetchImpl(input, init);
+      // A challenge can use 429/503. Repeating it is not a transient-error retry.
+      // Return the response untouched so the caller can classify and back off.
+      if (detectAccessChallenge(res.status, res.headers)) return res;
       if (res.ok || !TRANSIENT_HTTP.has(res.status) || attempt === DELAYS_MS.length) return res;
       last = res;
       console.log(`${label}: HTTP ${res.status}; retrying`);

@@ -8,12 +8,13 @@ import { Button } from '../ui/Button';
 import { CompanyLogo } from '../ui/CompanyLogo';
 import { verificationLabel } from '../ui/RelativeTime';
 import { formatLocation } from '../../lib/locationFormat';
+import { JobSource } from '../ui/JobSource';
 
 function httpUrl(url: string | null | undefined): string | null {
   if (!url) return null;
   try {
     const parsed = new URL(url);
-    return parsed.protocol === 'https:' || parsed.protocol === 'http:' ? parsed.toString() : null;
+    return parsed.protocol === 'https:' || parsed.protocol === 'http:' ? url : null;
   } catch {
     return null;
   }
@@ -137,6 +138,7 @@ export function RoleCard({
         <span className={'whitespace-nowrap text-xs ' + (stale ? 'text-amber-700' : 'text-slate-400')}>
           {checked}
         </span>
+        <JobSource sourceUrl={role.sourceUrl} />
         <div className="flex flex-wrap items-center gap-2">
           {hasTrackingAction &&
             (tracked ? (

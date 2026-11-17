@@ -159,6 +159,28 @@ describe('syncCompany', () => {
 });
 
 describe('syncAll (bounded concurrency, isolation — refinement #4)', () => {
+  it('refreshes jobs downloaded before a Workday challenge, preserves unseen jobs and reports the blocked host', async () => {
+    const sink = new MemorySink();
+    let closeCalls = 0;
+    sink.closeMissing = async () => { closeCalls++; return 0; };
+    let requests = 0;
+    const fetchImpl = (async () => {
+      requests++;
+      if (requests > 1) return new Response('', { status: 429, headers: { 'cf-mitigated': 'challenge' } });
+      return new Response(JSON.stringify({ total: 40, jobPostings: Array.from({ length: 20 }, (_, i) => ({
+        title: `Summer 2027 Engineering Intern ${i}`, externalPath: `/job/Boise/Intern_JR${i}`, bulletFields: [`JR${i}`],
+      })) }), { headers: { 'content-type': 'application/json' } });
+    }) as typeof fetch;
+    const result = await syncCompany({
+      id: 'micron', name: 'Micron', atsProvider: 'workday', atsBoardToken: 'micron.wd1.myworkdayjobs.com|micron|External',
+    }, sink, { now: NOW, fetchImpl });
+    expect(result).toMatchObject({ fetched: 20, candidates: 20, imported: 20, closed: 0,
+      coverage: { status: 'blocked', host: 'micron.wd1.myworkdayjobs.com' } });
+    expect(result.warnings?.[0]).toMatch(/access-challenge/);
+    expect(closeCalls).toBe(0);
+    expect(requests).toBe(2);
+  });
+
   it('isolates a failing company and still syncs the rest', async () => {
     const sink = new MemorySink();
     const companies: SyncableCompany[] = [

@@ -195,6 +195,23 @@ function createDb(options: {
 const NOW = new Date('2026-10-25T18:00:00Z');
 
 describe('aggregator ingestion', () => {
+  it('stores Himalayas attribution, remote-country eligibility and pay without closing jobs absent from a filtered search', async () => {
+    const fake = createDb({ roles: [{ id: 'unseen', company_id: 'co-other', external_job_id: 'himalayas-other', source: 'aggregator', listing_status: 'Active' }] });
+    const sourceUrl = 'https://himalayas.app/companies/acme/jobs/data-intern';
+    const applyUrl = `${sourceUrl}?utm_source=api&ref=original`;
+    const feed = client('himalayas', [posting({
+      source: 'himalayas', externalJobId: 'himalayas-012345678901234567890123', sourceUrl, applyUrl,
+      city: undefined, state: undefined, country: 'United States, Canada', workArrangement: 'Remote',
+      pay: { min: 25, max: 30, period: 'hourly', currency: 'USD' },
+    })], true, false);
+    const [result] = await ingestAggregators(fake.db, { now: NOW, clients: [feed] });
+    expect(result).toMatchObject({ rolesUpserted: 1, closed: 0, coverage: 'complete', closeMissingEligible: false });
+    expect(fake.state.roles.find(r => r.id !== 'unseen')).toMatchObject({
+      apply_url: applyUrl, source_url: sourceUrl, city: null, country: 'United States, Canada',
+      pay_min: 25, pay_max: 30, pay_period: 'hourly', compensation_status: 'Paid',
+    });
+    expect(fake.state.roles.find(r => r.id === 'unseen')?.listing_status).toBe('Active');
+  });
   it('inserts a new listing once and reuses the feed on a second run', async () => {
     const fake = createDb();
     const feed = client('remotive', [posting(), posting({

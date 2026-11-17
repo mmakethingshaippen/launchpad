@@ -106,4 +106,34 @@ describe('The Muse feed completeness', () => {
     expect(client.feedReport?.().complete).toBe(false);
     expect(client.feedReport?.().stopReason).toMatch(/HTTP 500/);
   });
+
+  it('stops after three malformed payloads per level instead of requesting the whole safety cap', async () => {
+    let calls = 0;
+    const client = createTheMuseClient(async () => {
+      calls++;
+      return { ok: true, status: 200, json: async () => ({ error: 'unexpected schema' }) };
+    });
+    expect(await client.fetchEarlyCareer()).toEqual([]);
+    expect(calls).toBe(6);
+    expect(client.feedWasComplete?.()).toBe(false);
+    expect(client.feedReport?.().stopReason).toMatch(/unreadable JSON/);
+  });
+
+  it('does not report repeated pages as a complete feed', async () => {
+    const client = createTheMuseClient(singleResponse({ results: [job(1)], page_count: 10 }));
+    expect(await client.fetchEarlyCareer()).toHaveLength(1);
+    expect(client.feedWasComplete?.()).toBe(false);
+    expect(client.feedReport?.().stopReason).toMatch(/did not advance/);
+  });
+
+  it('recognises a 200 challenge before attempting to parse JSON', async () => {
+    let calls = 0;
+    const client = createTheMuseClient(async () => {
+      calls++;
+      return new Response('challenge', { status: 200, headers: { 'cf-mitigated': 'challenge' } });
+    });
+    await client.fetchEarlyCareer();
+    expect(calls).toBe(1);
+    expect(client.feedReport?.().blocked).toMatchObject({ status: 200, host: 'www.themuse.com' });
+  });
 });

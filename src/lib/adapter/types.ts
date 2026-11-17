@@ -184,6 +184,8 @@ export interface Role {
 // ── View DTOs (what the UI consumes) ─────────────────────────────────────────
 
 export interface RoleCard {
+  /** Original source listing, including required attribution for syndicated jobs. */
+  sourceUrl?: string | null;
   id: string;
   slug: string;
   title: string;
