@@ -14873,6 +14873,233 @@ function createWorkdayClient(fetchImpl = fetch) {
   };
 }
 
+// src/lib/ats/providers/officialCareers.ts
+var BOARDS = {
+  "micron.wd1.myworkdayjobs.com|micron|external": { name: "Micron", origin: "https://careers.micron.com", domain: "micron.com", searches: [["0"], ["1"]] },
+  "hp.wd5.myworkdayjobs.com|hp|externalcareersite": { name: "HP", origin: "https://apply.hp.com", domain: "hp.com", searches: [["internship", "graduate"]] }
+};
+async function pace(signal) {
+  signal?.throwIfAborted();
+  if (process.env.VITEST) return;
+  await new Promise((resolve, reject) => {
+    const abort = () => {
+      clearTimeout(timer);
+      reject(signal?.reason ?? new Error("Aborted"));
+    };
+    const timer = setTimeout(() => {
+      signal?.removeEventListener("abort", abort);
+      resolve();
+    }, 1100);
+    signal?.addEventListener("abort", abort, { once: true });
+  });
+}
+function hasOfficialCareersFeed(token) {
+  return Object.hasOwn(BOARDS, token.toLowerCase());
+}
+function isPosition(value) {
+  if (!value || typeof value !== "object") return false;
+  const p = value;
+  return Number.isSafeInteger(p.id) && p.id > 0 && typeof p.atsJobId === "string" && /^[A-Za-z0-9_-]{1,120}$/.test(p.atsJobId) && typeof p.name === "string" && Boolean(p.name.trim()) && (p.locations == null || Array.isArray(p.locations) && p.locations.every((l) => typeof l === "string")) && (p.workLocationOption == null || typeof p.workLocationOption === "string");
+}
+function createOfficialCareersClient(token, fetchImpl = fetch) {
+  if (!hasOfficialCareersFeed(token)) throw new Error("Unsupported official careers board");
+  const board = BOARDS[token.toLowerCase()];
+  const host = new URL(board.origin).hostname;
+  let coverage = { status: "partial", reason: "Not downloaded", host };
+  return {
+    provider: "workday",
+    isCompleteSnapshot: () => false,
+    getFetchCoverage: () => coverage,
+    async fetchPostings(requestedToken, signal) {
+      if (requestedToken.toLowerCase() !== token.toLowerCase()) throw new Error("Official careers: employer token mismatch");
+      coverage = { status: "partial", reason: "Download not finished", host };
+      const positions = [];
+      const saved = /* @__PURE__ */ new Set();
+      const observed = () => [...new Map(positions.map((position) => [position.atsJobId, position])).values()];
+      let requested = false;
+      const incomplete = [];
+      try {
+        for (const seniority of board.searches) {
+          const label = seniority.join("/");
+          const seen = /* @__PURE__ */ new Set();
+          let expected;
+          let countChanged = false;
+          let offset = 0;
+          let ended = false;
+          for (let page = 0; page < 500; page++) {
+            if (requested) await pace(signal);
+            requested = true;
+            const params = new URLSearchParams({ domain: board.domain, query: "", sort_by: "timestamp", start: String(offset) });
+            for (const value of seniority) params.append("filter_seniority", value);
+            const url = `${board.origin}/api/pcsx/search?${params}`;
+            const response = await fetchRetrying(fetchImpl, url, { signal }, `${board.name} careers`);
+            const parsed = await readJsonResponse(response, url);
+            if (!parsed.ok) {
+              coverage.status = parsed.kind === "access-challenge" ? "blocked" : "partial";
+              throw new Error(describeJsonFailure(parsed));
+            }
+            const data = parsed.data?.data;
+            if (parsed.data?.status !== 200 || !data || !Number.isSafeInteger(data.count) || data.count < 0 || !Array.isArray(data.positions) || !data.positions.every(isPosition)) {
+              throw new Error("Invalid careers search response");
+            }
+            if (expected !== void 0 && expected !== data.count) countChanged = true;
+            expected = data.count;
+            if (!data.positions.length) {
+              if (seen.size !== expected) incomplete.push(`${label}: search ended before the advertised job count`);
+              if (countChanged) incomplete.push(`${label}: board count changed during pagination`);
+              ended = true;
+              break;
+            }
+            const before = seen.size;
+            for (const position of data.positions) {
+              seen.add(position.id);
+              if (saved.has(position.id)) continue;
+              saved.add(position.id);
+              positions.push(position);
+            }
+            if (seen.size === before) throw new Error("Repeated positions during pagination");
+            offset += data.positions.length;
+          }
+          if (!ended) throw new Error("Search page limit reached");
+        }
+        coverage = {
+          status: incomplete.length ? "partial" : "filtered",
+          host,
+          reason: incomplete.length ? `${board.name} careers: ${incomplete.join("; ")}` : `Official ${board.name} careers: completed ${board.searches.length} early-career searches; absent legacy Workday jobs require separate verification`
+        };
+        return observed();
+      } catch (error) {
+        coverage.reason = `${board.name} careers: ${error instanceof Error ? error.message : String(error)}`;
+        if (!positions.length) throw new Error(coverage.reason);
+        return observed();
+      }
+    },
+    toNormalized(position) {
+      if (!isPosition(position)) return null;
+      return {
+        externalJobId: position.atsJobId,
+        title: position.name,
+        descriptionHtml: "",
+        applyUrl: `${board.origin}/careers/job/${position.id}`,
+        ...splitLocation(position.locations?.[0]),
+        workArrangement: mapWorkArrangement(position.workLocationOption)
+      };
+    }
+  };
+}
+
+// src/lib/ats/providers/cvs.ts
+var TOKEN = "cvshealth.wd1.myworkdayjobs.com|cvshealth|cvs_health_careers";
+var isCvsWorkdayToken = (token) => token.toLowerCase() === TOKEN;
+function searchData(html) {
+  const assignment = /\bphApp\.ddo\s*=\s*\{/.exec(html);
+  if (!assignment) throw new Error("Missing public search data");
+  const start = assignment.index + assignment[0].lastIndexOf("{");
+  let depth = 0, quoted = false, escaped = false;
+  for (let i = start; i < html.length; i++) {
+    const c = html[i];
+    if (quoted) {
+      if (escaped) escaped = false;
+      else if (c === "\\") escaped = true;
+      else if (c === '"') quoted = false;
+    } else if (c === '"') quoted = true;
+    else if (c === "{") depth++;
+    else if (c === "}" && --depth === 0) {
+      return JSON.parse(html.slice(start, i + 1)).eagerLoadRefineSearch;
+    }
+  }
+  throw new Error("Truncated public search data");
+}
+function isJob(value) {
+  if (!value || typeof value !== "object") return false;
+  const job = value;
+  if (typeof job.reqId !== "string" || !/^R\d+$/.test(job.reqId) || job.reqId !== job.jobId || typeof job.title !== "string" || !job.title.trim() || typeof job.applyUrl !== "string") return false;
+  try {
+    const url = new URL(job.applyUrl);
+    return url.protocol === "https:" && url.hostname === "cvshealth.wd1.myworkdayjobs.com" && url.pathname.startsWith("/CVS_Health_Careers/job/") && new RegExp(`_${job.reqId}(?:-\\d+)?/apply$`).test(url.pathname) && ["city", "state", "country", "remote", "type"].every((key) => job[key] == null || typeof job[key] === "string");
+  } catch {
+    return false;
+  }
+}
+function createCvsClient(fetchImpl = fetch) {
+  let coverage = { status: "partial", host: "jobs.cvshealth.com", reason: "Not downloaded" };
+  return {
+    provider: "workday",
+    isCompleteSnapshot: () => false,
+    getFetchCoverage: () => coverage,
+    async fetchPostings(token, signal) {
+      if (!isCvsWorkdayToken(token)) throw new Error("CVS careers: unsupported employer token");
+      coverage = { status: "partial", host: "jobs.cvshealth.com", reason: "Download not finished" };
+      const jobs = /* @__PURE__ */ new Map();
+      const seen = /* @__PURE__ */ new Set();
+      let unmapped = 0;
+      const finish = () => {
+        coverage = { status: unmapped ? "partial" : "filtered", host: "jobs.cvshealth.com", reason: unmapped ? `CVS public internship search completed; ${unmapped} postings had no matching CVS Workday requisition and were left unverified` : "CVS public internship search completed; absent jobs require separate verification" };
+        return [...jobs.values()];
+      };
+      let offset = 0, expected, changed = false;
+      try {
+        for (let page = 0; page < 400; page++) {
+          signal?.throwIfAborted();
+          if (page && !process.env.VITEST) {
+            await new Promise((resolve) => setTimeout(resolve, 1100));
+            signal?.throwIfAborted();
+          }
+          const params = new URLSearchParams({ keywords: "intern", from: String(offset) });
+          const response = await fetchRetrying(fetchImpl, `https://jobs.cvshealth.com/us/en/search-results?${params}`, { signal }, "CVS careers");
+          const html = response.text ? await response.text() : "";
+          const challenge = detectAccessChallenge(response.status, response.headers, html.slice(0, 2e4));
+          if (challenge) {
+            coverage.status = "blocked";
+            throw new Error(`access-challenge: ${challenge}`);
+          }
+          if (!response.ok) throw new Error(`http-${response.status}`);
+          const result = searchData(html);
+          if (!result || result.status !== 200 || !Number.isSafeInteger(result.totalHits) || result.totalHits < 0 || !Array.isArray(result.data?.jobs) || !result.data.jobs.every((job) => job && typeof job === "object" && typeof job.jobId === "string" && Boolean(job.jobId.trim()))) throw new Error("Invalid public search response");
+          if (expected !== void 0 && expected !== result.totalHits) changed = true;
+          expected = result.totalHits;
+          const rows = result.data.jobs;
+          if (!rows.length) {
+            if (seen.size !== expected || changed) throw new Error("Search count changed or pagination missed jobs");
+            return finish();
+          }
+          const before = seen.size;
+          for (const row of rows) {
+            if (seen.has(row.jobId)) continue;
+            seen.add(row.jobId);
+            if (isJob(row)) jobs.set(row.reqId, row);
+            else unmapped++;
+          }
+          if (seen.size === before) throw new Error("Repeated search page");
+          offset += rows.length;
+          if (seen.size === expected && offset >= expected && !changed) {
+            return finish();
+          }
+        }
+        throw new Error("Search page limit reached");
+      } catch (error) {
+        coverage.reason = `CVS careers: ${error instanceof Error ? error.message : String(error)}`;
+        if (!jobs.size) throw new Error(coverage.reason);
+        return [...jobs.values()];
+      }
+    },
+    toNormalized(job) {
+      if (!isJob(job)) return null;
+      return {
+        externalJobId: job.reqId,
+        title: job.title,
+        applyUrl: job.applyUrl,
+        descriptionHtml: "",
+        city: job.city,
+        state: job.state,
+        country: job.country,
+        workArrangement: mapWorkArrangement(job.remote),
+        employmentTypeRaw: job.type
+      };
+    }
+  };
+}
+
 // src/lib/ats/sync.ts
 function clientFor(provider, token, fetchImpl) {
   switch (provider) {
@@ -14887,6 +15114,8 @@ function clientFor(provider, token, fetchImpl) {
     case "workable":
       return createWorkableClient(fetchImpl);
     case "workday":
+      if (isCvsWorkdayToken(token)) return createCvsClient(fetchImpl);
+      if (hasOfficialCareersFeed(token)) return createOfficialCareersClient(token, fetchImpl);
       return createWorkdayClient(fetchImpl);
     default:
       return null;
@@ -15009,7 +15238,7 @@ async function syncAll(companies, sink, options = {}) {
   const settled = await pool(
     targets,
     concurrency,
-    (company) => syncCompany(company, sink, options)
+    (company) => syncCompany(company, sink, { ...options, timeoutMs: options.timeoutMsForCompany?.(company) ?? options.timeoutMs })
   );
   return settled.map(
     (s, i) => s.status === "fulfilled" ? s.value : {

@@ -7,6 +7,8 @@ import { createLeverClient } from './providers/lever';
 import { createSmartRecruitersClientFor } from './providers/smartrecruiters';
 import { createWorkableClient } from './providers/workable';
 import { createWorkdayClient } from './providers/workday';
+import { createOfficialCareersClient, hasOfficialCareersFeed } from './providers/officialCareers';
+import { createCvsClient, isCvsWorkdayToken } from './providers/cvs';
 import type { AtsProvider, FieldType } from '../adapter/types';
 
 export interface SyncableCompany {
@@ -74,6 +76,8 @@ export interface SyncSink {
 export interface SyncOptions {
   now?: Date;
   timeoutMs?: number;
+  /** Scheduled downloads can give a large board more time without extending admin requests. */
+  timeoutMsForCompany?: (company: SyncableCompany) => number | undefined;
   concurrency?: number;
   fetchImpl?: typeof fetch;
   /** Overall worker deadline, including persistence and close-missing work. */
@@ -98,6 +102,8 @@ function clientFor(
     case 'workable':
       return createWorkableClient(fetchImpl) as ProviderClient;
     case 'workday':
+      if (isCvsWorkdayToken(token)) return createCvsClient(fetchImpl) as ProviderClient;
+      if (hasOfficialCareersFeed(token)) return createOfficialCareersClient(token, fetchImpl) as ProviderClient;
       return createWorkdayClient(fetchImpl) as ProviderClient;
     default:
       return null;
@@ -256,7 +262,7 @@ export async function syncAll(
   const targets = companies.filter((c) => c.atsProvider !== 'none' && c.atsBoardToken);
 
   const settled = await pool(targets, concurrency, (company) =>
-    syncCompany(company, sink, options),
+    syncCompany(company, sink, { ...options, timeoutMs: options.timeoutMsForCompany?.(company) ?? options.timeoutMs }),
   );
 
   return settled.map((s, i) =>

@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
 import type { FetchLike } from './types';
 import type { SyncSink, SyncableCompany, UpsertRoleData } from './sync';
 import { syncCompany, syncAll } from './sync';
@@ -159,6 +159,26 @@ describe('syncCompany', () => {
 });
 
 describe('syncAll (bounded concurrency, isolation — refinement #4)', () => {
+  it('allows a large scheduled board more time while preserving the default deadline for others', async () => {
+    vi.useFakeTimers();
+    try {
+      const fetchImpl = (async (_url, init) => new Promise<Response>((resolve, reject) => {
+        const timer = setTimeout(() => resolve(new Response(JSON.stringify(ghPayload([{ id: 1, title: 'Summer 2027 Intern' }])), { headers: { 'content-type': 'application/json' } })), 20);
+        init?.signal?.addEventListener('abort', () => { clearTimeout(timer); reject(new DOMException('aborted', 'AbortError')); }, { once: true });
+      })) as typeof fetch;
+      const pending = syncAll([
+        { ...greenhouseCompany, id: 'large' },
+        { ...greenhouseCompany, id: 'normal' },
+      ], new MemorySink(), { fetchImpl, now: NOW, timeoutMs: 10, timeoutMsForCompany: company => company.id === 'large' ? 100 : undefined });
+      await vi.advanceTimersByTimeAsync(120);
+      const [large, normal] = await pending;
+      expect(large.imported).toBe(1);
+      expect(large.errors).toEqual([]);
+      expect(normal.imported).toBe(0);
+      expect(normal.errors).toHaveLength(1);
+    } finally { vi.useRealTimers(); }
+  });
+
   it('refreshes jobs downloaded before a Workday challenge, preserves unseen jobs and reports the blocked host', async () => {
     const sink = new MemorySink();
     let closeCalls = 0;
@@ -172,10 +192,10 @@ describe('syncAll (bounded concurrency, isolation — refinement #4)', () => {
       })) }), { headers: { 'content-type': 'application/json' } });
     }) as typeof fetch;
     const result = await syncCompany({
-      id: 'micron', name: 'Micron', atsProvider: 'workday', atsBoardToken: 'micron.wd1.myworkdayjobs.com|micron|External',
+      id: 'example', name: 'Example', atsProvider: 'workday', atsBoardToken: 'example.wd1.myworkdayjobs.com|example|External',
     }, sink, { now: NOW, fetchImpl });
     expect(result).toMatchObject({ fetched: 20, candidates: 20, imported: 20, closed: 0,
-      coverage: { status: 'blocked', host: 'micron.wd1.myworkdayjobs.com' } });
+      coverage: { status: 'blocked', host: 'example.wd1.myworkdayjobs.com' } });
     expect(result.warnings?.[0]).toMatch(/access-challenge/);
     expect(closeCalls).toBe(0);
     expect(requests).toBe(2);

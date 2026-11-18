@@ -88,6 +88,10 @@ async function runAts(): Promise<boolean> {
     const results = await syncAll(batch, new SupabaseSink(db), {
       concurrency: 4,
       timeoutMs: 480_000,
+      // The public CVS search has thousands of results across 25-job pages.
+      // Keep its polite pacing without cutting off the tail on each daily run.
+      timeoutMsForCompany: company => company.atsBoardToken?.toLowerCase() ===
+        'cvshealth.wd1.myworkdayjobs.com|cvshealth|cvs_health_careers' ? 12 * MINUTE : undefined,
     });
 
     for (const result of results) {

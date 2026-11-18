@@ -65,6 +65,7 @@ export interface FetchLike {
     ok: boolean;
     status: number;
     json: () => Promise<unknown>;
+    text?: () => Promise<string>;
     headers?: { get(name: string): string | null };
   }>;
 }
