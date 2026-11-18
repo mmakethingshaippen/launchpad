@@ -9,17 +9,19 @@
  */
 
 export type StageGroup = 'aggregators' | 'ats';
+/** Handled source outages are distinct from program/database failures. */
+export type StageRunResult = boolean | { status: 'incomplete'; reason: string };
 
 export interface PipelineStage {
   name: string;
   group: StageGroup;
   /** Resolves true on a clean run, false when the stage finished with recorded problems. */
-  run: () => Promise<boolean>;
+  run: () => Promise<StageRunResult>;
   /** The stage is abandoned (not cancelled) after this long; later stages still run. */
   timeoutMs?: number;
 }
 
-export type StageStatus = 'succeeded' | 'failed' | 'threw' | 'timed-out';
+export type StageStatus = 'succeeded' | 'incomplete' | 'failed' | 'threw' | 'timed-out';
 
 export interface StageOutcome {
   name: string;
@@ -56,7 +58,10 @@ export async function runStages(
         // The abandoned promise may still reject later; never let that crash the process.
         work.catch(() => undefined);
       } else {
-        status = settled ? 'succeeded' : 'failed';
+        if (typeof settled === 'object') {
+          status = 'incomplete';
+          error = settled.reason;
+        } else status = settled ? 'succeeded' : 'failed';
       }
     } catch (caught) {
       status = 'threw';
@@ -79,4 +84,8 @@ export async function runStages(
     );
   }
   return outcomes;
+}
+
+export function hasFatalStages(outcomes: StageOutcome[]): boolean {
+  return outcomes.some(outcome => !outcome.ok && outcome.status !== 'incomplete');
 }

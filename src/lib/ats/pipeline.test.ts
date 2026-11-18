@@ -1,8 +1,19 @@
 // @vitest-environment node
 import { describe, expect, it } from 'vitest';
-import { runStages, type PipelineStage } from './pipeline';
+import { hasFatalStages, runStages, type PipelineStage } from './pipeline';
 
 describe('isolated pipeline stages', () => {
+  it('keeps handled outages incomplete, continues verification, and does not call them fully synced', async () => {
+    const outcomes = await runStages([
+      { name: 'feed', group: 'aggregators', run: async () => ({ status: 'incomplete', reason: 'Muse blocked; jobs unverified' }) },
+      { name: 'verify', group: 'aggregators', run: async () => true },
+    ]);
+    expect(outcomes[0]).toMatchObject({ status: 'incomplete', ok: false, error: 'Muse blocked; jobs unverified' });
+    expect(outcomes[1].ok).toBe(true);
+    expect(hasFatalStages(outcomes)).toBe(false);
+    const failures = await runStages([{ name: 'database', group: 'ats', run: async () => false }]);
+    expect(hasFatalStages([...outcomes, ...failures])).toBe(true);
+  });
   it('runs aggregator ingestion and verification even when an ATS stage throws', async () => {
     const ran: string[] = [];
     const stages: PipelineStage[] = [

@@ -24,9 +24,10 @@
  * verified since the start of the current UTC day (daily cohort, so schedule
  * drift cannot push a role to the following day).
  *
- * Exit status is non-zero when coverage was incomplete: a feed cut short, a
- * board that could not be read, deferred or unpaged roles, or a database write
- * that did not land. Unreadable pages are reported and retried, not fatal.
+ * Exit status is non-zero for unclassified errors, exceptions, stage timeouts,
+ * incomplete database scans or lost database writes. Handled access challenges
+ * and unfinished checks produce explicit INCOMPLETE coverage and warnings,
+ * without claiming that skipped jobs were synced or verified.
  *
  * Optional environment:
  *   AGGREGATOR_VERIFY_BUDGET_MINUTES  time budget for fallback verification (default 45)
@@ -36,7 +37,7 @@
 import { appendFileSync } from 'node:fs';
 import { createServiceClient, loadSyncableCompanies, SupabaseSink } from '../src/lib/ats/supabaseSink';
 import { syncAll, type SyncResult } from '../src/lib/ats/sync';
-import { aggregatorRunSucceeded, ingestAggregators, type AggregatorResult } from '../src/lib/ats/aggregators/ingest';
+import { ingestAggregators, type AggregatorResult } from '../src/lib/ats/aggregators/ingest';
 import {
   confirmEmployerRoles,
   recheckWorkdayRoles,
@@ -44,7 +45,8 @@ import {
   type WorkdayRecheckResult,
 } from '../src/lib/ats/verifyChecks';
 import { sweepStaleAggregatorRoles, type StaleSweepResult } from '../src/lib/ats/aggregators/staleSweep';
-import { runStages, type PipelineStage, type StageOutcome } from '../src/lib/ats/pipeline';
+import { hasFatalStages, runStages, type PipelineStage, type StageOutcome, type StageRunResult } from '../src/lib/ats/pipeline';
+import { aggregatorIngestOutcome, aggregatorVerificationOutcome, atsDownloadsOutcome, employerConfirmationOutcome, workdayVerificationOutcome } from '../src/lib/ats/syncHealth';
 
 
 const args = process.argv.slice(2);
@@ -74,13 +76,12 @@ const errorMessage = (error: unknown) =>
 const atsResults: SyncResult[] = [];
 const blockedWorkdayHosts = new Set<string>();
 
-async function runAts(): Promise<boolean> {
+async function runAts(): Promise<StageRunResult> {
   atsStartedAt = new Date();
   const companies = await loadSyncableCompanies(db);
 
   log(`Configured ATS companies: ${companies.length}`);
 
-  let failures = 0;
 
   for (let offset = 0; offset < companies.length; offset += 8) {
     const batch = companies.slice(offset, offset + 8);
@@ -102,20 +103,19 @@ async function runAts(): Promise<boolean> {
       log(`ATS ${result.company}: fetched ${result.fetched ?? 0}; eligible ${result.candidates ?? 0}; new ${result.imported}; refreshed ${result.updated}; closed ${result.closed}; coverage ${result.coverage?.status ?? (result.errors.length ? 'failed' : 'complete')}`);
       for (const warning of result.warnings ?? []) log(`WARN ${result.company}: ${warning}`);
       if (result.errors.length || result.coverage?.status === 'partial' || result.coverage?.status === 'blocked') {
-        failures++;
-        log(`ERROR ${result.company}: ${result.errors.join('; ') || result.coverage?.reason}`);
+        log(`${atsDownloadsOutcome([result]) === false ? 'ERROR' : 'WARN'} ${result.company}: ${result.errors.join('; ') || result.coverage?.reason}`);
       }
     }
 
     log(`ATS ${Math.min(offset + 8, companies.length)}/${companies.length}`);
   }
 
-  return failures === 0;
+  return atsDownloadsOutcome(atsResults);
 }
 
 let ingestResults: AggregatorResult[] = [];
 
-async function runAggregatorIngest(): Promise<boolean> {
+async function runAggregatorIngest(): Promise<StageRunResult> {
   log('Importing and refreshing aggregator postings from a single fetch per source');
 
   const results = await ingestAggregators(db);
@@ -159,12 +159,12 @@ async function runAggregatorIngest(): Promise<boolean> {
     );
   }
 
-  return aggregatorRunSucceeded(results);
+  return aggregatorIngestOutcome(results);
 }
 
 let sweepResult: StaleSweepResult | null = null;
 
-async function runAggregatorVerification(): Promise<boolean> {
+async function runAggregatorVerification(): Promise<StageRunResult> {
   log('Fallback verification of active aggregator roles the feeds did not observe');
   const feeds = ingestResults.map((r) => ({
     source: r.source, coverage: r.coverage, fetched: r.fetched, refreshed: r.refreshed,
@@ -175,7 +175,7 @@ async function runAggregatorVerification(): Promise<boolean> {
   sweepResult = await sweepStaleAggregatorRoles(db, { log, budgetMs: verifyBudgetMs, feeds, blockedHosts });
   // Unreadable pages and failed fetches are recorded and retried; they do not fail the run.
   // An incomplete cycle (deferred roles, incomplete pagination) or lost writes do.
-  return sweepResult.cycleComplete && sweepResult.writeFailures === 0;
+  return aggregatorVerificationOutcome(sweepResult);
 }
 
 let workdayResult: WorkdayRecheckResult | null = null;
@@ -183,20 +183,20 @@ let employerResult: EmployerConfirmResult | null = null;
 // Set when the ATS stage starts; roles the board download stamped are at or after this.
 let atsStartedAt: Date | null = null;
 
-async function runEmployerConfirmation(): Promise<boolean> {
+async function runEmployerConfirmation(): Promise<StageRunResult> {
   log('Checking Greenhouse, Lever, and Ashby boards for closed jobs');
   employerResult = await confirmEmployerRoles(db, { log });
   // Failed boards, an incomplete role list, or writes that did not land mean some
   // roles were not checked even though the stage ran.
-  return employerResult.clean;
+  return employerConfirmationOutcome(employerResult);
 }
 
 /** Roles the list download did not touch are checked on their own Workday page. */
-async function recheckMissedWorkday(): Promise<boolean> {
+async function recheckMissedWorkday(): Promise<StageRunResult> {
   // Small margin for clock skew between this runner and the database.
   const since = new Date((atsStartedAt ?? new Date(Date.now() - 45 * MINUTE)).getTime() - 5 * MINUTE);
   workdayResult = await recheckWorkdayRoles(db, { refreshedSince: since, log, budgetMs: 15 * MINUTE, blockedHosts: blockedWorkdayHosts });
-  return workdayResult.clean;
+  return workdayVerificationOutcome(workdayResult);
 }
 function writeStepSummary(outcomes: StageOutcome[]): void {
   const path = process.env.GITHUB_STEP_SUMMARY;
@@ -204,6 +204,9 @@ function writeStepSummary(outcomes: StageOutcome[]): void {
   const lines = ['## Launchpad sync', '', '| Stage | Group | Status | Seconds |', '| --- | --- | --- | --- |'];
   for (const o of outcomes) {
     lines.push(`| ${o.name} | ${o.group} | ${o.status}${o.error ? `: ${o.error.replace(/\|/g, '/')}` : ''} | ${(o.durationMs / 1000).toFixed(1)} |`);
+  }
+  if (outcomes.some(outcome => outcome.status === 'incomplete')) {
+    lines.push('', '**DATA COVERAGE INCOMPLETE:** the sync handled source outages or unfinished checks. This is not confirmation that all jobs are current. Unverified jobs keep their real dates and retry schedule.');
   }
   if (atsResults.length) {
     const cell = (value: string) => value.replace(/\|/g, '/').replace(/[\r\n]/g, ' ');
@@ -292,10 +295,13 @@ async function main(): Promise<void> {
   writeStepSummary(outcomes);
   log(`Synchronization finished in ${((Date.now() - started) / 1000).toFixed(1)}s`);
 
-  const failed = outcomes.filter((o) => !o.ok);
+  const failed = outcomes.filter((o) => !o.ok && o.status !== 'incomplete');
   if (failed.length) {
     log(`Stages not clean: ${failed.map((o) => `${o.name} (${o.status})`).join(', ')}. Skipped jobs are not verified.`);
-    process.exitCode = 1;
+    process.exitCode = hasFatalStages(outcomes) ? 1 : 0;
+  } else if (outcomes.some(outcome => outcome.status === 'incomplete')) {
+    console.log('::warning title=Job coverage incomplete::Sync execution completed, but some jobs remain unverified. See the source tables and retry counts in the job summary.');
+    log('Handled source outages; data coverage remains INCOMPLETE. Skipped jobs are not verified.');
   } else {
     log('Requested stages completed. Only jobs with evidence were refreshed.');
   }

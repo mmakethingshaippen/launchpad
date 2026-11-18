@@ -1,5 +1,22 @@
 # Micron, HP and CVS careers sync
 
+## Execution status and catch-up runs
+
+The workflow runs every six hours. This repeats healthy sources and retries
+eligible unfinished checks; existing per-job backoff dates remain in effect.
+Muse stays enabled. An explicit access block or recorded incomplete download
+is shown as `incomplete`, with a workflow warning and **DATA COVERAGE
+INCOMPLETE** in the summary. It is not counted as fully synced and does not
+refresh unseen jobs. Only handled availability problems get this treatment.
+Database read/write failures, missing verification run records, programming
+errors and stage timeouts still fail the workflow so they can be repaired.
+No scraper can guarantee access to every outside site or all of its jobs.
+
+The workflow uses the verified Node 24 versions of checkout and setup-node;
+the application itself continues to run on Node 22.
+
+## Employer feeds
+
 Micron's and HP's configured Workday boards can return access challenges to the
 scheduled sync. The shared sync engine now reads their published public careers
 searches at https://careers.micron.com and https://apply.hp.com instead. Both
