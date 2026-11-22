@@ -3,7 +3,7 @@ import { isValidHttpUrl } from '../util';
 import { judgePage, type PageVerdictKind } from './pageEvidence';
 import { verificationBlocker } from '../verifyEligibility';
 import { isBlockedReason } from '../accessChallenge';
-import { checkHimalayasJob, himalayasJobUrl } from './himalayas';
+import { checkHimalayasJob, himalayasJobUrl, HIMALAYAS_RECHECK_MS } from './himalayas';
 
 export { judgePage } from './pageEvidence';
 
@@ -372,8 +372,11 @@ export async function sweepStaleAggregatorRoles(
   const deadline = clock() + (opts.budgetMs ?? DEFAULT_BUDGET_MS);
 
   const loaded = await loadEligibleRoles(db, cutoff, opts.pageSize ?? DEFAULT_PAGE_SIZE, runStart);
-  const ineligibleRows = loaded.rows.filter((r) => r.blocker);
-  const due = loaded.rows.filter((r) => !r.blocker);
+  const himalayasCutoff = runStart.getTime() - HIMALAYAS_RECHECK_MS;
+  const candidates = loaded.rows.filter(role => role.feed !== 'himalayas' || !role.lastVerifiedAt ||
+    Date.parse(role.lastVerifiedAt) <= himalayasCutoff);
+  const ineligibleRows = candidates.filter((r) => r.blocker);
+  const due = candidates.filter((r) => !r.blocker);
   const isWaiting = (r: EligibleRole) => Boolean(r.nextVerificationAt) && Date.parse(r.nextVerificationAt!) > runStart.getTime();
   const ready = due.filter((r) => !isWaiting(r));
   const waiting = due.filter(isWaiting);

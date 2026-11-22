@@ -45,6 +45,7 @@ import {
   type WorkdayRecheckResult,
 } from '../src/lib/ats/verifyChecks';
 import { sweepStaleAggregatorRoles, type StaleSweepResult } from '../src/lib/ats/aggregators/staleSweep';
+import { HIMALAYAS_RECHECK_MS } from '../src/lib/ats/aggregators/himalayas';
 import { hasFatalStages, runStages, type PipelineStage, type StageOutcome, type StageRunResult } from '../src/lib/ats/pipeline';
 import { aggregatorIngestOutcome, aggregatorVerificationOutcome, atsDownloadsOutcome, employerConfirmationOutcome, workdayVerificationOutcome } from '../src/lib/ats/syncHealth';
 
@@ -114,11 +115,33 @@ async function runAts(): Promise<StageRunResult> {
 }
 
 let ingestResults: AggregatorResult[] = [];
+let himalayasCycleStartedAt: string | undefined;
 
 async function runAggregatorIngest(): Promise<StageRunResult> {
   log('Importing and refreshing aggregator postings from a single fetch per source');
 
-  const results = await ingestAggregators(db);
+  const { data, error } = await db.from('aggregator_verification_runs')
+    .select('feeds')
+    .contains('feeds', [{ source: 'himalayas', checkpointVersion: 1 }])
+    .order('started_at', { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  if (error) log(`ERROR Cannot load Himalayas search checkpoint: ${error.message}`);
+  const previous = Array.isArray(data?.feeds) ? data.feeds.find(feed => feed.source === 'himalayas' && feed.checkpointVersion === 1) : undefined;
+  const startedAt = Date.parse(previous?.cycleStartedAt ?? '');
+  const pages = previous?.nextSearchPages;
+  const validPages = Array.isArray(pages) && pages.length === 4 &&
+    pages.every(page => page === null || (Number.isSafeInteger(page) && page > 0));
+  const unfinished = validPages && pages.some(page => page !== null);
+  const skipHimalayas = validPages && !unfinished && Date.now() - startedAt < HIMALAYAS_RECHECK_MS;
+  himalayasCycleStartedAt = unfinished && Number.isFinite(startedAt)
+    ? previous.cycleStartedAt : new Date().toISOString();
+  if (unfinished) log(`Himalayas resuming search pages: ${pages.map(page => page ?? 'done').join(', ')}`);
+  if (skipHimalayas) log('Himalayas finished this cycle; allowing 24 hours from its start before opening another.');
+  const results = await ingestAggregators(db, {
+    himalayasSearchPages: unfinished ? pages : undefined,
+    skipHimalayas: Boolean(error) || skipHimalayas,
+  });
   ingestResults = results;
 
   for (const result of results) {
@@ -159,7 +182,7 @@ async function runAggregatorIngest(): Promise<StageRunResult> {
     );
   }
 
-  return aggregatorIngestOutcome(results);
+  return error ? false : aggregatorIngestOutcome(results);
 }
 
 let sweepResult: StaleSweepResult | null = null;
@@ -169,6 +192,9 @@ async function runAggregatorVerification(): Promise<StageRunResult> {
   const feeds = ingestResults.map((r) => ({
     source: r.source, coverage: r.coverage, fetched: r.fetched, refreshed: r.refreshed,
     stopReason: r.feedStopReason.slice(0, 300), accessChallenge: r.accessChallenge ?? null,
+    ...(r.nextSearchPages && himalayasCycleStartedAt ? {
+      checkpointVersion: 1, nextSearchPages: r.nextSearchPages, cycleStartedAt: himalayasCycleStartedAt,
+    } : {}),
   }));
   const blockedHosts = new Set(ingestResults.flatMap(r =>
     r.coverage === 'blocked' && r.accessChallenge?.host ? [r.accessChallenge.host] : []));

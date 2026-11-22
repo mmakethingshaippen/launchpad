@@ -28,6 +28,9 @@ export interface FeedReport {
   pagesRead: number;
   /** Why paging ended, including every reason that made the feed incomplete. */
   stopReason: string;
+  /** Himalayas search pages to resume, in configured search order. Null marks a finished search. */
+  nextSearchPages?: Array<number | null>;
+  rateLimited?: boolean;
   /**
    * Set only when the source served an explicit access challenge (see
    * accessChallenge.ts). A plain HTTP error does not set this.

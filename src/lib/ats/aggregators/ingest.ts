@@ -14,7 +14,7 @@ import { isUsableCity } from '../supabaseSink';
 import { canonicalCompanySlug, INTERNSHIP_ONLY_SLUGS } from '../companyMatch';
 import { classifyCompanyByName } from '../classifyCompany';
 import { createAmazonClient } from './amazon';
-import { createHimalayasClient } from './himalayas';
+import { createHimalayasClient, HIMALAYAS_RECHECK_MS } from './himalayas';
 
 export interface AggregatorResult {
   source: string;
@@ -38,6 +38,7 @@ export interface AggregatorResult {
   feedPages: number | null;
   /** Why the feed ended or why it counts as incomplete. */
   feedStopReason: string;
+  nextSearchPages?: Array<number | null>;
   /**
    * complete  the whole feed was read
    * partial   some postings were read and saved, but the feed was cut short
@@ -109,6 +110,7 @@ type IndexedRole = {
   apply_url: string | null;
   source: string | null;
   listing_status: string | null;
+  last_verified_at: string | null;
 };
 
 /**
@@ -132,6 +134,8 @@ export async function ingestAggregators(
     fetchImpl?: typeof fetch;
     now?: Date;
     clients?: AggregatorClient[];
+    himalayasSearchPages?: Array<number | null>;
+    skipHimalayas?: boolean;
     /** Per-source feed time limit. Postings read before it fires are kept; coverage is reported as partial. */
     feedTimeoutMs?: number;
   } = {},
@@ -140,7 +144,7 @@ export async function ingestAggregators(
   const clients: AggregatorClient[] = opts.clients ?? [
     createSimplifyClient(opts.fetchImpl),
     createAmazonClient(opts.fetchImpl),
-    createHimalayasClient(opts.fetchImpl, { now: opts.now }),
+    ...(opts.skipHimalayas ? [] : [createHimalayasClient(opts.fetchImpl, { now: opts.now, searchPages: opts.himalayasSearchPages })]),
     createTheMuseClient(opts.fetchImpl),
     createRemotiveClient(opts.fetchImpl),
     createAdzunaClient(opts.fetchImpl),
@@ -216,7 +220,8 @@ export async function ingestAggregators(
     } else if (result.feedComplete) {
       result.coverage = 'complete';
     } else {
-      result.coverage = postings.length > 0 ? 'partial' : 'failed';
+      result.coverage = postings.length > 0 || report?.rateLimited ||
+        (report?.nextSearchPages && report.pagesRead > 0) ? 'partial' : 'failed';
     }
     console.log(`[${stamp()}] ${client.source}: ${postings.length} postings fetched`);
 
@@ -320,7 +325,8 @@ export async function ingestAggregators(
         const companyId = await resolveCompanyId(db, companyIds, slug, posting, client.source, now, result);
         const url = normalizeApplyUrl(posting.applyUrl);
         const externalKey = `${companyId}\0${enriched.externalJobId}`;
-        const observation = index.observe(url, externalKey);
+        const refreshBefore = client.source === 'himalayas' ? now.getTime() - HIMALAYAS_RECHECK_MS : Infinity;
+        const observation = index.observe(url, externalKey, refreshBefore);
         if (observation === 'refresh') {
           index.rememberNew(url, externalKey);
           pendingRefresh.push(...index.takePendingRefresh());
@@ -384,6 +390,9 @@ export async function ingestAggregators(
     }
     await flushWrites();
     await flushRefresh();
+    if (!result.errors.length && !result.refreshWriteFailures && report?.nextSearchPages) {
+      result.nextSearchPages = report.nextSearchPages;
+    }
     result.closeMissingEligible = client.exhaustiveInventory === true;
     if (result.feedComplete && !result.closeMissingEligible) {
       result.feedStopReason += '; filtered/query feed: absence never closes, fallback verification decides';
@@ -449,6 +458,7 @@ class RoleIndex {
   private readonly urlToIds = new Map<string, string[]>();
   private readonly externalToIds = new Map<string, string[]>();
   readonly refreshable = new Set<string>();
+  private readonly verifiedAt = new Map<string, number>();
   private readonly aggregatorExternal = new Map<string, string>();
   private readonly queuedRefresh = new Set<string>();
   private pendingRefresh: string[] = [];
@@ -472,6 +482,7 @@ class RoleIndex {
     }
     if (role.source === 'aggregator' && role.listing_status === 'Active') {
       this.refreshable.add(role.id);
+      if (role.last_verified_at) this.verifiedAt.set(role.id, Date.parse(role.last_verified_at));
       if (role.external_job_id) this.aggregatorExternal.set(role.id, role.external_job_id);
     }
   }
@@ -486,7 +497,7 @@ class RoleIndex {
     return stale;
   }
 
-  observe(url: string, externalKey: string): 'new' | 'refresh' | 'duplicate' {
+  observe(url: string, externalKey: string, refreshBefore: number): 'new' | 'refresh' | 'duplicate' {
     const ids = new Set<string>([
       ...(this.urlToIds.get(url) ?? []),
       ...(this.externalToIds.get(externalKey) ?? []),
@@ -495,7 +506,8 @@ class RoleIndex {
     if (!known) return 'new';
     let queued = false;
     for (const id of ids) {
-      if (this.refreshable.has(id) && !this.queuedRefresh.has(id)) {
+      if (this.refreshable.has(id) && !this.queuedRefresh.has(id) &&
+          (this.verifiedAt.get(id) ?? -Infinity) <= refreshBefore) {
         this.queuedRefresh.add(id);
         this.pendingRefresh.push(id);
         queued = true;
@@ -521,7 +533,7 @@ async function loadRoleIndex(db: SupabaseClient): Promise<RoleIndex> {
   const rows = await loadPages<IndexedRole>(
     db,
     'roles',
-    'id,company_id,external_job_id,apply_url,source,listing_status',
+    'id,company_id,external_job_id,apply_url,source,listing_status,last_verified_at',
     'Cannot load existing roles',
   );
   for (const role of rows) index.add(role);

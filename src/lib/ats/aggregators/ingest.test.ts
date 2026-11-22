@@ -212,6 +212,32 @@ describe('aggregator ingestion', () => {
     });
     expect(fake.state.roles.find(r => r.id === 'unseen')?.listing_status).toBe('Active');
   });
+
+  it('caches a Himalayas job once and refreshes its verification only after 24 hours', async () => {
+    const fake = createDb();
+    const feed = client('himalayas', [posting({ source: 'himalayas', externalJobId: 'himalayas-one' })], true);
+    const runAt = (now: Date) => ingestAggregators(fake.db, { now, clients: [feed] });
+    expect((await runAt(NOW))[0]).toMatchObject({ rolesUpserted: 1, refreshed: 0 });
+    const nextDay = new Date(NOW.getTime() + 86_400_000);
+    expect((await runAt(new Date(nextDay.getTime() - 1)))[0]).toMatchObject({ rolesUpserted: 0, refreshed: 0 });
+    expect(fake.state.roles[0].last_verified_at).toBe(NOW.toISOString());
+    expect((await runAt(nextDay))[0]).toMatchObject({ rolesUpserted: 0, refreshed: 1 });
+    expect(fake.state.roles[0].last_verified_at).toBe(nextDay.toISOString());
+    expect(fake.state.roleUpsertSizes).toEqual([1]);
+  });
+
+  it('publishes a resume checkpoint only after the batch writes succeed', async () => {
+    const fake = createDb({ failExternalIds: ['himalayas-one'] });
+    const feed = client('himalayas', [posting({ source: 'himalayas', externalJobId: 'himalayas-one' })]);
+    feed.feedReport = () => ({ complete: false, pagesRead: 1, stopReason: 'batch limit', nextSearchPages: [2, 1, 1, 1] });
+    const [failed] = await ingestAggregators(fake.db, { now: NOW, clients: [feed] });
+    expect(failed.errors).not.toHaveLength(0);
+    expect(failed.nextSearchPages).toBeUndefined();
+    fake.state.failExternalIds.clear();
+    const [saved] = await ingestAggregators(fake.db, { now: NOW, clients: [feed] });
+    expect(saved.nextSearchPages).toEqual([2, 1, 1, 1]);
+  });
+
   it('inserts a new listing once and reuses the feed on a second run', async () => {
     const fake = createDb();
     const feed = client('remotive', [posting(), posting({

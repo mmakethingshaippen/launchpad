@@ -60,6 +60,43 @@ describe('Himalayas feed', () => {
     expect(client.feedReport?.()).toMatchObject({ complete: false, stopReason: expect.stringContaining('429') });
   });
 
+  it('reads the newest page of each search before deeper pages', async () => {
+    const requests: Array<[string | null, string | null]> = [];
+    const client = createHimalayasClient(async url => {
+      const params = new URL(url).searchParams;
+      requests.push([params.get('employment_type') ?? params.get('q'), params.get('page')]);
+      return requests.length <= 4 ? json({ jobs: [job({ guid: `${GUID}-${requests.length}` })] }) : json({}, 429);
+    }, options);
+    expect(await client.fetchEarlyCareer()).toHaveLength(4);
+    expect(requests).toEqual([
+      ['Intern', '1'], ['new grad', '1'], ['entry level', '1'], ['co-op', '1'], ['Intern', '2'],
+    ]);
+    expect(client.feedWasComplete?.()).toBe(false);
+  });
+
+  it('honors a short Retry-After once and resumes the same page', async () => {
+    const fetchImpl = vi.fn()
+      .mockResolvedValueOnce(new Response('', { status: 429, headers: { 'Retry-After': '1' } }))
+      .mockImplementationOnce(async () => json({ jobs: [job()] }))
+      .mockImplementation(async () => json({ jobs: [] }));
+    const client = createHimalayasClient(fetchImpl, options);
+    const postings = client.fetchEarlyCareer();
+    await new Promise(resolve => setTimeout(resolve, 25));
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    expect(await postings).toHaveLength(1);
+    expect(fetchImpl.mock.calls[1][0]).toBe(fetchImpl.mock.calls[0][0]);
+    expect(client.feedWasComplete?.()).toBe(true);
+  });
+
+  it('starts the next batch at the first unread page and skips finished searches', async () => {
+    const fetchImpl = vi.fn(async url => new URL(url).searchParams.get('page') === '3'
+      ? json({ jobs: [job()] }) : json({ jobs: [] }));
+    const client = createHimalayasClient(fetchImpl, { ...options, searchPages: [4, null, 3, null] });
+    expect(await client.fetchEarlyCareer()).toHaveLength(1);
+    expect(fetchImpl.mock.calls.map(([url]) => new URL(url).searchParams.get('page'))).toEqual(['3', '4', '4']);
+    expect(client.feedReport?.()).toMatchObject({ complete: true, nextSearchPages: [null, null, null, null] });
+  });
+
   it('reports a challenge with its host so fallback can avoid a second blocked crawl', async () => {
     const fetchImpl = vi.fn(async () => new Response('', { status: 403, headers: { 'cf-mitigated': 'challenge' } }));
     const client = createHimalayasClient(fetchImpl, options);
@@ -72,7 +109,7 @@ describe('Himalayas feed', () => {
     const fetchImpl = vi.fn(async () => json({ jobs: [job()] }));
     const client = createHimalayasClient(fetchImpl, options);
     expect(await client.fetchEarlyCareer()).toHaveLength(1);
-    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    expect(fetchImpl).toHaveBeenCalledTimes(5);
     expect(client.feedReport?.().complete).toBe(false);
   });
 
