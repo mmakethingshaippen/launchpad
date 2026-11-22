@@ -16,7 +16,7 @@ export function Footer() {
             <Link to="/browse" className="text-slate-600 hover:text-navy">Browse opportunities</Link>
             <Link to="/map" className="text-slate-600 hover:text-navy">Explore map</Link>
             <Link to="/resources" className="text-slate-600 hover:text-navy">Career resources</Link>
-            <Link to="/about" className="text-slate-600 hover:text-navy">Our mission &amp; creator</Link>
+            <Link to="/about" className="text-slate-600 hover:text-navy">Our Mission</Link>
             <Link to="/submit" className="text-slate-600 hover:text-navy">Submit a role</Link>
           </nav>
         </div>
