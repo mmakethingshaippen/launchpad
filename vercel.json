@@ -2,13 +2,18 @@
   "$schema": "https://openapi.vercel.sh/vercel.json",
   "buildCommand": "npm run build",
   "outputDirectory": "dist",
-  "rewrites": [
-    {
-      "source": "/((?!api/).*)",
-      "destination": "/index.html"
-    }
+  "routes": [
+    { "src": "^/index\\.html$", "headers": { "Location": "/" }, "status": 308 },
+    { "src": "^/$", "dest": "/api/seo?__path=/" },
+    { "src": "^/(about|browse|map|resources(?:/[^/]+)?|roles/[^/]+|companies/[^/]+|sitemap\\.xml|sitemap-pages\\.xml|sitemaps/[^/]+)(?:/)?$", "dest": "/api/seo?__path=/$1" },
+    { "handle": "filesystem" },
+    { "src": "^/api/.*$", "status": 404 },
+    { "src": "^/(.*)$", "dest": "/api/seo?__path=/$1" }
   ],
   "functions": {
+    "api/seo.js": {
+      "maxDuration": 30
+    },
     "api/sync.js": {
       "maxDuration": 60
     },

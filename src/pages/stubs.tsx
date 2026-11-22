@@ -8,6 +8,7 @@ export function NotFound() {
     <div>
       <Helmet>
         <title>Not found — Launchpad</title>
+        <meta name="robots" content="noindex" />
       </Helmet>
       <EmptyState
         title="Page not found"

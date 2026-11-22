@@ -18,6 +18,8 @@
 import { build } from 'esbuild';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
+import { readFile } from 'node:fs/promises';
+import { loadEnv } from 'vite';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -39,6 +41,24 @@ async function main() {
   });
   // eslint-disable-next-line no-console
   console.log('Bundled api/sync.js and api/reverify-jobs.js');
+  const env = loadEnv('production', root, 'VITE_');
+  const anonKey = process.env.VITE_SUPABASE_ANON_KEY || env.VITE_SUPABASE_ANON_KEY;
+  if (anonKey && !anonKey.startsWith('sb_publishable_')) {
+    try {
+      if (JSON.parse(Buffer.from(anonKey.split('.')[1], 'base64url').toString()).role !== 'anon') throw new Error();
+    } catch { throw new Error('SEO rendering requires the public Supabase anon/publishable key, never a service key.'); }
+  }
+  await build({
+    entryPoints: [path.join(root, 'api/_src/seo.ts')], outfile: path.join(root, 'api/seo.js'),
+    bundle: true, platform: 'node', target: 'node22', format: 'esm', minify: false, sourcemap: false,
+    banner: { js: "import { createRequire as __createRequire } from 'module'; const require = __createRequire(import.meta.url);" },
+    define: {
+      'process.env.NODE_ENV': JSON.stringify('production'),
+      __SEO_SHELL__: JSON.stringify(await readFile(path.join(root, 'dist/index.html'), 'utf8')),
+      __SEO_PUBLIC_CONFIG__: JSON.stringify({ url: process.env.VITE_SUPABASE_URL || env.VITE_SUPABASE_URL, anonKey }),
+    }, logLevel: 'info',
+  });
+  console.log('Bundled api/seo.js with the current public-page HTML template');
 }
 
 main().catch((err) => {

@@ -16,14 +16,15 @@ export function Footer() {
             <Link to="/browse" className="text-slate-600 hover:text-navy">Browse opportunities</Link>
             <Link to="/map" className="text-slate-600 hover:text-navy">Explore map</Link>
             <Link to="/resources" className="text-slate-600 hover:text-navy">Career resources</Link>
+            <Link to="/about" className="text-slate-600 hover:text-navy">Our mission &amp; creator</Link>
             <Link to="/submit" className="text-slate-600 hover:text-navy">Submit a role</Link>
           </nav>
         </div>
         <p className="mt-8 text-xs text-slate-400">
-          Every opportunity is verified against live employer feeds. Browsing and applying never require an account.
+          We check opportunities against available sources and show when they were last verified. Browsing and applying never require an account.
         </p>
         <p className="mt-2 text-xs text-slate-400">
-          Built by Maxim Culbeaux
+          Built by <Link to="/about" className="underline hover:text-navy">Maxim Culbeaux</Link>
         </p>
       </div>
     </footer>

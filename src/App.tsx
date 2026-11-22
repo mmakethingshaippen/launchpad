@@ -12,12 +12,16 @@ import { Submit } from './pages/Submit';
 import { Admin } from './pages/Admin';
 import { SignIn } from './pages/SignIn';
 import { ResetPassword } from './pages/ResetPassword';
+import { About } from './pages/About';
+import { RouteMetadata } from './components/RouteMetadata';
 
 export default function App() {
   return (
     <Layout>
+      <RouteMetadata />
       <Routes>
         <Route path="/" element={<Home />} />
+        <Route path="/about" element={<About />} />
         <Route path="/browse" element={<Browse />} />
         <Route path="/roles/:slug" element={<RoleDetail />} />
         <Route path="/companies/:slug" element={<CompanyProfile />} />
