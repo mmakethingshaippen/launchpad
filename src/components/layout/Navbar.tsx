@@ -10,6 +10,7 @@ const LINKS = [
   { to: '/resources', label: 'Resources' },
   { to: '/applications', label: 'My Applications' },
   { to: '/submit', label: 'Submit' },
+  { to: '/about', label: 'About' },
 ];
 
 export function Navbar() {
