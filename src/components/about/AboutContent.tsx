@@ -38,6 +38,7 @@ export function AboutContent() {
         <div className="space-y-4 leading-relaxed text-slate-700">
           <p className="text-sm font-semibold uppercase tracking-widest text-slate-500">About the Creator</p>
           <h2 id="creator-name" className="text-3xl font-bold text-navy">Maxim Culbeaux</h2>
+          <p>Consultant and Builder.</p>
           <p>Launchpad was created by Maxim Culbeaux with a focus on helping people discover opportunities at the beginning of their careers.</p>
           <p>The project brings together job discovery, location-based exploration, and application tracking in one place. Its guiding idea is simple: useful tools should make a complicated process easier to understand and manage.</p>
           <p>Launchpad continues to evolve around that purpose.</p>
