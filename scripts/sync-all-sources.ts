@@ -122,7 +122,7 @@ async function runAggregatorIngest(): Promise<StageRunResult> {
 
   const { data, error } = await db.from('aggregator_verification_runs')
     .select('feeds')
-    .contains('feeds', [{ source: 'himalayas', checkpointVersion: 1 }])
+    .contains('feeds', JSON.stringify([{ source: 'himalayas', checkpointVersion: 1 }]))
     .order('started_at', { ascending: false })
     .limit(1)
     .maybeSingle();
