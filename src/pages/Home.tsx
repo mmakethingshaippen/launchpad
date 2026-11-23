@@ -41,12 +41,13 @@ export function Home() {
   return (
     <div>
       <Helmet>
-        <title>Launchpad — Your career starts somewhere</title>
+        <title>Launchpad, by Maxim Culbeaux, Your career starts somewhere</title>
         <meta
           name="description"
-          content="Discover live internships, co-ops, and early career opportunities at top companies, fast growing teams, and public institutions, all in one place."
+          content="Discover live internships, co-ops, and early career opportunities at top companies, fast growing teams, and public institutions, all in one place. Created by Maxim Culbeaux."
         />
-        <meta property="og:title" content="Launchpad — Find your Launchpad" />
+        <meta property="og:title" content="Launchpad, by Maxim Culbeaux, Your career starts somewhere" />
+        <meta property="og:description" content="Discover live internships, co-ops, and early career opportunities at top companies, fast growing teams, and public institutions, all in one place. Created by Maxim Culbeaux." />
       </Helmet>
 
       {/* Hero */}

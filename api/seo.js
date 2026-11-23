@@ -3953,7 +3953,7 @@ var safeHref = (value) => {
   }
 };
 function layout(content) {
-  return `<div class="flex min-h-screen flex-col bg-slate-50 text-slate-700"><header class="border-b border-slate-200 bg-white"><nav aria-label="Main" class="mx-auto flex max-w-7xl flex-wrap items-center gap-6 px-4 py-5"><a class="text-xl font-bold text-navy" href="/">Launchpad</a><a href="/browse">Browse</a><a href="/map">Map</a><a href="/resources">Resources</a><a href="/about">Our Mission</a><a href="/signin">Sign in</a></nav></header><main id="main" class="mx-auto w-full max-w-7xl flex-1 px-4 py-8">${content}</main><footer class="mx-auto w-full max-w-7xl border-t border-slate-200 px-4 py-8 text-sm">Built by <a href="https://www.linkedin.com/in/maxim-culbeaux">Maxim Culbeaux</a> \xB7 <a href="/about">Our mission</a><p class="mt-2">We check listings against available sources. Listings awaiting verification are temporarily hidden.</p></footer></div>`;
+  return `<div class="flex min-h-screen flex-col bg-slate-50 text-slate-700"><header class="border-b border-slate-200 bg-white"><nav aria-label="Main" class="mx-auto flex max-w-7xl flex-wrap items-center gap-6 px-4 py-5"><a class="text-xl font-bold text-navy" href="/">Launchpad</a><a href="/browse">Browse</a><a href="/map">Map</a><a href="/resources">Resources</a><a href="/about">Our Mission</a><a href="/signin">Sign in</a></nav></header><main id="main" class="mx-auto w-full max-w-7xl flex-1 px-4 py-8">${content}</main><footer class="mx-auto w-full max-w-7xl border-t border-slate-200 px-4 py-8 text-sm">Built by <a href="/about">Maxim Culbeaux</a> \xB7 <a href="/about">Our mission</a><p class="mt-2">We check listings against available sources. Listings awaiting verification are temporarily hidden.</p></footer></div>`;
 }
 function renderSeoHtml(shell, path, title, description, content, noindex = false, schema) {
   let html = shell.replace(/<title[^>]*>[\s\S]*?<\/title>/gi, "").replace(/<meta\b(?=[^>]*(?:name|property)=["'](?:description|robots|og:title|og:description|og:url|twitter:title|twitter:description)["'])[^>]*>/gi, "").replace(/<link\b(?=[^>]*rel=["']canonical["'])[^>]*>/gi, "");
@@ -4069,10 +4069,10 @@ async function handleSeoRequest(rawPath, options) {
       return page(200, `${company.name} internships & early-career roles \u2014 Launchpad`, `Explore opportunities at ${company.name}.`, `<h1 class="text-3xl font-bold text-navy">${escape(company.name)}</h1>${description2 ? `<p class="mt-4 leading-relaxed">${escape(text(description2))}</p>` : ""}<h2 class="mt-8 text-2xl font-semibold">Current opportunities</h2>${jobs2.rows.length ? links(jobs2.rows) : '<p class="mt-4">No verified opportunities are currently listed for this company.</p>'}`);
     }
     const jobs = await rest("public_roles", { select: "slug,title,source_url,city,state,country,companies(name,slug)", ...roleFilters, order: "last_verified_at.desc,id.asc", limit: "21" });
-    const title = path === "/" ? "Launchpad \u2014 Your career starts somewhere" : path === "/map" ? "Explore opportunities on the map \u2014 Launchpad" : "Browse internships, co-ops & early-career jobs \u2014 Launchpad";
+    const title = path === "/" ? "Launchpad, by Maxim Culbeaux, Your career starts somewhere" : path === "/map" ? "Explore opportunities on the map \u2014 Launchpad" : "Browse internships, co-ops & early-career jobs \u2014 Launchpad";
     const heading = path === "/" ? "Your career starts somewhere. Find your Launchpad." : path === "/map" ? "Explore opportunities by location" : "Browse opportunities";
     const description = "Discover internships, co-ops and early-career opportunities. Explore openings by location and organize your application search.";
-    return page(200, title, description, `<h1 class="text-3xl font-bold text-navy">${heading}</h1><p class="mt-4 max-w-3xl text-lg">${description}</p><p class="mt-4"><a class="underline" href="/about">Our Mission</a></p><h2 class="mt-8 text-2xl font-semibold">Recently verified opportunities</h2>${links(jobs.rows)}<p class="mt-6"><a class="underline" href="/browse">Search and filter all opportunities</a></p>`, (path === "/browse" || path === "/map") && Boolean(requestUrl.searchParams.size - Number(requestUrl.searchParams.has("__path"))));
+    return page(200, title, path === "/" ? `${description} Created by Maxim Culbeaux.` : description, `<h1 class="text-3xl font-bold text-navy">${heading}</h1><p class="mt-4 max-w-3xl text-lg">${description}</p><p class="mt-4"><a class="underline" href="/about">Our Mission</a></p><h2 class="mt-8 text-2xl font-semibold">Recently verified opportunities</h2>${links(jobs.rows)}<p class="mt-6"><a class="underline" href="/browse">Search and filter all opportunities</a></p>`, (path === "/browse" || path === "/map") && Boolean(requestUrl.searchParams.size - Number(requestUrl.searchParams.has("__path"))));
   } catch {
     const result = page(503, "Temporarily unavailable \u2014 Launchpad", "Please try again shortly.", '<h1 class="text-2xl font-bold text-navy">Temporarily unavailable</h1><p class="mt-4">Please try again shortly. You can also continue in the app.</p>', true);
     result.headers["Retry-After"] = "300";
@@ -4089,11 +4089,11 @@ async function handler(req, res) {
     <meta charset="UTF-8" />\r
     <meta name="google-site-verification" content="IxRDdf0J_fAx-Sa4zF8camL79twSx4fU66rhcej2-Fo" />\r
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />\r
-    <meta name="description" content="Explore internships, co-ops, and new-grad roles across companies hiring early career talent." />\r
+    <meta name="description" content="Explore internships, co-ops, and new-grad roles across companies hiring early career talent. Created by Maxim Culbeaux." />\r
     \r
     <!-- Open Graph / Social Media Meta Tags -->\r
-    <meta property="og:title" content="Launchpad \u2014 Interactive Internship &amp; Early Career Opportunity Map" />\r
-    <meta property="og:description" content="Explore 5,600+ live internships, co-ops, and new-grad roles across 1,100+ companies plotted by actual job city." />\r
+    <meta property="og:title" content="Launchpad, by Maxim Culbeaux, Your career starts somewhere" />\r
+    <meta property="og:description" content="Explore 5,600+ live internships, co-ops, and new-grad roles across 1,100+ companies plotted by actual job city. Created by Maxim Culbeaux." />\r
     <meta property="og:type" content="website" />\r
     <meta property="og:url" content="https://launchpad-careers.vercel.app/" />\r
     <meta property="og:image" content="https://launchpad-careers.vercel.app/og-image.jpeg" />\r
@@ -4104,14 +4104,14 @@ async function handler(req, res) {
     <meta name="twitter:description" content="Explore 5,600+ live internships, co-ops, and new-grad roles across 1,100+ companies plotted by actual job city." />\r
     <meta name="twitter:image" content="https://launchpad-careers.vercel.app/og-image.jpeg" />\r
     \r
-    <title>Launchpad \u2014 Interactive Internship &amp; Early Career Opportunity Map</title>\r
+    <title>Launchpad, by Maxim Culbeaux, Your career starts somewhere</title>\r
     <style>
       *, *::before, *::after { box-sizing: border-box; }
       body { margin: 0; padding: 0; background-color: #ffffff; color: #0f172a; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; -webkit-font-smoothing: antialiased; }
       @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: .6; } }
       .shell-pulse { animation: pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite; }
     </style>\r
-    <script type="module" crossorigin src="/assets/index-BxU50Ai0.js"></script>
+    <script type="module" crossorigin src="/assets/index-Cu8PYUeb.js"></script>
     <link rel="stylesheet" crossorigin href="/assets/index-BJEP7gfG.css">
   </head>\r
   <body>\r

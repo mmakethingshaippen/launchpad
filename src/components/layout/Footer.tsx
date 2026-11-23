@@ -24,7 +24,7 @@ export function Footer() {
           We check opportunities against available sources and show when they were last verified. Browsing and applying never require an account.
         </p>
         <p className="mt-2 text-xs text-slate-400">
-          Built by <a href="https://www.linkedin.com/in/maxim-culbeaux" className="underline hover:text-navy">Maxim Culbeaux</a>
+          Built by <Link to="/about" className="underline hover:text-navy">Maxim Culbeaux</Link>
         </p>
       </div>
     </footer>
