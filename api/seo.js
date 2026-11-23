@@ -3656,7 +3656,7 @@ var ABOUT_DESCRIPTION = "Meet Maxim Culbeaux, creator of Launchpad, and learn ab
 function aboutStructuredData() {
   return { "@context": "https://schema.org", "@graph": [
     { "@type": "AboutPage", "@id": `${SITE_ORIGIN}/about`, url: `${SITE_ORIGIN}/about`, name: ABOUT_TITLE, about: { "@id": `${SITE_ORIGIN}/about#creator` } },
-    { "@type": "Person", "@id": `${SITE_ORIGIN}/about#creator`, name: "Maxim Culbeaux", url: `${SITE_ORIGIN}/about`, image: `${SITE_ORIGIN}/maxim-culbeaux.jpg`, description: "Creator of Launchpad" },
+    { "@type": "Person", "@id": `${SITE_ORIGIN}/about#creator`, name: "Maxim Culbeaux", url: `${SITE_ORIGIN}/about`, image: `${SITE_ORIGIN}/maxim-culbeaux.jpg`, description: "Creator of Launchpad", sameAs: ["https://www.linkedin.com/in/maxim-culbeaux/", "https://maximculbeaux.vercel.app/"] },
     { "@type": "WebSite", "@id": `${SITE_ORIGIN}/#website`, url: `${SITE_ORIGIN}/`, name: "Launchpad", creator: { "@id": `${SITE_ORIGIN}/about#creator` } }
   ] };
 }
@@ -4111,7 +4111,7 @@ async function handler(req, res) {
       @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: .6; } }
       .shell-pulse { animation: pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite; }
     </style>\r
-    <script type="module" crossorigin src="/assets/index-Cu8PYUeb.js"></script>
+    <script type="module" crossorigin src="/assets/index-BZiZ2mOb.js"></script>
     <link rel="stylesheet" crossorigin href="/assets/index-BJEP7gfG.css">
   </head>\r
   <body>\r
