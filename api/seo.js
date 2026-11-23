@@ -3696,6 +3696,7 @@ function AboutContent() {
       /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { className: "space-y-4 leading-relaxed text-slate-700", children: [
         /* @__PURE__ */ (0, import_jsx_runtime.jsx)("p", { className: "text-sm font-semibold uppercase tracking-widest text-slate-500", children: "About the Creator" }),
         /* @__PURE__ */ (0, import_jsx_runtime.jsx)("h2", { id: "creator-name", className: "text-3xl font-bold text-navy", children: "Maxim Culbeaux" }),
+        /* @__PURE__ */ (0, import_jsx_runtime.jsx)("p", { children: "Consultant and Builder." }),
         /* @__PURE__ */ (0, import_jsx_runtime.jsx)("p", { children: "Launchpad was created by Maxim Culbeaux with a focus on helping people discover opportunities at the beginning of their careers." }),
         /* @__PURE__ */ (0, import_jsx_runtime.jsx)("p", { children: "The project brings together job discovery, location-based exploration, and application tracking in one place. Its guiding idea is simple: useful tools should make a complicated process easier to understand and manage." }),
         /* @__PURE__ */ (0, import_jsx_runtime.jsx)("p", { children: "Launchpad continues to evolve around that purpose." })
@@ -3952,7 +3953,7 @@ var safeHref = (value) => {
   }
 };
 function layout(content) {
-  return `<div class="flex min-h-screen flex-col bg-slate-50 text-slate-700"><header class="border-b border-slate-200 bg-white"><nav aria-label="Main" class="mx-auto flex max-w-7xl flex-wrap items-center gap-6 px-4 py-5"><a class="text-xl font-bold text-navy" href="/">Launchpad</a><a href="/browse">Browse</a><a href="/map">Map</a><a href="/resources">Resources</a><a href="/about">Our mission &amp; creator</a><a href="/signin">Sign in</a></nav></header><main id="main" class="mx-auto w-full max-w-7xl flex-1 px-4 py-8">${content}</main><footer class="mx-auto w-full max-w-7xl border-t border-slate-200 px-4 py-8 text-sm"><a href="/about">Built by Maxim Culbeaux \xB7 Our mission</a><p class="mt-2">We check listings against available sources. Listings awaiting verification are temporarily hidden.</p></footer></div>`;
+  return `<div class="flex min-h-screen flex-col bg-slate-50 text-slate-700"><header class="border-b border-slate-200 bg-white"><nav aria-label="Main" class="mx-auto flex max-w-7xl flex-wrap items-center gap-6 px-4 py-5"><a class="text-xl font-bold text-navy" href="/">Launchpad</a><a href="/browse">Browse</a><a href="/map">Map</a><a href="/resources">Resources</a><a href="/about">Our Mission</a><a href="/signin">Sign in</a></nav></header><main id="main" class="mx-auto w-full max-w-7xl flex-1 px-4 py-8">${content}</main><footer class="mx-auto w-full max-w-7xl border-t border-slate-200 px-4 py-8 text-sm">Built by <a href="https://www.linkedin.com/in/maxim-culbeaux">Maxim Culbeaux</a> \xB7 <a href="/about">Our mission</a><p class="mt-2">We check listings against available sources. Listings awaiting verification are temporarily hidden.</p></footer></div>`;
 }
 function renderSeoHtml(shell, path, title, description, content, noindex = false, schema) {
   let html = shell.replace(/<title[^>]*>[\s\S]*?<\/title>/gi, "").replace(/<meta\b(?=[^>]*(?:name|property)=["'](?:description|robots|og:title|og:description|og:url|twitter:title|twitter:description)["'])[^>]*>/gi, "").replace(/<link\b(?=[^>]*rel=["']canonical["'])[^>]*>/gi, "");
@@ -4071,7 +4072,7 @@ async function handleSeoRequest(rawPath, options) {
     const title = path === "/" ? "Launchpad \u2014 Your career starts somewhere" : path === "/map" ? "Explore opportunities on the map \u2014 Launchpad" : "Browse internships, co-ops & early-career jobs \u2014 Launchpad";
     const heading = path === "/" ? "Your career starts somewhere. Find your Launchpad." : path === "/map" ? "Explore opportunities by location" : "Browse opportunities";
     const description = "Discover internships, co-ops and early-career opportunities. Explore openings by location and organize your application search.";
-    return page(200, title, description, `<h1 class="text-3xl font-bold text-navy">${heading}</h1><p class="mt-4 max-w-3xl text-lg">${description}</p><p class="mt-4"><a class="underline" href="/about">Our mission \u2014 created by Maxim Culbeaux</a></p><h2 class="mt-8 text-2xl font-semibold">Recently verified opportunities</h2>${links(jobs.rows)}<p class="mt-6"><a class="underline" href="/browse">Search and filter all opportunities</a></p>`, (path === "/browse" || path === "/map") && Boolean(requestUrl.searchParams.size - Number(requestUrl.searchParams.has("__path"))));
+    return page(200, title, description, `<h1 class="text-3xl font-bold text-navy">${heading}</h1><p class="mt-4 max-w-3xl text-lg">${description}</p><p class="mt-4"><a class="underline" href="/about">Our Mission</a></p><h2 class="mt-8 text-2xl font-semibold">Recently verified opportunities</h2>${links(jobs.rows)}<p class="mt-6"><a class="underline" href="/browse">Search and filter all opportunities</a></p>`, (path === "/browse" || path === "/map") && Boolean(requestUrl.searchParams.size - Number(requestUrl.searchParams.has("__path"))));
   } catch {
     const result = page(503, "Temporarily unavailable \u2014 Launchpad", "Please try again shortly.", '<h1 class="text-2xl font-bold text-navy">Temporarily unavailable</h1><p class="mt-4">Please try again shortly. You can also continue in the app.</p>', true);
     result.headers["Retry-After"] = "300";
@@ -4110,7 +4111,7 @@ async function handler(req, res) {
       @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: .6; } }
       .shell-pulse { animation: pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite; }
     </style>\r
-    <script type="module" crossorigin src="/assets/index-DJDpHrNC.js"></script>
+    <script type="module" crossorigin src="/assets/index-BxU50Ai0.js"></script>
     <link rel="stylesheet" crossorigin href="/assets/index-BJEP7gfG.css">
   </head>\r
   <body>\r
