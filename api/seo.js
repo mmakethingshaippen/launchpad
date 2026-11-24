@@ -3953,7 +3953,7 @@ var safeHref = (value) => {
   }
 };
 function layout(content) {
-  return `<div class="flex min-h-screen flex-col bg-slate-50 text-slate-700"><header class="border-b border-slate-200 bg-white"><nav aria-label="Main" class="mx-auto flex max-w-7xl flex-wrap items-center gap-6 px-4 py-5"><a class="text-xl font-bold text-navy" href="/">Launchpad</a><a href="/browse">Browse</a><a href="/map">Map</a><a href="/resources">Resources</a><a href="/about">Our Mission</a><a href="/signin">Sign in</a></nav></header><main id="main" class="mx-auto w-full max-w-7xl flex-1 px-4 py-8">${content}</main><footer class="mx-auto w-full max-w-7xl border-t border-slate-200 px-4 py-8 text-sm">Built by <a href="/about">Maxim Culbeaux</a> \xB7 <a href="/about">Our mission</a><p class="mt-2">We check listings against available sources. Listings awaiting verification are temporarily hidden.</p></footer></div>`;
+  return `<div class="flex min-h-screen flex-col bg-slate-50 text-slate-700"><header class="border-b border-slate-200 bg-white"><nav aria-label="Main" class="mx-auto flex max-w-7xl flex-wrap items-center gap-6 px-4 py-5"><a class="text-xl font-bold text-navy" href="/">Launchpad</a><a href="/browse">Browse</a><a href="/map">Map</a><a href="/resources">Resources</a><a href="/about">Our Mission</a><a href="/signin">Sign in</a></nav></header><main id="main" class="mx-auto w-full max-w-7xl flex-1 px-4 py-8">${content}</main><footer class="mx-auto w-full max-w-7xl border-t border-slate-200 px-4 py-8 text-sm">Built by <a href="https://maximculbeaux.vercel.app/">Maxim Culbeaux</a> \xB7 <a href="/about">Our mission</a><p class="mt-2">We check listings against available sources. Listings awaiting verification are temporarily hidden.</p></footer></div>`;
 }
 function renderSeoHtml(shell, path, title, description, content, noindex = false, schema) {
   let html = shell.replace(/<title[^>]*>[\s\S]*?<\/title>/gi, "").replace(/<meta\b(?=[^>]*(?:name|property)=["'](?:description|robots|og:title|og:description|og:url|twitter:title|twitter:description)["'])[^>]*>/gi, "").replace(/<link\b(?=[^>]*rel=["']canonical["'])[^>]*>/gi, "");
@@ -4111,7 +4111,7 @@ async function handler(req, res) {
       @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: .6; } }
       .shell-pulse { animation: pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite; }
     </style>\r
-    <script type="module" crossorigin src="/assets/index-BZiZ2mOb.js"></script>
+    <script type="module" crossorigin src="/assets/index-SoqcVG_J.js"></script>
     <link rel="stylesheet" crossorigin href="/assets/index-BJEP7gfG.css">
   </head>\r
   <body>\r
