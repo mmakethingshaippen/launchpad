@@ -47,7 +47,7 @@ var __toESM = (mod, isNodeMode, target) => (target = mod != null ? __create(__ge
 var define_SEO_PUBLIC_CONFIG_default;
 var init_define_SEO_PUBLIC_CONFIG = __esm({
   "<define:__SEO_PUBLIC_CONFIG__>"() {
-    define_SEO_PUBLIC_CONFIG_default = { url: "https://orijcqnfdxyvqiqjhdlh.supabase.co", anonKey: "sb_publishable_vroenlQAWm-IYeBrngIU0g_cKlVI_lp" };
+    define_SEO_PUBLIC_CONFIG_default = {};
   }
 });
 
@@ -3979,6 +3979,11 @@ function staticContent(path) {
     content: (0, import_server.renderToStaticMarkup)(/* @__PURE__ */ (0, import_jsx_runtime3.jsx)(AboutContent, {})),
     schema: aboutStructuredData()
   };
+  if (path === "/map") return {
+    title: "Explore opportunities on the map \u2014 Launchpad",
+    description: "Find internships, co-ops, and early-career opportunities by location using Launchpad\u2019s interactive map.",
+    content: '<h1 class="text-3xl font-bold text-navy">Explore by location</h1><p class="mt-3">Use the interactive map to find internships, co-ops, and early-career opportunities near a city or region. Filter the map by company or internship season to narrow your search.</p><p class="mt-4"><a class="underline" href="/browse">Browse opportunities in a list</a></p>'
+  };
   if (path === "/resources") return {
     title: "Career Resources \u2014 Launchpad",
     description: "Practical guides for internship resumes, interviews and evaluating offers.",
@@ -4005,13 +4010,14 @@ async function handleSeoRequest(rawPath, options) {
   const notFound = () => page(404, "Page unavailable \u2014 Launchpad", "This page is unavailable.", '<h1 class="text-3xl font-bold text-navy">Page unavailable</h1><p class="mt-4">This listing or page may be unavailable while we verify it.</p><a class="mt-4 inline-block underline" href="/browse">Back to Browse</a>', true);
   if (requestedPath !== path) return { status: 308, headers: { Location: path, "Cache-Control": "no-store" }, body: "" };
   const publicStatic = staticContent(path);
-  if (publicStatic) return page(200, publicStatic.title, publicStatic.description, publicStatic.content, false, publicStatic.schema);
+  const hasFilters = Array.from(requestUrl.searchParams.keys()).some((key) => key !== "__path");
+  if (publicStatic) return page(200, publicStatic.title, publicStatic.description, publicStatic.content, path === "/map" && hasFilters, publicStatic.schema);
   if (PRIVATE.has(path)) return page(200, "Your account \u2014 Launchpad", "Manage your Launchpad account.", '<h1 class="text-2xl font-bold text-navy">Launchpad</h1><p class="mt-4">Continue in the app to manage your account or submit an opportunity.</p>', true);
   const jobMatch = new RegExp(`^/roles/(${SLUG})$`).exec(path);
   const companyMatch = new RegExp(`^/companies/(${SLUG})$`).exec(path);
   const sitemapMatch = /^\/sitemaps\/(jobs|companies)-([1-9]\d{0,4})\.xml$/.exec(path);
   const isSitemap = path === "/sitemap.xml" || path === "/sitemap-pages.xml" || Boolean(sitemapMatch);
-  if (!jobMatch && !companyMatch && !isSitemap && !["/", "/browse", "/map"].includes(path)) return notFound();
+  if (!jobMatch && !companyMatch && !isSitemap && !["/", "/browse"].includes(path)) return notFound();
   const now = options.now ?? /* @__PURE__ */ new Date();
   const roleFilters = { listing_status: "eq.Active", last_verified_at: `gte.${freshnessCutoff(now).toISOString()}` };
   const rest = async (table, params, count = false) => {
@@ -4069,12 +4075,13 @@ async function handleSeoRequest(rawPath, options) {
       return page(200, `${company.name} internships & early-career roles \u2014 Launchpad`, `Explore opportunities at ${company.name}.`, `<h1 class="text-3xl font-bold text-navy">${escape(company.name)}</h1>${description2 ? `<p class="mt-4 leading-relaxed">${escape(text(description2))}</p>` : ""}<h2 class="mt-8 text-2xl font-semibold">Current opportunities</h2>${jobs2.rows.length ? links(jobs2.rows) : '<p class="mt-4">No verified opportunities are currently listed for this company.</p>'}`);
     }
     const jobs = await rest("public_roles", { select: "slug,title,source_url,city,state,country,companies(name,slug)", ...roleFilters, order: "last_verified_at.desc,id.asc", limit: "21" });
-    const title = path === "/" ? "Launchpad, by Maxim Culbeaux, Your career starts somewhere" : path === "/map" ? "Explore opportunities on the map \u2014 Launchpad" : "Browse internships, co-ops & early-career jobs \u2014 Launchpad";
-    const heading = path === "/" ? "Your career starts somewhere. Find your Launchpad." : path === "/map" ? "Explore opportunities by location" : "Browse opportunities";
+    const title = path === "/" ? "Launchpad, by Maxim Culbeaux, Your career starts somewhere" : "Browse internships, co-ops & early-career jobs \u2014 Launchpad";
+    const heading = path === "/" ? "Your career starts somewhere. Find your Launchpad." : "Browse opportunities";
     const description = "Discover internships, co-ops and early-career opportunities. Explore openings by location and organize your application search.";
-    return page(200, title, path === "/" ? `${description} Created by Maxim Culbeaux.` : description, `<h1 class="text-3xl font-bold text-navy">${heading}</h1><p class="mt-4 max-w-3xl text-lg">${description}</p><p class="mt-4"><a class="underline" href="/about">Our Mission</a></p><h2 class="mt-8 text-2xl font-semibold">Recently verified opportunities</h2>${links(jobs.rows)}<p class="mt-6"><a class="underline" href="/browse">Search and filter all opportunities</a></p>`, (path === "/browse" || path === "/map") && Boolean(requestUrl.searchParams.size - Number(requestUrl.searchParams.has("__path"))));
+    return page(200, title, path === "/" ? `${description} Created by Maxim Culbeaux.` : description, `<h1 class="text-3xl font-bold text-navy">${heading}</h1><p class="mt-4 max-w-3xl text-lg">${description}</p><p class="mt-4"><a class="underline" href="/about">Our Mission</a></p><h2 class="mt-8 text-2xl font-semibold">Recently verified opportunities</h2>${links(jobs.rows)}<p class="mt-6"><a class="underline" href="/browse">Search and filter all opportunities</a></p>`, path === "/browse" && hasFilters);
   } catch {
-    const result = page(503, "Temporarily unavailable \u2014 Launchpad", "Please try again shortly.", '<h1 class="text-2xl font-bold text-navy">Temporarily unavailable</h1><p class="mt-4">Please try again shortly. You can also continue in the app.</p>', true);
+    const result = page(503, "Temporarily unavailable \u2014 Launchpad", "Please try again shortly.", '<h1 class="text-2xl font-bold text-navy">Temporarily unavailable</h1><p class="mt-4">Please try again shortly. You can also continue in the app.</p>');
+    result.headers["Cache-Control"] = "no-store";
     result.headers["Retry-After"] = "300";
     return result;
   }
@@ -4083,78 +4090,78 @@ async function handleSeoRequest(rawPath, options) {
 // api/_src/seo.ts
 async function handler(req, res) {
   const result = await handleSeoRequest(req.url ?? "/", {
-    shell: `<!doctype html>\r
-<html lang="en">\r
-  <head>\r
-    <meta charset="UTF-8" />\r
-    <meta name="google-site-verification" content="IxRDdf0J_fAx-Sa4zF8camL79twSx4fU66rhcej2-Fo" />\r
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />\r
-    <meta name="description" content="Explore internships, co-ops, and new-grad roles across companies hiring early career talent. Created by Maxim Culbeaux." />\r
-    \r
-    <!-- Open Graph / Social Media Meta Tags -->\r
-    <meta property="og:title" content="Launchpad, by Maxim Culbeaux, Your career starts somewhere" />\r
-    <meta property="og:description" content="Explore 5,600+ live internships, co-ops, and new-grad roles across 1,100+ companies plotted by actual job city. Created by Maxim Culbeaux." />\r
-    <meta property="og:type" content="website" />\r
-    <meta property="og:url" content="https://launchpad-careers.vercel.app/" />\r
-    <meta property="og:image" content="https://launchpad-careers.vercel.app/og-image.jpeg" />\r
-    \r
-    <!-- Twitter Card Meta Tags -->\r
-    <meta name="twitter:card" content="summary_large_image" />\r
-    <meta name="twitter:title" content="Launchpad \u2014 Interactive Internship &amp; Early Career Opportunity Map" />\r
-    <meta name="twitter:description" content="Explore 5,600+ live internships, co-ops, and new-grad roles across 1,100+ companies plotted by actual job city." />\r
-    <meta name="twitter:image" content="https://launchpad-careers.vercel.app/og-image.jpeg" />\r
-    \r
-    <title>Launchpad, by Maxim Culbeaux, Your career starts somewhere</title>\r
+    shell: `<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="google-site-verification" content="IxRDdf0J_fAx-Sa4zF8camL79twSx4fU66rhcej2-Fo" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="description" content="Explore internships, co-ops, and new-grad roles across companies hiring early career talent. Created by Maxim Culbeaux." />
+    
+    <!-- Open Graph / Social Media Meta Tags -->
+    <meta property="og:title" content="Launchpad, by Maxim Culbeaux, Your career starts somewhere" />
+    <meta property="og:description" content="Explore 5,600+ live internships, co-ops, and new-grad roles across 1,100+ companies plotted by actual job city. Created by Maxim Culbeaux." />
+    <meta property="og:type" content="website" />
+    <meta property="og:url" content="https://launchpad-careers.vercel.app/" />
+    <meta property="og:image" content="https://launchpad-careers.vercel.app/og-image.jpeg" />
+    
+    <!-- Twitter Card Meta Tags -->
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content="Launchpad \u2014 Interactive Internship &amp; Early Career Opportunity Map" />
+    <meta name="twitter:description" content="Explore 5,600+ live internships, co-ops, and new-grad roles across 1,100+ companies plotted by actual job city." />
+    <meta name="twitter:image" content="https://launchpad-careers.vercel.app/og-image.jpeg" />
+    
+    <title>Launchpad, by Maxim Culbeaux, Your career starts somewhere</title>
     <style>
       *, *::before, *::after { box-sizing: border-box; }
       body { margin: 0; padding: 0; background-color: #ffffff; color: #0f172a; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; -webkit-font-smoothing: antialiased; }
       @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: .6; } }
       .shell-pulse { animation: pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite; }
-    </style>\r
-    <script type="module" crossorigin src="/assets/index-SoqcVG_J.js"></script>
+    </style>
+    <script type="module" crossorigin src="/assets/index-BGOaw1sC.js"></script>
     <link rel="stylesheet" crossorigin href="/assets/index-BJEP7gfG.css">
-  </head>\r
-  <body>\r
-    <div id="root">\r
-      <div id="app-shell" style="min-height:100vh;display:flex;flex-direction:column;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;color:#0f172a;background:#ffffff;">\r
-        <header style="position:sticky;top:0;z-index:40;border-bottom:1px solid #e2e8f0;background:rgba(255,255,255,0.95);backdrop-filter:blur(8px);">\r
-          <div style="max-width:1280px;margin:0 auto;height:64px;display:flex;align-items:center;justify-content:space-between;padding:0 16px;">\r
-            <div style="display:flex;align-items:center;gap:24px;">\r
-              <a href="/" style="display:flex;align-items:center;gap:8px;text-decoration:none;font-weight:700;color:#0a192f;">\r
-                <span style="display:flex;height:32px;width:32px;align-items:center;justify-content:center;border-radius:8px;background:#0a192f;color:#00ffff;box-shadow:0 1px 2px 0 rgba(0,0,0,0.05);">\r
-                  <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4.5 16.5c-1.5 1.26-2 5-2 5s3.74-.5 5-2c.71-.84.7-2.13-.09-2.91a2.18 2.18 0 0 0-2.91-.09z"/><path d="m12 15-3-3a22 22 0 0 1 2-3.95A12.88 12.88 0 0 1 22 2c0 2.72-.78 7.5-6 11a22.35 22.35 0 0 1-4 2z"/><path d="M9 12H4s.55-3.03 2-4c1.62-1.08 5 0 5 0"/><path d="M12 15v5s3.03-.55 4-2c1.08-1.62 0-5 0-5"/></svg>\r
-                </span>\r
-                <span style="font-size:18px;letter-spacing:-0.01em;">Launchpad</span>\r
-              </a>\r
-              <nav style="display:flex;gap:4px;">\r
-                <a href="/browse" style="padding:8px 12px;font-size:14px;font-weight:500;color:#475569;text-decoration:none;border-radius:6px;">Browse</a>\r
-                <a href="/map" style="padding:8px 12px;font-size:14px;font-weight:500;color:#475569;text-decoration:none;border-radius:6px;">Map</a>\r
-                <a href="/resources" style="padding:8px 12px;font-size:14px;font-weight:500;color:#475569;text-decoration:none;border-radius:6px;">Resources</a>\r
-                <a href="/applications" style="padding:8px 12px;font-size:14px;font-weight:500;color:#475569;text-decoration:none;border-radius:6px;">My Applications</a>\r
-                <a href="/submit" style="padding:8px 12px;font-size:14px;font-weight:500;color:#475569;text-decoration:none;border-radius:6px;">Submit</a>\r
-              </nav>\r
-            </div>\r
-            <div style="display:flex;align-items:center;gap:8px;">\r
-              <a href="/signin" style="display:inline-flex;padding:8px 16px;font-size:14px;font-weight:600;color:#0a192f;background:#00ffff;border-radius:8px;text-decoration:none;">Sign In</a>\r
-            </div>\r
-          </div>\r
-        </header>\r
-        <main class="shell-pulse" style="max-width:1280px;margin:0 auto;width:100%;flex:1;padding:24px 16px;">\r
-          <div style="height:32px;width:260px;background:#f1f5f9;border-radius:8px;margin-bottom:12px;"></div>\r
-          <div style="height:18px;width:380px;background:#f8fafc;border-radius:6px;margin-bottom:32px;"></div>\r
-          <div style="display:grid;grid-template-columns:repeat(auto-fill, minmax(320px, 1fr));gap:16px;">\r
-            <div style="height:210px;background:#f8fafc;border:1px solid #e2e8f0;border-radius:12px;"></div>\r
-            <div style="height:210px;background:#f8fafc;border:1px solid #e2e8f0;border-radius:12px;"></div>\r
-            <div style="height:210px;background:#f8fafc;border:1px solid #e2e8f0;border-radius:12px;"></div>\r
-            <div style="height:210px;background:#f8fafc;border:1px solid #e2e8f0;border-radius:12px;"></div>\r
-            <div style="height:210px;background:#f8fafc;border:1px solid #e2e8f0;border-radius:12px;"></div>\r
-            <div style="height:210px;background:#f8fafc;border:1px solid #e2e8f0;border-radius:12px;"></div>\r
-          </div>\r
-        </main>\r
-      </div>\r
-    </div>\r\r
-  </body>\r
-</html>\r
+  </head>
+  <body>
+    <div id="root">
+      <div id="app-shell" style="min-height:100vh;display:flex;flex-direction:column;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;color:#0f172a;background:#ffffff;">
+        <header style="position:sticky;top:0;z-index:40;border-bottom:1px solid #e2e8f0;background:rgba(255,255,255,0.95);backdrop-filter:blur(8px);">
+          <div style="max-width:1280px;margin:0 auto;height:64px;display:flex;align-items:center;justify-content:space-between;padding:0 16px;">
+            <div style="display:flex;align-items:center;gap:24px;">
+              <a href="/" style="display:flex;align-items:center;gap:8px;text-decoration:none;font-weight:700;color:#0a192f;">
+                <span style="display:flex;height:32px;width:32px;align-items:center;justify-content:center;border-radius:8px;background:#0a192f;color:#00ffff;box-shadow:0 1px 2px 0 rgba(0,0,0,0.05);">
+                  <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4.5 16.5c-1.5 1.26-2 5-2 5s3.74-.5 5-2c.71-.84.7-2.13-.09-2.91a2.18 2.18 0 0 0-2.91-.09z"/><path d="m12 15-3-3a22 22 0 0 1 2-3.95A12.88 12.88 0 0 1 22 2c0 2.72-.78 7.5-6 11a22.35 22.35 0 0 1-4 2z"/><path d="M9 12H4s.55-3.03 2-4c1.62-1.08 5 0 5 0"/><path d="M12 15v5s3.03-.55 4-2c1.08-1.62 0-5 0-5"/></svg>
+                </span>
+                <span style="font-size:18px;letter-spacing:-0.01em;">Launchpad</span>
+              </a>
+              <nav style="display:flex;gap:4px;">
+                <a href="/browse" style="padding:8px 12px;font-size:14px;font-weight:500;color:#475569;text-decoration:none;border-radius:6px;">Browse</a>
+                <a href="/map" style="padding:8px 12px;font-size:14px;font-weight:500;color:#475569;text-decoration:none;border-radius:6px;">Map</a>
+                <a href="/resources" style="padding:8px 12px;font-size:14px;font-weight:500;color:#475569;text-decoration:none;border-radius:6px;">Resources</a>
+                <a href="/applications" style="padding:8px 12px;font-size:14px;font-weight:500;color:#475569;text-decoration:none;border-radius:6px;">My Applications</a>
+                <a href="/submit" style="padding:8px 12px;font-size:14px;font-weight:500;color:#475569;text-decoration:none;border-radius:6px;">Submit</a>
+              </nav>
+            </div>
+            <div style="display:flex;align-items:center;gap:8px;">
+              <a href="/signin" style="display:inline-flex;padding:8px 16px;font-size:14px;font-weight:600;color:#0a192f;background:#00ffff;border-radius:8px;text-decoration:none;">Sign In</a>
+            </div>
+          </div>
+        </header>
+        <main class="shell-pulse" style="max-width:1280px;margin:0 auto;width:100%;flex:1;padding:24px 16px;">
+          <div style="height:32px;width:260px;background:#f1f5f9;border-radius:8px;margin-bottom:12px;"></div>
+          <div style="height:18px;width:380px;background:#f8fafc;border-radius:6px;margin-bottom:32px;"></div>
+          <div style="display:grid;grid-template-columns:repeat(auto-fill, minmax(320px, 1fr));gap:16px;">
+            <div style="height:210px;background:#f8fafc;border:1px solid #e2e8f0;border-radius:12px;"></div>
+            <div style="height:210px;background:#f8fafc;border:1px solid #e2e8f0;border-radius:12px;"></div>
+            <div style="height:210px;background:#f8fafc;border:1px solid #e2e8f0;border-radius:12px;"></div>
+            <div style="height:210px;background:#f8fafc;border:1px solid #e2e8f0;border-radius:12px;"></div>
+            <div style="height:210px;background:#f8fafc;border:1px solid #e2e8f0;border-radius:12px;"></div>
+            <div style="height:210px;background:#f8fafc;border:1px solid #e2e8f0;border-radius:12px;"></div>
+          </div>
+        </main>
+      </div>
+    </div>
+  </body>
+</html>
 `,
     supabaseUrl: process.env.VITE_SUPABASE_URL || define_SEO_PUBLIC_CONFIG_default.url,
     anonKey: process.env.VITE_SUPABASE_ANON_KEY || define_SEO_PUBLIC_CONFIG_default.anonKey

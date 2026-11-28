@@ -73,6 +73,8 @@ describe('public search rendering', () => {
     expect(page.status).toBe(503);
     expect(page.headers['Cache-Control']).toBe('no-store');
     expect(page.headers['Retry-After']).toBe('300');
+    expect(page.headers['X-Robots-Tag']).toBeUndefined();
+    expect(page.body).not.toContain('noindex');
   });
 
   it('keeps private pages out of the index and gives unknown URLs a real 404', async () => {
@@ -83,6 +85,18 @@ describe('public search rendering', () => {
     }
     expect((await handleSeoRequest('/not-a-real-page', { shell })).status).toBe(404);
     expect((await handleSeoRequest('/about/', { shell })).headers.Location).toBe('/about');
+  });
+
+  it('serves the public Map without a database and excludes filtered Map variants', async () => {
+    const fetchImpl = vi.fn();
+    const main = await handleSeoRequest('/api/seo?__path=/map', { shell, fetchImpl });
+    const filtered = await handleSeoRequest('/api/seo?__path=/map&company=example', { shell, fetchImpl });
+    expect(main.status).toBe(200);
+    expect(main.body).toContain('Explore by location');
+    expect(main.body).toContain(`href="${SITE_ORIGIN}/map"`);
+    expect(main.headers['X-Robots-Tag']).toBeUndefined();
+    expect(filtered.headers['X-Robots-Tag']).toContain('noindex');
+    expect(fetchImpl).not.toHaveBeenCalled();
   });
 
   it('indexes the main Browse page, while canonicalizing filtered variants without indexing them', async () => {

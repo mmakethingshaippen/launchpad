@@ -59,6 +59,11 @@ function staticContent(path: string): { title: string; description: string; cont
     title: ABOUT_TITLE, description: ABOUT_DESCRIPTION, content: renderToStaticMarkup(<AboutContent />),
     schema: aboutStructuredData(),
   };
+  if (path === '/map') return {
+    title: 'Explore opportunities on the map — Launchpad',
+    description: 'Find internships, co-ops, and early-career opportunities by location using Launchpad’s interactive map.',
+    content: '<h1 class="text-3xl font-bold text-navy">Explore by location</h1><p class="mt-3">Use the interactive map to find internships, co-ops, and early-career opportunities near a city or region. Filter the map by company or internship season to narrow your search.</p><p class="mt-4"><a class="underline" href="/browse">Browse opportunities in a list</a></p>',
+  };
   if (path === '/resources') return { title: 'Career Resources — Launchpad', description: 'Practical guides for internship resumes, interviews and evaluating offers.',
     content: `<h1 class="text-3xl font-bold text-navy">Career Resources</h1><p class="mt-3">Practical guides to help you find and choose the right opportunity.</p><ul class="mt-6 space-y-6">${GUIDES.map(g => `<li><h2 class="text-xl font-semibold"><a href="${slugPath('/resources', g.slug)}">${escape(g.title)}</a></h2><p>${escape(g.summary)}</p></li>`).join('')}</ul>` };
   const guide = GUIDES.find(g => path === `/resources/${g.slug}`);
@@ -80,14 +85,15 @@ export async function handleSeoRequest(rawPath: string, options: SeoOptions): Pr
   const notFound = () => page(404, 'Page unavailable — Launchpad', 'This page is unavailable.', '<h1 class="text-3xl font-bold text-navy">Page unavailable</h1><p class="mt-4">This listing or page may be unavailable while we verify it.</p><a class="mt-4 inline-block underline" href="/browse">Back to Browse</a>', true);
   if (requestedPath !== path) return { status: 308, headers: { Location: path, 'Cache-Control': 'no-store' }, body: '' };
   const publicStatic = staticContent(path);
-  if (publicStatic) return page(200, publicStatic.title, publicStatic.description, publicStatic.content, false, publicStatic.schema);
+  const hasFilters = Array.from(requestUrl.searchParams.keys()).some(key => key !== '__path');
+  if (publicStatic) return page(200, publicStatic.title, publicStatic.description, publicStatic.content, path === '/map' && hasFilters, publicStatic.schema);
   if (PRIVATE.has(path)) return page(200, 'Your account — Launchpad', 'Manage your Launchpad account.', '<h1 class="text-2xl font-bold text-navy">Launchpad</h1><p class="mt-4">Continue in the app to manage your account or submit an opportunity.</p>', true);
 
   const jobMatch = new RegExp(`^/roles/(${SLUG})$`).exec(path);
   const companyMatch = new RegExp(`^/companies/(${SLUG})$`).exec(path);
   const sitemapMatch = /^\/sitemaps\/(jobs|companies)-([1-9]\d{0,4})\.xml$/.exec(path);
   const isSitemap = path === '/sitemap.xml' || path === '/sitemap-pages.xml' || Boolean(sitemapMatch);
-  if (!jobMatch && !companyMatch && !isSitemap && !['/', '/browse', '/map'].includes(path)) return notFound();
+  if (!jobMatch && !companyMatch && !isSitemap && !['/', '/browse'].includes(path)) return notFound();
   const now = options.now ?? new Date();
   const roleFilters = { listing_status: 'eq.Active', last_verified_at: `gte.${freshnessCutoff(now).toISOString()}` };
   const rest = async (table: 'public_roles' | 'companies', params: Record<string, string>, count = false) => {
@@ -145,12 +151,13 @@ export async function handleSeoRequest(rawPath: string, options: SeoOptions): Pr
       return page(200, `${company.name} internships & early-career roles — Launchpad`, `Explore opportunities at ${company.name}.`, `<h1 class="text-3xl font-bold text-navy">${escape(company.name)}</h1>${description ? `<p class="mt-4 leading-relaxed">${escape(text(description))}</p>` : ''}<h2 class="mt-8 text-2xl font-semibold">Current opportunities</h2>${jobs.rows.length ? links(jobs.rows) : '<p class="mt-4">No verified opportunities are currently listed for this company.</p>'}`);
     }
     const jobs = await rest('public_roles', { select: 'slug,title,source_url,city,state,country,companies(name,slug)', ...roleFilters, order: 'last_verified_at.desc,id.asc', limit: '21' });
-    const title = path === '/' ? 'Launchpad, by Maxim Culbeaux, Your career starts somewhere' : path === '/map' ? 'Explore opportunities on the map — Launchpad' : 'Browse internships, co-ops & early-career jobs — Launchpad';
-    const heading = path === '/' ? 'Your career starts somewhere. Find your Launchpad.' : path === '/map' ? 'Explore opportunities by location' : 'Browse opportunities';
+    const title = path === '/' ? 'Launchpad, by Maxim Culbeaux, Your career starts somewhere' : 'Browse internships, co-ops & early-career jobs — Launchpad';
+    const heading = path === '/' ? 'Your career starts somewhere. Find your Launchpad.' : 'Browse opportunities';
     const description = 'Discover internships, co-ops and early-career opportunities. Explore openings by location and organize your application search.';
-    return page(200, title, path === '/' ? `${description} Created by Maxim Culbeaux.` : description, `<h1 class="text-3xl font-bold text-navy">${heading}</h1><p class="mt-4 max-w-3xl text-lg">${description}</p><p class="mt-4"><a class="underline" href="/about">Our Mission</a></p><h2 class="mt-8 text-2xl font-semibold">Recently verified opportunities</h2>${links(jobs.rows)}<p class="mt-6"><a class="underline" href="/browse">Search and filter all opportunities</a></p>`, (path === '/browse' || path === '/map') && Boolean(requestUrl.searchParams.size - Number(requestUrl.searchParams.has('__path'))));
+    return page(200, title, path === '/' ? `${description} Created by Maxim Culbeaux.` : description, `<h1 class="text-3xl font-bold text-navy">${heading}</h1><p class="mt-4 max-w-3xl text-lg">${description}</p><p class="mt-4"><a class="underline" href="/about">Our Mission</a></p><h2 class="mt-8 text-2xl font-semibold">Recently verified opportunities</h2>${links(jobs.rows)}<p class="mt-6"><a class="underline" href="/browse">Search and filter all opportunities</a></p>`, path === '/browse' && hasFilters);
   } catch {
-    const result = page(503, 'Temporarily unavailable — Launchpad', 'Please try again shortly.', '<h1 class="text-2xl font-bold text-navy">Temporarily unavailable</h1><p class="mt-4">Please try again shortly. You can also continue in the app.</p>', true);
+    const result = page(503, 'Temporarily unavailable — Launchpad', 'Please try again shortly.', '<h1 class="text-2xl font-bold text-navy">Temporarily unavailable</h1><p class="mt-4">Please try again shortly. You can also continue in the app.</p>');
+    result.headers['Cache-Control'] = 'no-store';
     result.headers['Retry-After'] = '300';
     return result;
   }
